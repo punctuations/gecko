@@ -33,8 +33,9 @@ recursion, lists, dicts, subscripting, iteration over lists, dicts, strings,
 and ranges, the methods `append`, `pop`, `get`, `keys`, and `values`, and the
 builtins `print`, `len`, and `range`. Anything outside that subset (closures,
 defaults, keyword arguments, tuples, `break`, `continue`, classes, exceptions)
-is rejected at compile time. There is no GC, so the heap frees everything at
-once when it is destroyed.
+is rejected at compile time. A precise, non-moving mark-sweep collector
+reclaims garbage when allocation passes a threshold that grows with the live
+size.
 
 ```sh
 cargo run -p gecko -- -c 'print("hello world")'

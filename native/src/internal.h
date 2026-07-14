@@ -53,7 +53,45 @@ int setae_value_eq(SetaeValue a, SetaeValue b);
 int64_t setae_range_len(const SetaeRange *r);
 size_t setae_str_count(SetaeValue v);
 
+typedef struct SetaeGlobal {
+    char *name;
+    SetaeValue value;
+} SetaeGlobal;
+
+typedef struct SetaeFrame {
+    SetaeValue *slots;
+    uint32_t nlocals;
+    int sp;
+    struct SetaeFrame *parent;
+} SetaeFrame;
+
+struct SetaeVM {
+    SetaeHeap *heap;
+
+    SetaeGlobal *globals;
+    size_t nglobals;
+    size_t globals_cap;
+
+    char *out;
+    size_t out_len;
+    size_t out_cap;
+
+    int error;
+    char errmsg[128];
+    int depth;
+
+    SetaeFrame *frames;
+
+    const SetaeCode **codes;
+    size_t ncodes;
+    size_t codes_cap;
+};
+
+void setae_heap_bind(SetaeHeap *h, SetaeVM *vm);
+void setae_heap_sweep(SetaeHeap *h);
+
 const SetaeValue *setae_code_consts(const SetaeCode *c);
+uint32_t setae_code_nconsts(const SetaeCode *c);
 const char *setae_code_name(const SetaeCode *c, uint32_t i);
 const uint8_t *setae_code_bytes(const SetaeCode *c, uint32_t *n);
 uint32_t setae_code_nlocals(const SetaeCode *c);

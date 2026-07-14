@@ -106,6 +106,10 @@ const SetaeValue *setae_code_consts(const SetaeCode *c) {
     return c->consts;
 }
 
+uint32_t setae_code_nconsts(const SetaeCode *c) {
+    return c->nconsts;
+}
+
 const char *setae_code_name(const SetaeCode *c, uint32_t i) {
     return c->names[i];
 }

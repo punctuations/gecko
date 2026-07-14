@@ -14,6 +14,7 @@ gecko_runtime = static_library('gecko_runtime',
   sources: files(
     'src/value.c',
     'src/heap.c',
+    'src/gc.c',
     'src/code.c',
     'src/setae.c',
     'src/builtins.c',

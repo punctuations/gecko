@@ -3,18 +3,36 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define GC_MIN_THRESHOLD 1024
+
+static void obj_free(SetaeObject *o);
+
 struct SetaeHeap {
     SetaeObject **objs;
     size_t count;
     size_t cap;
+    size_t threshold;
+    SetaeVM *vm;
 };
 
 SetaeHeap *setae_heap_new(void) {
     SetaeHeap *h = calloc(1, sizeof(SetaeHeap));
+    h->threshold = GC_MIN_THRESHOLD;
     return h;
 }
 
+void setae_heap_bind(SetaeHeap *h, SetaeVM *vm) {
+    h->vm = vm;
+}
+
+size_t setae_heap_live(const SetaeHeap *h) {
+    return h->count;
+}
+
 static void *heap_alloc(SetaeHeap *h, size_t size, SetaeType type) {
+    if (h->vm != NULL && h->vm->depth > 0 && h->count >= h->threshold) {
+        setae_gc_collect(h->vm);
+    }
     SetaeObject *o = calloc(1, size);
     if (o == NULL) {
         return NULL;
@@ -26,6 +44,20 @@ static void *heap_alloc(SetaeHeap *h, size_t size, SetaeType type) {
     }
     h->objs[h->count++] = o;
     return o;
+}
+
+void setae_heap_sweep(SetaeHeap *h) {
+    size_t live = 0;
+    for (size_t i = 0; i < h->count; i++) {
+        if (h->objs[i]->gc & 2) {
+            h->objs[i]->gc &= ~2u;
+            h->objs[live++] = h->objs[i];
+        } else {
+            obj_free(h->objs[i]);
+        }
+    }
+    h->count = live;
+    h->threshold = live * 2 > GC_MIN_THRESHOLD ? live * 2 : GC_MIN_THRESHOLD;
 }
 
 static void obj_free(SetaeObject *o) {

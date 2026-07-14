@@ -249,4 +249,37 @@ mod tests {
         let f = run_source("def f(n):\n    return f(n)\nf(1)\n").unwrap_err();
         assert!(f.message.contains("RecursionError"));
     }
+
+    #[test]
+    fn garbage_stays_bounded() {
+        let src =
+            "i = 0\nwhile i < 20000:\n    s = \"a\" + \"b\"\n    l = [s, {\"k\": s}]\n    i += 1\n";
+        let code = compiler::compile(&parser::parse(src).unwrap()).unwrap();
+        let mut vm = runtime::Vm::new();
+        let run = vm.run(&code);
+        assert!(!run.error, "{}", run.message);
+        assert!(
+            vm.heap_live() < 5000,
+            "heap has {} live objects",
+            vm.heap_live()
+        );
+    }
+
+    #[test]
+    fn survivors_keep_their_contents() {
+        let src = "keep = []\nfor i in range(100):\n    keep.append(\"v\" + \"x\")\nd = {\"total\": 0}\ni = 0\nwhile i < 20000:\n    junk = [\"g\", {\"k\": \"v\"}, i]\n    i += 1\nd[\"total\"] = len(keep)\nprint(d[\"total\"], keep[0], keep[99], d)\n";
+        assert_eq!(run_source(src).unwrap(), "100 vx vx {'total': 100}\n");
+    }
+
+    #[test]
+    fn collect_reclaims_unreachable_values() {
+        let src = "l = [\"a\" + \"b\"]\nl = 0\n";
+        let code = compiler::compile(&parser::parse(src).unwrap()).unwrap();
+        let mut vm = runtime::Vm::new();
+        let run = vm.run(&code);
+        assert!(!run.error);
+        let before = vm.heap_live();
+        vm.collect();
+        assert!(vm.heap_live() < before);
+    }
 }

@@ -9,30 +9,10 @@
 #define STACK_MAX 1024
 #define MAX_DEPTH 500
 
-typedef struct {
-    char *name;
-    SetaeValue value;
-} Global;
-
-struct SetaeVM {
-    SetaeHeap *heap;
-
-    Global *globals;
-    size_t nglobals;
-    size_t globals_cap;
-
-    char *out;
-    size_t out_len;
-    size_t out_cap;
-
-    int error;
-    char errmsg[128];
-    int depth;
-};
-
 SetaeVM *setae_vm_new(SetaeHeap *h) {
     SetaeVM *vm = calloc(1, sizeof(SetaeVM));
     vm->heap = h;
+    setae_heap_bind(h, vm);
     return vm;
 }
 
@@ -44,8 +24,22 @@ void setae_vm_destroy(SetaeVM *vm) {
         free(vm->globals[i].name);
     }
     free(vm->globals);
+    free(vm->codes);
     free(vm->out);
     free(vm);
+}
+
+static void attach_code(SetaeVM *vm, const SetaeCode *code) {
+    for (size_t i = 0; i < vm->ncodes; i++) {
+        if (vm->codes[i] == code) {
+            return;
+        }
+    }
+    if (vm->ncodes == vm->codes_cap) {
+        vm->codes_cap = vm->codes_cap ? vm->codes_cap * 2 : 4;
+        vm->codes = realloc(vm->codes, vm->codes_cap * sizeof(SetaeCode *));
+    }
+    vm->codes[vm->ncodes++] = code;
 }
 
 void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
@@ -57,7 +51,7 @@ void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
     }
     if (vm->nglobals == vm->globals_cap) {
         vm->globals_cap = vm->globals_cap ? vm->globals_cap * 2 : 8;
-        vm->globals = realloc(vm->globals, vm->globals_cap * sizeof(Global));
+        vm->globals = realloc(vm->globals, vm->globals_cap * sizeof(SetaeGlobal));
     }
     size_t n = strlen(name) + 1;
     vm->globals[vm->nglobals].name = malloc(n);
@@ -704,10 +698,14 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     }
     int sp = 0;
 
+    SetaeFrame fr = {frame, nlocals, 0, vm->frames};
+    vm->frames = &fr;
+
     SetaeValue result = setae_none();
     uint32_t ip = 0;
     uint32_t ext = 0;
     while (ip < ncode && !vm->error) {
+        fr.sp = sp;
         uint8_t op = bytes[ip];
         uint32_t arg = ext | bytes[ip + 1];
         ip += 2;
@@ -899,11 +897,13 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         }
     }
 
+    vm->frames = fr.parent;
     free(frame);
     vm->depth--;
     return result;
 }
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
+    attach_code(vm, code);
     return run_code(vm, code, NULL, 0);
 }

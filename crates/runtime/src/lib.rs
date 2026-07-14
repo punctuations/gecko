@@ -65,6 +65,8 @@ unsafe extern "C" {
 
     pub fn setae_heap_new() -> *mut SetaeHeap;
     pub fn setae_heap_destroy(h: *mut SetaeHeap);
+    pub fn setae_heap_live(h: *const SetaeHeap) -> usize;
+    pub fn setae_gc_collect(vm: *mut SetaeVm);
     pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
 
     pub fn setae_code_new() -> *mut SetaeCode;
@@ -230,6 +232,14 @@ impl Vm {
                 message,
             }
         }
+    }
+
+    pub fn heap_live(&self) -> usize {
+        unsafe { setae_heap_live(self.heap) }
+    }
+
+    pub fn collect(&mut self) {
+        unsafe { setae_gc_collect(self.vm) }
     }
 
     unsafe fn lower(&mut self, gc: *mut SetaeCode, code: &bytecode::Code) {
