@@ -1,0 +1,18 @@
+[package]
+name = "gecko"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line entrypoint for the Gecko Python runtime."
+publish = false
+
+[[bin]]
+name = "gecko"
+path = "src/main.rs"
+
+[dependencies]
+compiler = { path = "../compiler" }
+parser = { path = "../parser" }
+runtime = { path = "../runtime" }

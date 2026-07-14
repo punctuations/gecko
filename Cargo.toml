@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ast",
+    "crates/bytecode",
+    "crates/compiler",
+    "crates/gecko",
+    "crates/lexer",
+    "crates/parser",
+    "crates/runtime",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/mattt/gecko"
+rust-version = "1.85"
+
+[workspace.dependencies]

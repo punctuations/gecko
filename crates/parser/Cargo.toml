@@ -1,0 +1,13 @@
+[package]
+name = "parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Parser for the Gecko Python frontend."
+publish = false
+
+[dependencies]
+ast = { path = "../ast" }
+lexer = { path = "../lexer" }

@@ -1,0 +1,16 @@
+[package]
+name = "compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Lowers the Gecko AST to Setae bytecode."
+publish = false
+
+[dependencies]
+ast = { path = "../ast" }
+bytecode = { path = "../bytecode" }
+
+[dev-dependencies]
+parser = { path = "../parser" }

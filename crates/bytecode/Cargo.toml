@@ -1,0 +1,11 @@
+[package]
+name = "bytecode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Setae bytecode representation shared by the compiler and runtime."
+publish = false
+
+[dependencies]
