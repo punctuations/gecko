@@ -3,6 +3,11 @@
 **/*.rs.bk
 *.pdb
 
+# IDE meson build dir
+/native/.cache/
+/native/build/
+/compile_commands.json
+
 # C build artifacts (VM/runtime, added later)
 *.o
 *.obj

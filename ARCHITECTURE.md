@@ -45,7 +45,7 @@ crates/            Rust workspace (frontend and tooling)
   runtime/         safe API and FFI bindings over the C runtime
                    later, ssa and pkg
 native/            C runtime, holding Setae (the VM), GC, scheduler, actors
-  include/         public C ABI (gecko.h)
+  include/         public C ABI (setae.h)
   src/             value encoding, heap, code objects, interpreter, builtins
 docs/design/       Phase 0 specifications
 examples/          Python programs the runtime can run

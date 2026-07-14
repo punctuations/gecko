@@ -1,14 +1,14 @@
-//! FFI bindings to the Gecko C runtime in native/.
+//! FFI bindings to the Setae C runtime in native/.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
 /// NaN-boxed value word. See docs/design/01-object-model.md.
-pub type GkValue = u64;
+pub type SetaeValue = u64;
 
-pub enum GkHeap {}
-pub enum GkVm {}
-pub enum GkCode {}
+pub enum SetaeHeap {}
+pub enum SetaeVm {}
+pub enum SetaeCode {}
 
 pub const OP_LOAD_CONST: u8 = 0;
 pub const OP_LOAD_NAME: u8 = 1;
@@ -27,49 +27,64 @@ pub const OP_JUMP_IF_TRUE_OR_POP: u8 = 13;
 pub const OP_COMPARE_OP: u8 = 14;
 pub const OP_UNARY_NEG: u8 = 15;
 pub const OP_UNARY_NOT: u8 = 16;
+pub const OP_MAKE_FUNCTION: u8 = 17;
+pub const OP_BUILD_LIST: u8 = 18;
+pub const OP_BUILD_DICT: u8 = 19;
+pub const OP_SUBSCR: u8 = 20;
+pub const OP_STORE_SUBSCR: u8 = 21;
+pub const OP_GET_ITER: u8 = 22;
+pub const OP_FOR_ITER: u8 = 23;
+pub const OP_CALL_METHOD: u8 = 24;
+pub const OP_EXTENDED_ARG: u8 = 25;
 
 pub const BIN_ADD: u8 = 0;
 pub const BIN_SUB: u8 = 1;
 pub const BIN_MUL: u8 = 2;
 pub const BIN_DIV: u8 = 3;
+pub const BIN_MOD: u8 = 4;
+pub const BIN_FLOORDIV: u8 = 5;
 
 unsafe extern "C" {
-    pub fn gk_is_float(v: GkValue) -> c_int;
-    pub fn gk_is_int(v: GkValue) -> c_int;
-    pub fn gk_is_ptr(v: GkValue) -> c_int;
-    pub fn gk_is_none(v: GkValue) -> c_int;
-    pub fn gk_is_bool(v: GkValue) -> c_int;
+    pub fn setae_is_float(v: SetaeValue) -> c_int;
+    pub fn setae_is_int(v: SetaeValue) -> c_int;
+    pub fn setae_is_ptr(v: SetaeValue) -> c_int;
+    pub fn setae_is_none(v: SetaeValue) -> c_int;
+    pub fn setae_is_bool(v: SetaeValue) -> c_int;
 
-    pub fn gk_from_float(d: f64) -> GkValue;
-    pub fn gk_to_float(v: GkValue) -> f64;
-    pub fn gk_from_int(i: i32) -> GkValue;
-    pub fn gk_to_int(v: GkValue) -> i32;
+    pub fn setae_from_float(d: f64) -> SetaeValue;
+    pub fn setae_to_float(v: SetaeValue) -> f64;
+    pub fn setae_from_int(i: i32) -> SetaeValue;
+    pub fn setae_to_int(v: SetaeValue) -> i32;
 
-    pub fn gk_none() -> GkValue;
-    pub fn gk_bool(b: c_int) -> GkValue;
-    pub fn gk_to_bool(v: GkValue) -> c_int;
+    pub fn setae_none() -> SetaeValue;
+    pub fn setae_bool(b: c_int) -> SetaeValue;
+    pub fn setae_to_bool(v: SetaeValue) -> c_int;
 
-    pub fn gk_from_ptr(p: *mut std::ffi::c_void) -> GkValue;
-    pub fn gk_to_ptr(v: GkValue) -> *mut std::ffi::c_void;
+    pub fn setae_from_ptr(p: *mut std::ffi::c_void) -> SetaeValue;
+    pub fn setae_to_ptr(v: SetaeValue) -> *mut std::ffi::c_void;
 
-    pub fn gk_heap_new() -> *mut GkHeap;
-    pub fn gk_heap_destroy(h: *mut GkHeap);
-    pub fn gk_str_new(h: *mut GkHeap, bytes: *const c_char, len: usize) -> GkValue;
+    pub fn setae_heap_new() -> *mut SetaeHeap;
+    pub fn setae_heap_destroy(h: *mut SetaeHeap);
+    pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
 
-    pub fn gk_code_new() -> *mut GkCode;
-    pub fn gk_code_free(c: *mut GkCode);
-    pub fn gk_code_add_const(c: *mut GkCode, v: GkValue) -> u32;
-    pub fn gk_code_add_name(c: *mut GkCode, name: *const c_char) -> u32;
-    pub fn gk_code_emit(c: *mut GkCode, op: u8, arg: u8);
-    pub fn gk_code_set_nlocals(c: *mut GkCode, n: u32);
+    pub fn setae_code_new() -> *mut SetaeCode;
+    pub fn setae_code_free(c: *mut SetaeCode);
+    pub fn setae_code_new_child(parent: *mut SetaeCode) -> *mut SetaeCode;
+    pub fn setae_code_add_const(c: *mut SetaeCode, v: SetaeValue) -> u32;
+    pub fn setae_code_add_name(c: *mut SetaeCode, name: *const c_char) -> u32;
+    pub fn setae_code_emit(c: *mut SetaeCode, op: u8, arg: u8);
+    pub fn setae_code_set_nlocals(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_set_nparams(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_set_name(c: *mut SetaeCode, name: *const c_char);
 
-    pub fn gk_vm_new(h: *mut GkHeap) -> *mut GkVm;
-    pub fn gk_vm_destroy(vm: *mut GkVm);
-    pub fn gk_vm_register_builtins(vm: *mut GkVm);
-    pub fn gk_vm_set_global(vm: *mut GkVm, name: *const c_char, v: GkValue);
-    pub fn gk_vm_run(vm: *mut GkVm, code: *mut GkCode) -> GkValue;
-    pub fn gk_vm_error(vm: *mut GkVm) -> c_int;
-    pub fn gk_vm_output(vm: *mut GkVm, len: *mut usize) -> *const c_char;
+    pub fn setae_vm_new(h: *mut SetaeHeap) -> *mut SetaeVm;
+    pub fn setae_vm_destroy(vm: *mut SetaeVm);
+    pub fn setae_vm_register_builtins(vm: *mut SetaeVm);
+    pub fn setae_vm_set_global(vm: *mut SetaeVm, name: *const c_char, v: SetaeValue);
+    pub fn setae_vm_run(vm: *mut SetaeVm, code: *mut SetaeCode) -> SetaeValue;
+    pub fn setae_vm_error(vm: *mut SetaeVm) -> c_int;
+    pub fn setae_vm_error_msg(vm: *mut SetaeVm) -> *const c_char;
+    pub fn setae_vm_output(vm: *mut SetaeVm, len: *mut usize) -> *const c_char;
 }
 
 #[cfg(test)]
@@ -88,119 +103,119 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            let v = unsafe { gk_from_float(d) };
-            assert_eq!(unsafe { gk_is_float(v) }, 1, "is_float {d}");
-            assert_eq!(unsafe { gk_is_int(v) }, 0, "not int {d}");
-            assert_eq!(unsafe { gk_to_float(v) }, d, "roundtrip {d}");
+            let v = unsafe { setae_from_float(d) };
+            assert_eq!(unsafe { setae_is_float(v) }, 1, "is_float {d}");
+            assert_eq!(unsafe { setae_is_int(v) }, 0, "not int {d}");
+            assert_eq!(unsafe { setae_to_float(v) }, d, "roundtrip {d}");
         }
     }
 
     #[test]
     fn nan_roundtrips_as_nan() {
-        let v = unsafe { gk_from_float(f64::NAN) };
-        assert_eq!(unsafe { gk_is_float(v) }, 1);
-        assert!(unsafe { gk_to_float(v) }.is_nan());
+        let v = unsafe { setae_from_float(f64::NAN) };
+        assert_eq!(unsafe { setae_is_float(v) }, 1);
+        assert!(unsafe { setae_to_float(v) }.is_nan());
     }
 
     #[test]
     fn int_roundtrips() {
         for i in [0, 1, -1, i32::MAX, i32::MIN, 123456] {
-            let v = unsafe { gk_from_int(i) };
-            assert_eq!(unsafe { gk_is_int(v) }, 1, "is_int {i}");
-            assert_eq!(unsafe { gk_is_float(v) }, 0, "not float {i}");
-            assert_eq!(unsafe { gk_to_int(v) }, i, "roundtrip {i}");
+            let v = unsafe { setae_from_int(i) };
+            assert_eq!(unsafe { setae_is_int(v) }, 1, "is_int {i}");
+            assert_eq!(unsafe { setae_is_float(v) }, 0, "not float {i}");
+            assert_eq!(unsafe { setae_to_int(v) }, i, "roundtrip {i}");
         }
     }
 
     #[test]
     fn singletons_are_distinct() {
-        let (n, t, f) = unsafe { (gk_none(), gk_bool(1), gk_bool(0)) };
-        assert_eq!(unsafe { gk_is_none(n) }, 1);
-        assert_eq!(unsafe { gk_is_bool(t) }, 1);
-        assert_eq!(unsafe { gk_is_bool(f) }, 1);
-        assert_eq!(unsafe { gk_to_bool(t) }, 1);
-        assert_eq!(unsafe { gk_to_bool(f) }, 0);
+        let (n, t, f) = unsafe { (setae_none(), setae_bool(1), setae_bool(0)) };
+        assert_eq!(unsafe { setae_is_none(n) }, 1);
+        assert_eq!(unsafe { setae_is_bool(t) }, 1);
+        assert_eq!(unsafe { setae_is_bool(f) }, 1);
+        assert_eq!(unsafe { setae_to_bool(t) }, 1);
+        assert_eq!(unsafe { setae_to_bool(f) }, 0);
         assert_ne!(n, t);
         assert_ne!(t, f);
         // None is not a bool, a bool is not None.
-        assert_eq!(unsafe { gk_is_bool(n) }, 0);
-        assert_eq!(unsafe { gk_is_none(t) }, 0);
+        assert_eq!(unsafe { setae_is_bool(n) }, 0);
+        assert_eq!(unsafe { setae_is_none(t) }, 0);
     }
 
     #[test]
     fn pointer_roundtrips() {
         let mut boxed = Box::new(42u64);
         let p = (&mut *boxed) as *mut u64 as *mut std::ffi::c_void;
-        let v = unsafe { gk_from_ptr(p) };
-        assert_eq!(unsafe { gk_is_ptr(v) }, 1);
-        assert_eq!(unsafe { gk_is_float(v) }, 0);
-        assert_eq!(unsafe { gk_is_int(v) }, 0);
-        assert_eq!(unsafe { gk_to_ptr(v) }, p);
+        let v = unsafe { setae_from_ptr(p) };
+        assert_eq!(unsafe { setae_is_ptr(v) }, 1);
+        assert_eq!(unsafe { setae_is_float(v) }, 0);
+        assert_eq!(unsafe { setae_is_int(v) }, 0);
+        assert_eq!(unsafe { setae_to_ptr(v) }, p);
     }
 }
 
 /// A Setae runtime instance. One isolate, meaning a heap and a VM, owning its
 /// objects.
 pub struct Vm {
-    heap: *mut GkHeap,
-    vm: *mut GkVm,
+    heap: *mut SetaeHeap,
+    vm: *mut SetaeVm,
+    codes: Vec<*mut SetaeCode>,
 }
 
 /// Result of running a code object.
 pub struct Run {
-    pub result: GkValue,
+    pub result: SetaeValue,
     pub output: String,
     pub error: bool,
+    pub message: String,
+}
+
+fn args_fit(code: &bytecode::Code) -> bool {
+    code.ops.iter().all(|i| i.arg <= u8::MAX as u32) && code.codes.iter().all(args_fit)
 }
 
 impl Vm {
     pub fn new() -> Self {
         unsafe {
-            let heap = gk_heap_new();
-            let vm = gk_vm_new(heap);
-            gk_vm_register_builtins(vm);
-            Vm { heap, vm }
+            let heap = setae_heap_new();
+            let vm = setae_vm_new(heap);
+            setae_vm_register_builtins(vm);
+            Vm {
+                heap,
+                vm,
+                codes: Vec::new(),
+            }
         }
     }
 
     pub fn run(&mut self, code: &bytecode::Code) -> Run {
-        // Without EXTENDED_ARG an instruction argument is one byte, so jump
-        // targets and pool indices cannot go past 255.
-        if code.ops.iter().any(|i| i.arg > u8::MAX as u32) {
+        // The compiler assembles EXTENDED_ARG prefixes, so every argument fits
+        // one byte. Reject anything wider rather than truncate it.
+        if !args_fit(code) {
             return Run {
-                result: unsafe { gk_none() },
+                result: unsafe { setae_none() },
                 output: String::new(),
                 error: true,
+                message: "argument does not fit one byte".into(),
             };
         }
         unsafe {
-            let gc = gk_code_new();
-            for c in &code.consts {
-                let v = match c {
-                    bytecode::Const::None => gk_none(),
-                    bytecode::Const::Bool(b) => gk_bool(*b as c_int),
-                    bytecode::Const::Int(i) => gk_from_int(*i),
-                    bytecode::Const::Float(f) => gk_from_float(*f),
-                    bytecode::Const::Str(s) => {
-                        gk_str_new(self.heap, s.as_ptr() as *const c_char, s.len())
-                    }
-                };
-                gk_code_add_const(gc, v);
-            }
-            for name in &code.names {
-                let cs = CString::new(name.as_str()).expect("name has no interior NUL");
-                gk_code_add_name(gc, cs.as_ptr());
-            }
-            for instr in &code.ops {
-                gk_code_emit(gc, instr.op as u8, instr.arg as u8);
-            }
-            gk_code_set_nlocals(gc, code.nlocals);
+            let gc = setae_code_new();
+            self.lower(gc, code);
+            self.codes.push(gc);
 
-            let result = gk_vm_run(self.vm, gc);
-            let error = gk_vm_error(self.vm) != 0;
+            let result = setae_vm_run(self.vm, gc);
+            let error = setae_vm_error(self.vm) != 0;
+            let message = if error {
+                CStr::from_ptr(setae_vm_error_msg(self.vm))
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                String::new()
+            };
 
             let mut len = 0usize;
-            let ptr = gk_vm_output(self.vm, &mut len);
+            let ptr = setae_vm_output(self.vm, &mut len);
             let output = if ptr.is_null() || len == 0 {
                 String::new()
             } else {
@@ -208,11 +223,43 @@ impl Vm {
                 String::from_utf8_lossy(bytes).into_owned()
             };
 
-            gk_code_free(gc);
             Run {
                 result,
                 output,
                 error,
+                message,
+            }
+        }
+    }
+
+    unsafe fn lower(&mut self, gc: *mut SetaeCode, code: &bytecode::Code) {
+        unsafe {
+            for c in &code.consts {
+                let v = match c {
+                    bytecode::Const::None => setae_none(),
+                    bytecode::Const::Bool(b) => setae_bool(*b as c_int),
+                    bytecode::Const::Int(i) => setae_from_int(*i),
+                    bytecode::Const::Float(f) => setae_from_float(*f),
+                    bytecode::Const::Str(s) => {
+                        setae_str_new(self.heap, s.as_ptr() as *const c_char, s.len())
+                    }
+                };
+                setae_code_add_const(gc, v);
+            }
+            for name in &code.names {
+                let cs = CString::new(name.as_str()).expect("name has no interior NUL");
+                setae_code_add_name(gc, cs.as_ptr());
+            }
+            for instr in &code.ops {
+                setae_code_emit(gc, instr.op as u8, instr.arg as u8);
+            }
+            setae_code_set_nlocals(gc, code.nlocals);
+            setae_code_set_nparams(gc, code.nparams);
+            let cs = CString::new(code.name.as_str()).expect("name has no interior NUL");
+            setae_code_set_name(gc, cs.as_ptr());
+            for child in &code.codes {
+                let cgc = setae_code_new_child(gc);
+                self.lower(cgc, child);
             }
         }
     }
@@ -227,8 +274,11 @@ impl Default for Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         unsafe {
-            gk_vm_destroy(self.vm);
-            gk_heap_destroy(self.heap);
+            for gc in &self.codes {
+                setae_code_free(*gc);
+            }
+            setae_vm_destroy(self.vm);
+            setae_heap_destroy(self.heap);
         }
     }
 }
@@ -240,57 +290,57 @@ mod vm_tests {
     #[test]
     fn runs_print_hello_world() {
         unsafe {
-            let heap = gk_heap_new();
-            let vm = gk_vm_new(heap);
-            gk_vm_register_builtins(vm);
+            let heap = setae_heap_new();
+            let vm = setae_vm_new(heap);
+            setae_vm_register_builtins(vm);
 
-            let code = gk_code_new();
+            let code = setae_code_new();
             let msg = "hello world";
-            let s = gk_str_new(heap, msg.as_ptr() as *const c_char, msg.len());
-            let c0 = gk_code_add_const(code, s);
-            let name = gk_code_add_name(code, c"print".as_ptr());
+            let s = setae_str_new(heap, msg.as_ptr() as *const c_char, msg.len());
+            let c0 = setae_code_add_const(code, s);
+            let name = setae_code_add_name(code, c"print".as_ptr());
 
-            gk_code_emit(code, OP_LOAD_NAME, name as u8);
-            gk_code_emit(code, OP_LOAD_CONST, c0 as u8);
-            gk_code_emit(code, OP_CALL, 1);
-            gk_code_emit(code, OP_POP_TOP, 0);
+            setae_code_emit(code, OP_LOAD_NAME, name as u8);
+            setae_code_emit(code, OP_LOAD_CONST, c0 as u8);
+            setae_code_emit(code, OP_CALL, 1);
+            setae_code_emit(code, OP_POP_TOP, 0);
 
-            gk_vm_run(vm, code);
-            assert_eq!(gk_vm_error(vm), 0);
+            setae_vm_run(vm, code);
+            assert_eq!(setae_vm_error(vm), 0);
 
             let mut len = 0usize;
-            let ptr = gk_vm_output(vm, &mut len);
+            let ptr = setae_vm_output(vm, &mut len);
             let out = std::slice::from_raw_parts(ptr as *const u8, len);
             assert_eq!(out, b"hello world\n");
 
-            gk_code_free(code);
-            gk_vm_destroy(vm);
-            gk_heap_destroy(heap);
+            setae_code_free(code);
+            setae_vm_destroy(vm);
+            setae_heap_destroy(heap);
         }
     }
 
     #[test]
     fn evaluates_arithmetic() {
         unsafe {
-            let heap = gk_heap_new();
-            let vm = gk_vm_new(heap);
+            let heap = setae_heap_new();
+            let vm = setae_vm_new(heap);
 
-            let code = gk_code_new();
-            let a = gk_code_add_const(code, gk_from_int(2));
-            let b = gk_code_add_const(code, gk_from_int(3));
-            gk_code_emit(code, OP_LOAD_CONST, a as u8);
-            gk_code_emit(code, OP_LOAD_CONST, b as u8);
-            gk_code_emit(code, OP_BINARY_OP, BIN_MUL);
-            gk_code_emit(code, OP_RETURN, 0);
+            let code = setae_code_new();
+            let a = setae_code_add_const(code, setae_from_int(2));
+            let b = setae_code_add_const(code, setae_from_int(3));
+            setae_code_emit(code, OP_LOAD_CONST, a as u8);
+            setae_code_emit(code, OP_LOAD_CONST, b as u8);
+            setae_code_emit(code, OP_BINARY_OP, BIN_MUL);
+            setae_code_emit(code, OP_RETURN, 0);
 
-            let r = gk_vm_run(vm, code);
-            assert_eq!(gk_vm_error(vm), 0);
-            assert_eq!(gk_is_int(r), 1);
-            assert_eq!(gk_to_int(r), 6);
+            let r = setae_vm_run(vm, code);
+            assert_eq!(setae_vm_error(vm), 0);
+            assert_eq!(setae_is_int(r), 1);
+            assert_eq!(setae_to_int(r), 6);
 
-            gk_code_free(code);
-            gk_vm_destroy(vm);
-            gk_heap_destroy(heap);
+            setae_code_free(code);
+            setae_vm_destroy(vm);
+            setae_heap_destroy(heap);
         }
     }
 }

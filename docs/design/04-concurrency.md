@@ -1,7 +1,7 @@
 # Concurrency
 
-No GIL. Parallelism comes from running many isolates at once, not from threads
-sharing objects.
+No GIL and no shared-memory threads. Parallelism comes from running many
+isolates at once.
 
 ## Isolates
 

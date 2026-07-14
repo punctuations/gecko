@@ -8,15 +8,17 @@ project('gecko-runtime', 'c',
 
 inc = include_directories('include')
 
+windows = host_machine.system() == 'windows'
+
 gecko_runtime = static_library('gecko_runtime',
   sources: files(
     'src/value.c',
     'src/heap.c',
     'src/code.c',
-    'src/vm.c',
+    'src/setae.c',
     'src/builtins.c',
   ),
   include_directories: inc,
-  name_prefix: '',
-  name_suffix: 'lib',
+  name_prefix: windows ? '' : 'lib',
+  name_suffix: windows ? 'lib' : 'a',
   install: false)

@@ -1,6 +1,7 @@
 # Roadmap
 
-An order of work, not a set of dates. Each milestone assumes the ones before it.
+The milestones are ordered and carry no dates. Each one assumes the ones before
+it.
 
 - Phase 0, specifications. Object model, bytecode format, GC, concurrency model,
   embedding API.

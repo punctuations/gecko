@@ -3,7 +3,7 @@
 //! Only the subset the VM can run is lowered. Anything else is rejected here
 //! rather than compiled into something wrong.
 
-use ast::{BinOp, BoolOp, CmpOp, Expr, Module, Stmt, UnOp};
+use ast::{BinOp, BoolOp, CmpOp, Expr, Module, Param, Stmt, UnOp};
 use bytecode::{Code, Const, Instr, Op};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,27 +13,85 @@ pub struct CompileError {
 
 pub fn compile(module: &Module) -> Result<Code, CompileError> {
     let mut c = Compiler {
-        code: Code {
-            consts: Vec::new(),
-            names: Vec::new(),
-            ops: Vec::new(),
-            nlocals: 0,
-        },
+        code: new_code("<module>", 0, 0),
+        scope: None,
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
     }
-    Ok(c.code)
+    let mut code = c.code;
+    assemble(&mut code);
+    Ok(code)
+}
+
+fn new_code(name: &str, nlocals: u32, nparams: u32) -> Code {
+    Code {
+        name: name.to_string(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        ops: Vec::new(),
+        nlocals,
+        nparams,
+        codes: Vec::new(),
+    }
+}
+
+struct Scope {
+    locals: Vec<String>,
+    enclosing: Vec<String>,
 }
 
 struct Compiler {
     code: Code,
+    scope: Option<Scope>,
 }
 
 fn unsupported<T>(what: &str) -> Result<T, CompileError> {
     Err(CompileError {
         message: format!("{what} not supported yet"),
     })
+}
+
+fn add_unique(out: &mut Vec<String>, name: &str) {
+    if !out.iter().any(|n| n == name) {
+        out.push(name.to_string());
+    }
+}
+
+fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Assign { targets, .. } => {
+                for t in targets {
+                    if let Expr::Name(n) = t {
+                        add_unique(out, n);
+                    }
+                }
+            }
+            Stmt::AugAssign {
+                target: Expr::Name(n),
+                ..
+            } => add_unique(out, n),
+            Stmt::For {
+                target,
+                body,
+                orelse,
+                ..
+            } => {
+                if let Expr::Name(n) = target {
+                    add_unique(out, n);
+                }
+                collect_assigned(body, out);
+                collect_assigned(orelse, out);
+            }
+            Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
+                collect_assigned(body, out);
+                collect_assigned(orelse, out);
+            }
+            Stmt::FunctionDef { name, .. } => add_unique(out, name),
+            _ => {}
+        }
+    }
 }
 
 impl Compiler {
@@ -78,6 +136,66 @@ impl Compiler {
         self.code.ops.len() as u32
     }
 
+    fn load(&mut self, name: &str) -> Result<(), CompileError> {
+        if let Some(scope) = &self.scope {
+            if let Some(i) = scope.locals.iter().position(|n| n == name) {
+                self.emit(Op::LoadLocal, i as u32);
+                return Ok(());
+            }
+            if scope.enclosing.iter().any(|n| n == name) {
+                return unsupported("closures");
+            }
+        }
+        let i = self.name_idx(name);
+        self.emit(Op::LoadName, i);
+        Ok(())
+    }
+
+    fn store(&mut self, name: &str) {
+        if let Some(scope) = &self.scope {
+            if let Some(i) = scope.locals.iter().position(|n| n == name) {
+                self.emit(Op::StoreLocal, i as u32);
+                return;
+            }
+        }
+        let i = self.name_idx(name);
+        self.emit(Op::StoreName, i);
+    }
+
+    fn funcdef(&mut self, name: &str, params: &[Param], body: &[Stmt]) -> Result<(), CompileError> {
+        if params.iter().any(|p| p.default.is_some()) {
+            return unsupported("parameter defaults");
+        }
+        let mut locals = Vec::new();
+        for p in params {
+            if locals.iter().any(|n| n == &p.name) {
+                return Err(CompileError {
+                    message: format!("duplicate parameter '{}'", p.name),
+                });
+            }
+            locals.push(p.name.clone());
+        }
+        collect_assigned(body, &mut locals);
+        let enclosing = match &self.scope {
+            Some(s) => s.locals.iter().chain(s.enclosing.iter()).cloned().collect(),
+            None => Vec::new(),
+        };
+        let mut sub = Compiler {
+            code: new_code(name, locals.len() as u32, params.len() as u32),
+            scope: Some(Scope { locals, enclosing }),
+        };
+        for s in body {
+            sub.stmt(s)?;
+        }
+        sub.load_const(Const::None);
+        sub.emit(Op::Return, 0);
+        let idx = self.code.codes.len() as u32;
+        self.code.codes.push(sub.code);
+        self.emit(Op::MakeFunction, idx);
+        self.store(name);
+        Ok(())
+    }
+
     fn stmt(&mut self, s: &Stmt) -> Result<(), CompileError> {
         match s {
             Stmt::Expr(e) => {
@@ -89,12 +207,30 @@ impl Compiler {
                 if targets.len() != 1 {
                     return unsupported("chained assignment");
                 }
-                let Expr::Name(name) = &targets[0] else {
-                    return unsupported("this assignment target");
+                match &targets[0] {
+                    Expr::Name(name) => {
+                        self.expr(value)?;
+                        self.store(name);
+                    }
+                    Expr::Subscript { value: obj, index } => {
+                        self.expr(value)?;
+                        self.expr(obj)?;
+                        self.expr(index)?;
+                        self.emit(Op::StoreSubscr, 0);
+                    }
+                    _ => return unsupported("this assignment target"),
+                }
+                Ok(())
+            }
+            Stmt::AugAssign { target, op, value } => {
+                let Expr::Name(name) = target else {
+                    return unsupported("this augmented assignment target");
                 };
+                self.load(name)?;
                 self.expr(value)?;
-                let i = self.name_idx(name);
-                self.emit(Op::StoreName, i);
+                let sel = bin_selector(*op)?;
+                self.emit(Op::BinaryOp, sel);
+                self.store(name);
                 Ok(())
             }
             Stmt::If { test, body, orelse } => {
@@ -130,10 +266,43 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Stmt::FunctionDef { .. } => unsupported("function definitions"),
-            Stmt::Return(_) => unsupported("return outside a function"),
-            Stmt::For { .. } => unsupported("for loops"),
-            Stmt::AugAssign { .. } => unsupported("augmented assignment"),
+            Stmt::For {
+                target,
+                iter,
+                body,
+                orelse,
+            } => {
+                let Expr::Name(name) = target else {
+                    return unsupported("this for target");
+                };
+                self.expr(iter)?;
+                self.emit(Op::GetIter, 0);
+                let start = self.here();
+                let exit = self.emit_jump(Op::ForIter);
+                self.store(name);
+                for s in body {
+                    self.stmt(s)?;
+                }
+                self.emit(Op::Jump, start);
+                self.patch(exit);
+                // No break yet, so the else clause always runs after the loop.
+                for s in orelse {
+                    self.stmt(s)?;
+                }
+                Ok(())
+            }
+            Stmt::FunctionDef { name, params, body } => self.funcdef(name, params, body),
+            Stmt::Return(value) => {
+                if self.scope.is_none() {
+                    return unsupported("return outside a function");
+                }
+                match value {
+                    Some(e) => self.expr(e)?,
+                    None => self.load_const(Const::None),
+                }
+                self.emit(Op::Return, 0);
+                Ok(())
+            }
             Stmt::Pass => Ok(()),
             Stmt::Break | Stmt::Continue => unsupported("break and continue"),
         }
@@ -154,9 +323,24 @@ impl Compiler {
                 }
                 self.load_const(Const::Int(n as i32));
             }
-            Expr::Name(name) => {
-                let i = self.name_idx(name);
-                self.emit(Op::LoadName, i);
+            Expr::Name(name) => self.load(name)?,
+            Expr::List(elts) => {
+                for e in elts {
+                    self.expr(e)?;
+                }
+                self.emit(Op::BuildList, elts.len() as u32);
+            }
+            Expr::Dict(pairs) => {
+                for (k, v) in pairs {
+                    self.expr(k)?;
+                    self.expr(v)?;
+                }
+                self.emit(Op::BuildDict, pairs.len() as u32);
+            }
+            Expr::Subscript { value, index } => {
+                self.expr(value)?;
+                self.expr(index)?;
+                self.emit(Op::Subscr, 0);
             }
             Expr::Call {
                 func,
@@ -166,20 +350,26 @@ impl Compiler {
                 if !keywords.is_empty() {
                     return unsupported("keyword arguments");
                 }
-                self.expr(func)?;
-                for a in args {
-                    self.expr(a)?;
+                if args.len() > 255 {
+                    return unsupported("more than 255 arguments");
                 }
-                self.emit(Op::Call, args.len() as u32);
+                if let Expr::Attribute { value, attr } = func.as_ref() {
+                    self.expr(value)?;
+                    for a in args {
+                        self.expr(a)?;
+                    }
+                    let name = self.name_idx(attr);
+                    self.emit(Op::CallMethod, (name << 8) | args.len() as u32);
+                } else {
+                    self.expr(func)?;
+                    for a in args {
+                        self.expr(a)?;
+                    }
+                    self.emit(Op::Call, args.len() as u32);
+                }
             }
             Expr::Bin { op, left, right } => {
-                let sel = match op {
-                    BinOp::Add => bytecode::BIN_ADD,
-                    BinOp::Sub => bytecode::BIN_SUB,
-                    BinOp::Mul => bytecode::BIN_MUL,
-                    BinOp::Div => bytecode::BIN_DIV,
-                    _ => return unsupported("this operator"),
-                };
+                let sel = bin_selector(*op)?;
                 self.expr(left)?;
                 self.expr(right)?;
                 self.emit(Op::BinaryOp, sel);
@@ -199,6 +389,8 @@ impl Compiler {
                     CmpOp::LtE => bytecode::CMP_LE,
                     CmpOp::Gt => bytecode::CMP_GT,
                     CmpOp::GtE => bytecode::CMP_GE,
+                    CmpOp::In => bytecode::CMP_IN,
+                    CmpOp::NotIn => bytecode::CMP_NOT_IN,
                     _ => return unsupported("this comparison"),
                 };
                 self.expr(left)?;
@@ -229,9 +421,98 @@ impl Compiler {
                     UnOp::Invert => return unsupported("the ~ operator"),
                 }
             }
-            _ => return unsupported("this expression"),
+            Expr::Attribute { .. } => return unsupported("attribute access"),
+            Expr::Tuple(_) => return unsupported("tuples"),
         }
         Ok(())
+    }
+}
+
+fn bin_selector(op: BinOp) -> Result<u32, CompileError> {
+    Ok(match op {
+        BinOp::Add => bytecode::BIN_ADD,
+        BinOp::Sub => bytecode::BIN_SUB,
+        BinOp::Mul => bytecode::BIN_MUL,
+        BinOp::Div => bytecode::BIN_DIV,
+        BinOp::Mod => bytecode::BIN_MOD,
+        BinOp::FloorDiv => bytecode::BIN_FLOORDIV,
+        _ => unsupported("this operator")?,
+    })
+}
+
+fn is_jump(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Jump
+            | Op::PopJumpIfFalse
+            | Op::PopJumpIfTrue
+            | Op::JumpIfFalseOrPop
+            | Op::JumpIfTrueOrPop
+            | Op::ForIter
+    )
+}
+
+fn ext_count(arg: u32) -> u32 {
+    match arg {
+        0..0x100 => 0,
+        0x100..0x10000 => 1,
+        0x10000..0x1000000 => 2,
+        _ => 3,
+    }
+}
+
+fn assemble(code: &mut Code) {
+    for child in &mut code.codes {
+        assemble(child);
+    }
+    let ops = std::mem::take(&mut code.ops);
+    let n = ops.len();
+    let mut width = vec![1u32; n];
+    let mut offsets = vec![0u32; n + 1];
+    loop {
+        let mut total = 0u32;
+        for i in 0..n {
+            offsets[i] = total;
+            total += width[i];
+        }
+        offsets[n] = total;
+        let mut changed = false;
+        for (instr, w) in ops.iter().zip(width.iter_mut()) {
+            let arg = final_arg(instr, &offsets);
+            let needed = 1 + ext_count(arg);
+            if needed > *w {
+                *w = needed;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    for instr in &ops {
+        let arg = final_arg(instr, &offsets);
+        let mut shift = ext_count(arg) * 8;
+        while shift > 0 {
+            out.push(Instr {
+                op: Op::ExtendedArg,
+                arg: (arg >> shift) & 0xff,
+            });
+            shift -= 8;
+        }
+        out.push(Instr {
+            op: instr.op,
+            arg: arg & 0xff,
+        });
+    }
+    code.ops = out;
+}
+
+fn final_arg(i: &Instr, offsets: &[u32]) -> u32 {
+    if is_jump(i.op) {
+        offsets[i.arg as usize]
+    } else {
+        i.arg
     }
 }
 
@@ -242,6 +523,10 @@ mod tests {
 
     fn code(src: &str) -> bytecode::Code {
         compile(&parser::parse(src).unwrap()).unwrap()
+    }
+
+    fn err(src: &str) -> String {
+        compile(&parser::parse(src).unwrap()).unwrap_err().message
     }
 
     #[test]
@@ -276,8 +561,8 @@ mod tests {
 
     #[test]
     fn rejects_unsupported() {
-        let err = compile(&parser::parse("def f():\n    pass\n").unwrap()).unwrap_err();
-        assert!(err.message.contains("function definitions"));
+        assert!(err("x, y = 1, 2\n").contains("this assignment target"));
+        assert!(err("break\n").contains("break and continue"));
     }
 
     #[test]
@@ -293,5 +578,111 @@ mod tests {
         // The trailing unconditional jump targets the loop test at the top.
         let back = c.ops.iter().rev().find(|i| i.op == Op::Jump).unwrap();
         assert_eq!(back.arg, 0);
+    }
+
+    #[test]
+    fn function_lowers_to_child_code() {
+        let c = code("def add(a, b):\n    return a + b\n");
+        assert!(c.ops.iter().any(|i| i.op == Op::MakeFunction));
+        assert!(c.ops.iter().any(|i| i.op == Op::StoreName));
+        assert_eq!(c.codes.len(), 1);
+        let f = &c.codes[0];
+        assert_eq!(f.name, "add");
+        assert_eq!(f.nparams, 2);
+        assert_eq!(f.nlocals, 2);
+        let ops: Vec<Op> = f.ops.iter().map(|i| i.op).collect();
+        assert_eq!(
+            ops,
+            vec![
+                Op::LoadLocal,
+                Op::LoadLocal,
+                Op::BinaryOp,
+                Op::Return,
+                Op::LoadConst,
+                Op::Return
+            ]
+        );
+    }
+
+    #[test]
+    fn assigned_names_become_locals() {
+        let c = code("def f(x):\n    y = x * 2\n    return y\n");
+        let f = &c.codes[0];
+        assert_eq!(f.nlocals, 2);
+        assert!(f.ops.iter().any(|i| i.op == Op::StoreLocal && i.arg == 1));
+        assert!(f.names.is_empty());
+    }
+
+    #[test]
+    fn globals_read_from_inside_functions() {
+        let c = code("def f():\n    return g()\n");
+        let f = &c.codes[0];
+        assert_eq!(f.names, vec!["g".to_string()]);
+        assert!(f.ops.iter().any(|i| i.op == Op::LoadName));
+    }
+
+    #[test]
+    fn rejects_closures() {
+        let src = "def f():\n    x = 1\n    def g():\n        return x\n    return g\n";
+        assert!(err(src).contains("closures"));
+    }
+
+    #[test]
+    fn for_emits_iteration_ops() {
+        let c = code("for i in range(3):\n    print(i)\n");
+        let ops: Vec<Op> = c.ops.iter().map(|i| i.op).collect();
+        assert!(ops.contains(&Op::GetIter));
+        assert!(ops.contains(&Op::ForIter));
+        let exit = c.ops.iter().find(|i| i.op == Op::ForIter).unwrap();
+        assert_eq!(exit.arg as usize, c.ops.len());
+    }
+
+    #[test]
+    fn containers_and_subscripts_lower() {
+        let c = code("d = {\"a\": 1}\nl = [1, 2]\nd[\"b\"] = l[0]\nprint(d[\"a\"])\n");
+        let ops: Vec<Op> = c.ops.iter().map(|i| i.op).collect();
+        assert!(ops.contains(&Op::BuildDict));
+        assert!(ops.contains(&Op::BuildList));
+        assert!(ops.contains(&Op::StoreSubscr));
+        assert!(ops.contains(&Op::Subscr));
+    }
+
+    #[test]
+    fn method_call_packs_name_and_argc() {
+        let c = code("l = []\nl.append(1)\n");
+        let at = c.ops.iter().position(|i| i.op == Op::CallMethod).unwrap();
+        let mut arg = c.ops[at].arg;
+        let mut i = at;
+        while i > 0 && c.ops[i - 1].op == Op::ExtendedArg {
+            i -= 1;
+            arg |= c.ops[i].arg << (8 * (at - i) as u32);
+        }
+        let name = &c.names[(arg >> 8) as usize];
+        assert_eq!(name, "append");
+        assert_eq!(arg & 0xff, 1);
+    }
+
+    #[test]
+    fn wide_args_get_extended_arg_prefixes() {
+        let mut src = String::new();
+        for i in 0..300 {
+            src.push_str(&format!("x = {}\n", i + 1000));
+        }
+        src.push_str("while x:\n    x = x - 1\n");
+        let c = code(&src);
+        assert!(c.ops.iter().any(|i| i.op == Op::ExtendedArg));
+        assert!(c.ops.iter().all(|i| i.arg <= 255));
+        let back = c.ops.iter().rev().find(|i| i.op == Op::Jump).unwrap();
+        assert!(back.arg <= 255);
+    }
+
+    #[test]
+    fn aug_assign_reuses_binary_op() {
+        let c = code("x = 1\nx += 2\n");
+        assert!(
+            c.ops
+                .iter()
+                .any(|i| i.op == Op::BinaryOp && i.arg == bytecode::BIN_ADD)
+        );
     }
 }

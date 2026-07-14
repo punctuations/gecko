@@ -24,8 +24,8 @@ threads, but a single instance is never shared across threads at once.
 
 ## Values across the boundary
 
-Values are NaN-boxed `u64` words, see 01-object-model.md. The host never relies
-on struct layout, it goes through accessor functions:
+Values are NaN-boxed `u64` words, see 01-object-model.md. The host goes through
+accessor functions and never depends on struct layout:
 
 - classify: is_int, is_float, is_str, is_none, and so on.
 - read: as_i64, as_f64, str_bytes, and so on.

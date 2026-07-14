@@ -24,11 +24,13 @@ A code object is a value, see 01-object-model.md, and is the unit the VM runs.
 
 Wordcode: each instruction is 1 byte of opcode plus 1 byte of argument. Fixed
 2-byte units keep decoding branch-free and cache-friendly. An argument wider
-than 8 bits needs a preceding EXTENDED_ARG to shift in the high bits. That is
-not implemented, so arguments and jump targets are capped at 255, and the
-runtime rejects code that exceeds the cap rather than truncating it.
+than 8 bits gets one or more preceding EXTENDED_ARG instructions that shift in
+the high bits. The compiler materializes them in an assembly pass: widening an
+instruction shifts every later jump target, so the pass reruns until the widths
+stop changing, then emits.
 
-Jump arguments are instruction indices, not byte offsets.
+A jump argument is an index into the 2-byte instruction units. An EXTENDED_ARG
+prefix counts as an instruction of its own.
 
 ## Instruction set
 
@@ -36,20 +38,30 @@ Implemented:
 
 - LOAD_CONST, LOAD_NAME, STORE_NAME, LOAD_LOCAL, STORE_LOCAL
 - POP_TOP
-- BINARY_OP (arg selects +, -, *, /)
-- COMPARE_OP (arg selects <, <=, ==, !=, >, >=)
+- BINARY_OP (arg selects +, -, *, /, %, //)
+- COMPARE_OP (arg selects <, <=, ==, !=, >, >=, in, not in)
 - UNARY_NEG, UNARY_NOT
 - JUMP, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE
 - JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP
 - CALL, RETURN
+- MAKE_FUNCTION (arg is a child code index)
+- BUILD_LIST, BUILD_DICT (arg is the element or pair count)
+- SUBSCR, STORE_SUBSCR
+- GET_ITER, FOR_ITER (arg is the jump target once exhausted)
+- CALL_METHOD (arg packs a name index in the high bits and the argument count
+  in the low byte)
+- EXTENDED_ARG
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.
 
-Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the remaining BINARY_OP selectors
-(//, %, **), BUILD_LIST, BUILD_TUPLE, BUILD_DICT, MAKE_FUNCTION. Attribute
-access, subscripting, and iteration opcodes arrive with the features that need
-them (v0.0.2).
+A function call runs the callee's code object in a new frame. The VM implements
+frames as C recursion with a depth cap. Falling off the end of a function
+returns None via a compiler-emitted LOAD_CONST and RETURN.
+
+Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector,
+BUILD_TUPLE. Attribute access beyond method calls arrives with classes
+(v0.0.2).
 
 ## Dispatch
 

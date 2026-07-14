@@ -37,8 +37,9 @@ ARCHITECTURE.md.
 
 - Match the surrounding code in naming, formatting, and idiom.
 - Run `cargo fmt` and `cargo clippy` before opening a change.
-- Comment only where the code cannot be read on its own.
-- ASCII only, in source, comments, and docs.
+- Write code without comments. Let naming carry intent, and put explanations in
+  the docs or the change description.
+- ASCII only, in source and docs.
 
 ## Commits
 

@@ -15,9 +15,15 @@ fn meson(args: &[&str]) -> Result<(), String> {
             v
         }),
     ];
+    let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let mut err = "no meson launcher found".to_string();
     for (prog, a) in launchers {
-        match Command::new(&prog).args(&a).env("CC", "clang-cl").status() {
+        let mut cmd = Command::new(&prog);
+        cmd.args(&a);
+        if msvc {
+            cmd.env("CC", "clang-cl");
+        }
+        match cmd.status() {
             Ok(s) if s.success() => return Ok(()),
             Ok(s) => return Err(format!("{prog} {a:?} failed: {s}")),
             Err(e) => err = format!("{prog}: {e}"),

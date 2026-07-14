@@ -4,9 +4,9 @@ Gecko is a Python runtime aimed at short-lived scripts, embedded scripting, edge
 and serverless code, CLI tools, and data processing. These are cases where
 CPython spends a lot of its time on startup and interpreter overhead.
 
-It implements Python rather than extending it. A Gecko program is a valid Python
-program and still runs on CPython, so the usual tools, meaning LSPs, formatters,
-linters, and type checkers, go on working.
+Gecko implements standard Python, with no language extensions. A Gecko program
+is a valid Python program and still runs on CPython, so the usual tools, meaning
+LSPs, formatters, linters, and type checkers, go on working.
 
 ## Goals
 
@@ -25,19 +25,23 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md).
 
 ## Status
 
-The project is early. The pipeline runs end to end on a subset of Python,
-covering literals, names, assignment at module level, arithmetic, comparisons,
-`and`, `or`, `not`, `if`, `elif`, `else`, `while`, and calls to builtins such as
-`print`. Anything outside that subset is rejected at compile time. Functions,
-containers, and `for` do not run yet. There is no GC, so the heap frees
-everything at once when it is destroyed.
+The project is early. The pipeline runs end to end on a subset of Python:
+literals, names, assignment (including `x[i] = v` and augmented forms),
+arithmetic with `%` and `//`, comparisons and membership, `and`, `or`, `not`,
+`if`, `elif`, `else`, `while`, `for`, functions with positional parameters and
+recursion, lists, dicts, subscripting, iteration over lists, dicts, strings,
+and ranges, the methods `append`, `pop`, `get`, `keys`, and `values`, and the
+builtins `print`, `len`, and `range`. Anything outside that subset (closures,
+defaults, keyword arguments, tuples, `break`, `continue`, classes, exceptions)
+is rejected at compile time. There is no GC, so the heap frees everything at
+once when it is destroyed.
 
 ```sh
 cargo run -p gecko -- -c 'print("hello world")'
 # hello world
 
-cargo run -p gecko -- examples/sum.py
-# sum: 55
+cargo run -p gecko -- examples/fib.py
+# the first ten Fibonacci numbers
 ```
 
 ## License
