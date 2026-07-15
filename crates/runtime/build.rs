@@ -2,9 +2,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-// Meson is often installed without ending up on PATH, so fall back to running
-// it as a module. clang-cl is forced so the objects match the MSVC ABI that the
-// Rust msvc target links against.
 fn meson(args: &[&str]) -> Result<(), String> {
     let python = env::var("GECKO_PYTHON").unwrap_or_else(|_| "python".into());
     let launchers: [(String, Vec<String>); 2] = [

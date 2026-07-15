@@ -1,9 +1,6 @@
-//! FFI bindings to the Setae C runtime in native/.
-
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
-/// NaN-boxed value word. See docs/design/01-object-model.md.
 pub type SetaeValue = u64;
 
 pub enum SetaeHeap {}
@@ -145,7 +142,6 @@ mod tests {
         assert_eq!(unsafe { setae_to_bool(f) }, 0);
         assert_ne!(n, t);
         assert_ne!(t, f);
-        // None is not a bool, a bool is not None.
         assert_eq!(unsafe { setae_is_bool(n) }, 0);
         assert_eq!(unsafe { setae_is_none(t) }, 0);
     }
@@ -162,15 +158,12 @@ mod tests {
     }
 }
 
-/// A Setae runtime instance. One isolate, meaning a heap and a VM, owning its
-/// objects.
 pub struct Vm {
     heap: *mut SetaeHeap,
     vm: *mut SetaeVm,
     codes: Vec<*mut SetaeCode>,
 }
 
-/// Result of running a code object.
 pub struct Run {
     pub result: SetaeValue,
     pub output: String,
@@ -197,8 +190,6 @@ impl Vm {
     }
 
     pub fn run(&mut self, code: &bytecode::Code) -> Run {
-        // The compiler assembles EXTENDED_ARG prefixes, so every argument fits
-        // one byte. Reject anything wider rather than truncate it.
         if !args_fit(code) {
             return Run {
                 result: unsafe { setae_none() },

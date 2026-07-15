@@ -396,8 +396,6 @@ impl Parser {
         }
     }
 
-    /// A for-loop or comprehension target: parsed without comparison operators so
-    /// the following `in` is not consumed.
     fn target_list(&mut self) -> Result<Expr, ParseError> {
         let first = self.postfix()?;
         if self.at_op(Op::Comma) {

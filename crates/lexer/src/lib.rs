@@ -39,7 +39,6 @@ mod tests {
 
     #[test]
     fn trailing_newline_is_synthesized() {
-        // No newline at end of input still closes the logical line.
         assert_eq!(kinds("x"), vec![K::Name("x".into()), K::Newline, K::Eof]);
     }
 
@@ -99,7 +98,6 @@ mod tests {
 
     #[test]
     fn brackets_join_lines_implicitly() {
-        // A newline inside parentheses does not end the logical line.
         let k = kinds("f(\n    1,\n    2,\n)\n");
         assert!(!k.contains(&K::Indent), "no indent inside brackets");
         assert_eq!(k.iter().filter(|t| **t == K::Newline).count(), 1);

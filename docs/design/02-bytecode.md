@@ -90,8 +90,12 @@ that table dense.
 
 ## Serialization
 
-v0.0.1 keeps code objects in memory only. An on-disk cache format, compiled
-`.gecko` modules, waits for the packaging phase in v0.0.3.
+Code objects serialize to a small length-prefixed binary format with a
+versioned magic. `gecko build` uses it to freeze a program: the serialized
+module is appended behind a trailer to a copy of gecko-runner, a stub binary
+holding only the VM and the bytecode reader, and the stub checks its own tail
+at startup. An on-disk cache format for imported modules waits for the
+packaging phase in v0.0.3.
 
 ## Open
 

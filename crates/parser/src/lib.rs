@@ -44,7 +44,6 @@ mod tests {
 
     #[test]
     fn precedence_mul_over_add() {
-        // 1 + 2 * 3 parses as 1 + (2 * 3).
         let s = one("1 + 2 * 3\n");
         let Stmt::Expr(Expr::Bin {
             op: BinOp::Add,
@@ -61,7 +60,6 @@ mod tests {
 
     #[test]
     fn power_is_right_associative() {
-        // 2 ** 3 ** 2 parses as 2 ** (3 ** 2).
         let s = one("2 ** 3 ** 2\n");
         let Stmt::Expr(Expr::Bin {
             op: BinOp::Pow,
@@ -101,7 +99,6 @@ mod tests {
         let Stmt::If { orelse, .. } = s else {
             panic!("{s:?}")
         };
-        // The elif becomes a nested If in the else branch.
         assert!(matches!(orelse.as_slice(), [Stmt::If { .. }]));
     }
 

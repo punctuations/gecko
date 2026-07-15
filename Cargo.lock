@@ -23,6 +23,7 @@ dependencies = [
 name = "gecko"
 version = "0.0.1"
 dependencies = [
+ "bytecode",
  "compiler",
  "parser",
  "runtime",
@@ -38,6 +39,14 @@ version = "0.0.1"
 dependencies = [
  "ast",
  "lexer",
+]
+
+[[package]]
+name = "runner"
+version = "0.0.1"
+dependencies = [
+ "bytecode",
+ "runtime",
 ]
 
 [[package]]

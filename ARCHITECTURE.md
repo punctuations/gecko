@@ -42,6 +42,7 @@ crates/            Rust workspace (frontend and tooling)
   parser/          tokens to AST
   bytecode/        code objects and opcodes, shared by compiler and runtime
   compiler/        AST to bytecode
+  runner/          the gecko-runner stub that frozen programs run on
   runtime/         safe API and FFI bindings over the C runtime
                    later, ssa and pkg
 native/            C runtime, holding Setae (the VM), GC, scheduler, actors

@@ -1,4 +1,3 @@
-/// Byte range in the source, half-open [start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: u32,
@@ -19,22 +18,12 @@ pub struct Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    /// Integer literal: digits with underscores removed, plus its radix.
-    Int {
-        digits: String,
-        radix: u32,
-    },
-    /// Float literal, already parsed.
+    Int { digits: String, radix: u32 },
     Float(f64),
-    /// String literal contents after escape processing.
-    Str {
-        value: String,
-        prefix: StrPrefix,
-    },
+    Str { value: String, prefix: StrPrefix },
     Name(String),
     Keyword(Keyword),
     Op(Op),
-    /// End of a logical line.
     Newline,
     Indent,
     Dedent,
@@ -131,7 +120,6 @@ impl Keyword {
     }
 }
 
-/// Operators and delimiters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Plus,

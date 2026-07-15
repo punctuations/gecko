@@ -7,6 +7,7 @@ members = [
     "crates/gecko",
     "crates/lexer",
     "crates/parser",
+    "crates/runner",
     "crates/runtime",
 ]
 
@@ -18,3 +19,10 @@ repository = "https://github.com/mattt/gecko"
 rust-version = "1.85"
 
 [workspace.dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

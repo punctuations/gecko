@@ -47,6 +47,24 @@ cargo run -p gecko -- examples/fib.py
 # the first ten Fibonacci numbers
 ```
 
+## Building a binary
+
+`gecko build` freezes a program into a standalone executable. The compiled
+bytecode is appended to a copy of `gecko-runner`, a stub holding only the VM
+and the bytecode reader, so the result starts without parsing or compiling
+anything and weighs about 320 KB plus its bytecode.
+
+```sh
+cargo build --release
+./target/release/gecko build examples/fib.py -o fib
+./fib
+```
+
+gecko looks for the release runner next to itself, then in the cargo target
+layout, so freezing from a debug gecko still embeds the small release runner.
+`gecko build --debug` embeds a debug runtime instead, for debugging the
+runtime itself.
+
 ## License
 
 MIT.

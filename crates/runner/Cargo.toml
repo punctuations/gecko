@@ -1,19 +1,17 @@
 [package]
-name = "gecko"
+name = "runner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Command-line entrypoint for the Gecko Python runtime."
+description = "Minimal runtime stub that gecko build embeds programs into."
 publish = false
 
 [[bin]]
-name = "gecko"
+name = "gecko-runner"
 path = "src/main.rs"
 
 [dependencies]
 bytecode = { path = "../bytecode" }
-compiler = { path = "../compiler" }
-parser = { path = "../parser" }
 runtime = { path = "../runtime" }

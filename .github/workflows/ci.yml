@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install meson and ninja
+        run: pip3 install --break-system-packages meson ninja || pip3 install meson ninja
+
+      - name: rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - name: format
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: tests
+        run: cargo test
+
+      - name: examples match cpython
+        run: |
+          cargo build -q
+          fail=0
+          for f in examples/*.py; do
+            g=$(./target/debug/gecko "$f" 2>&1)
+            p=$(python3 "$f" 2>&1)
+            if [ "$g" = "$p" ]; then
+              echo "ok   $f"
+            else
+              echo "diff $f"
+              echo "--- gecko"; echo "$g"
+              echo "--- python"; echo "$p"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: freeze a binary and run it
+        run: |
+          cargo build --release -q
+          ./target/release/gecko build examples/wordstats.py -o wordstats
+          ./wordstats
+          test "$(./wordstats)" = "$(python3 examples/wordstats.py)"

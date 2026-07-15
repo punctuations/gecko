@@ -1,8 +1,3 @@
-//! Lowers the AST to Setae bytecode.
-//!
-//! Only the subset the VM can run is lowered. Anything else is rejected here
-//! rather than compiled into something wrong.
-
 use ast::{BinOp, BoolOp, CmpOp, Expr, Module, Param, Stmt, UnOp};
 use bytecode::{Code, Const, Instr, Op};
 
@@ -642,14 +637,11 @@ impl Compiler {
         self.emit(Op::LoadConst, i);
     }
 
-    /// Emit a jump with a placeholder target, and return its index so a later
-    /// patch can fill the target in.
     fn emit_jump(&mut self, op: Op) -> usize {
         self.code.ops.push(Instr { op, arg: 0 });
         self.code.ops.len() - 1
     }
 
-    /// Point a previously emitted jump at the current position.
     fn patch(&mut self, idx: usize) {
         self.code.ops[idx].arg = self.code.ops.len() as u32;
     }
@@ -795,7 +787,6 @@ impl Compiler {
                 let done = self.loops.pop().unwrap();
                 self.emit(Op::Jump, start);
                 self.patch(to_orelse);
-                // A break skips the else clause.
                 for s in orelse {
                     self.stmt(s)?;
                 }
@@ -826,7 +817,6 @@ impl Compiler {
                 let done = self.loops.pop().unwrap();
                 self.emit(Op::Jump, start);
                 self.patch(exit);
-                // A break skips the else clause.
                 for s in orelse {
                     self.stmt(s)?;
                 }
@@ -1299,7 +1289,6 @@ mod tests {
     #[test]
     fn while_jumps_backward() {
         let c = code("while 1:\n    print(1)\n");
-        // The trailing unconditional jump targets the loop test at the top.
         let back = c.ops.iter().rev().find(|i| i.op == Op::Jump).unwrap();
         assert_eq!(back.arg, 0);
     }

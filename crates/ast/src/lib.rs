@@ -1,5 +1,3 @@
-//! AST for the Gecko Python frontend.
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub body: Vec<Stmt>,
@@ -67,7 +65,6 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    /// Integer literal: digit text (no underscores) and radix.
     Int {
         digits: String,
         radix: u32,
