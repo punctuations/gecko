@@ -1,4 +1,4 @@
-use ast::{BinOp, BoolOp, CmpOp, Expr, Keyword as KwArg, Module, Param, Stmt, UnOp};
+use ast::{BinOp, BoolOp, CmpOp, Comprehension, Expr, Keyword as KwArg, Module, Param, Stmt, UnOp};
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -679,11 +679,34 @@ impl Parser {
         }
     }
 
+    fn comprehensions(&mut self) -> Result<Vec<Comprehension>, ParseError> {
+        let mut out = Vec::new();
+        while self.eat_kw(Kw::For) {
+            let target = self.target_list()?;
+            self.expect_kw(Kw::In)?;
+            let iter = self.test()?;
+            let mut ifs = Vec::new();
+            while self.eat_kw(Kw::If) {
+                ifs.push(self.test()?);
+            }
+            out.push(Comprehension { target, iter, ifs });
+        }
+        Ok(out)
+    }
+
     fn paren_group(&mut self) -> Result<Expr, ParseError> {
         if self.eat_op(Op::RParen) {
             return Ok(Expr::Tuple(Vec::new()));
         }
         let first = self.test()?;
+        if self.at_kw(Kw::For) {
+            let generators = self.comprehensions()?;
+            self.expect_op(Op::RParen)?;
+            return Ok(Expr::GeneratorExp {
+                elt: Box::new(first),
+                generators,
+            });
+        }
         if self.at_op(Op::Comma) {
             let mut elts = vec![first];
             while self.eat_op(Op::Comma) {
@@ -701,27 +724,54 @@ impl Parser {
     }
 
     fn list_literal(&mut self) -> Result<Expr, ParseError> {
-        let mut elts = Vec::new();
-        while !self.at_op(Op::RBracket) {
-            elts.push(self.test()?);
-            if !self.eat_op(Op::Comma) {
+        if self.eat_op(Op::RBracket) {
+            return Ok(Expr::List(Vec::new()));
+        }
+        let first = self.test()?;
+        if self.at_kw(Kw::For) {
+            let generators = self.comprehensions()?;
+            self.expect_op(Op::RBracket)?;
+            return Ok(Expr::ListComp {
+                elt: Box::new(first),
+                generators,
+            });
+        }
+        let mut elts = vec![first];
+        while self.eat_op(Op::Comma) {
+            if self.at_op(Op::RBracket) {
                 break;
             }
+            elts.push(self.test()?);
         }
         self.expect_op(Op::RBracket)?;
         Ok(Expr::List(elts))
     }
 
     fn dict_literal(&mut self) -> Result<Expr, ParseError> {
-        let mut pairs = Vec::new();
-        while !self.at_op(Op::RBrace) {
+        if self.eat_op(Op::RBrace) {
+            return Ok(Expr::Dict(Vec::new()));
+        }
+        let key = self.test()?;
+        self.expect_op(Op::Colon)?;
+        let value = self.test()?;
+        if self.at_kw(Kw::For) {
+            let generators = self.comprehensions()?;
+            self.expect_op(Op::RBrace)?;
+            return Ok(Expr::DictComp {
+                key: Box::new(key),
+                value: Box::new(value),
+                generators,
+            });
+        }
+        let mut pairs = vec![(key, value)];
+        while self.eat_op(Op::Comma) {
+            if self.at_op(Op::RBrace) {
+                break;
+            }
             let key = self.test()?;
             self.expect_op(Op::Colon)?;
             let value = self.test()?;
             pairs.push((key, value));
-            if !self.eat_op(Op::Comma) {
-                break;
-            }
         }
         self.expect_op(Op::RBrace)?;
         Ok(Expr::Dict(pairs))

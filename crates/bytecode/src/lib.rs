@@ -62,6 +62,8 @@ pub enum Op {
     LoadClosure = 26,
     LoadDeref = 27,
     StoreDeref = 28,
+    BuildTuple = 29,
+    UnpackSequence = 30,
 }
 
 /// `BinaryOp` argument selectors, matching the C `SetaeBinOp` enum.

@@ -118,6 +118,8 @@ typedef enum {
     OP_LOAD_CLOSURE,
     OP_LOAD_DEREF,
     OP_STORE_DEREF,
+    OP_BUILD_TUPLE,
+    OP_UNPACK_SEQUENCE,
 } SetaeOp;
 
 typedef enum {

@@ -47,6 +47,12 @@ typedef struct SetaeCell {
     SetaeValue value;
 } SetaeCell;
 
+typedef struct SetaeTuple {
+    SetaeObject obj;
+    uint32_t len;
+    SetaeValue items[];
+} SetaeTuple;
+
 SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
 SetaeValue setae_dict_new(SetaeHeap *h);
@@ -56,6 +62,10 @@ SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
                           uint32_t nfree);
 SetaeValue setae_cell_new(SetaeHeap *h);
+SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n);
+
+void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
+void setae_vm_pop_tmp(SetaeVM *vm);
 
 const char *setae_type_name(SetaeValue v);
 int setae_value_eq(SetaeValue a, SetaeValue b);
@@ -94,6 +104,9 @@ struct SetaeVM {
     const SetaeCode **codes;
     size_t ncodes;
     size_t codes_cap;
+
+    SetaeValue tmp_roots[8];
+    int ntmp;
 };
 
 void setae_heap_bind(SetaeHeap *h, SetaeVM *vm);

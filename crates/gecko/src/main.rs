@@ -251,6 +251,69 @@ mod tests {
     }
 
     #[test]
+    fn tuples_pack_unpack_and_compare() {
+        let src = "t = (1, \"two\")\na, b = t\nb, a = a, b\nx, (y, z) = 1, (2, 3)\nprint(t, a, b, x, y, z)\nprint(t == (1, \"two\"), (1,) + (2, 3), len(()), 2 in (1, 2))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "(1, 'two') two 1 1 2 3\nTrue (1, 2, 3) 0 True\n"
+        );
+    }
+
+    #[test]
+    fn unpack_arity_mismatch_is_a_value_error() {
+        let f = run_source("a, b = [1, 2, 3]\n").unwrap_err();
+        assert!(f.message.contains("too many values to unpack"));
+        let f = run_source("a, b, c = (1, 2)\n").unwrap_err();
+        assert!(f.message.contains("not enough values"));
+    }
+
+    #[test]
+    fn dict_items_yields_tuples() {
+        let src =
+            "d = {\"a\": 1, \"b\": 2}\nfor k, v in d.items():\n    print(k, v)\nprint(d.items())\n";
+        assert_eq!(run_source(src).unwrap(), "a 1\nb 2\n[('a', 1), ('b', 2)]\n");
+    }
+
+    #[test]
+    fn break_skips_else_and_continue_skips_body() {
+        let src = "for i in range(9):\n    if i == 2:\n        break\nelse:\n    print(\"unseen\")\nprint(i)\nout = []\nfor j in range(5):\n    if j % 2 == 0:\n        continue\n    out.append(j)\nprint(out)\nk = 0\nwhile True:\n    k += 1\n    if k == 3:\n        break\nprint(k)\n";
+        assert_eq!(run_source(src).unwrap(), "2\n[1, 3]\n3\n");
+    }
+
+    #[test]
+    fn nested_break_binds_the_inner_loop() {
+        let src = "hits = []\nfor a in range(3):\n    for b in range(9):\n        if b > a:\n            break\n        hits.append((a, b))\nprint(hits)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[(0, 0), (1, 0), (1, 1), (2, 0), (2, 1), (2, 2)]\n"
+        );
+    }
+
+    #[test]
+    fn comprehensions_build_lists_and_dicts() {
+        let src = "print([x * x for x in range(5)])\nprint([x for x in range(10) if x % 2 == 0 if x > 3])\nprint([(a, b) for a in range(2) for b in \"xy\"])\nprint({w: len(w) for w in [\"hi\", \"there\"]})\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[0, 1, 4, 9, 16]\n[4, 6, 8]\n[(0, 'x'), (0, 'y'), (1, 'x'), (1, 'y')]\n{'hi': 2, 'there': 5}\n"
+        );
+    }
+
+    #[test]
+    fn comprehensions_close_over_enclosing_scopes() {
+        let src = "def scaled(factor):\n    return [n * factor for n in range(4)]\nprint(scaled(3))\nprint([[y + 1 for y in range(x)] for x in range(3)])\nn = 9\nprint([n for _ in range(2)])\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[0, 3, 6, 9]\n[[], [1], [1, 2]]\n[9, 9]\n"
+        );
+    }
+
+    #[test]
+    fn comprehension_variables_stay_local() {
+        let src = "x = \"kept\"\nl = [x for x in range(3)]\nprint(x, l)\n";
+        assert_eq!(run_source(src).unwrap(), "kept [0, 1, 2]\n");
+    }
+
+    #[test]
     fn unicode_strings_index_by_code_point() {
         let src = "s = \"h\u{e9}llo\"\nprint(len(s), s[1], s[-1])\nfor c in \"\u{e9}\u{fc}\":\n    print(c)\n";
         assert_eq!(run_source(src).unwrap(), "5 \u{e9} o\n\u{e9}\n\u{fc}\n");

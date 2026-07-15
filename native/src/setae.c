@@ -111,6 +111,14 @@ SetaeHeap *setae_vm_heap(SetaeVM *vm) {
     return vm->heap;
 }
 
+void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v) {
+    vm->tmp_roots[vm->ntmp++] = v;
+}
+
+void setae_vm_pop_tmp(SetaeVM *vm) {
+    vm->ntmp--;
+}
+
 static double as_number(SetaeValue v) {
     return setae_is_int(v) ? (double)setae_to_int(v) : setae_to_float(v);
 }
@@ -124,7 +132,18 @@ static SetaeValue from_i64(int64_t i) {
 
 static int hashable(SetaeValue v) {
     int t = setae_obj_type(v);
-    return t != SETAE_T_LIST && t != SETAE_T_DICT;
+    if (t == SETAE_T_LIST || t == SETAE_T_DICT) {
+        return 0;
+    }
+    if (t == SETAE_T_TUPLE) {
+        SetaeTuple *tup = setae_to_ptr(v);
+        for (uint32_t i = 0; i < tup->len; i++) {
+            if (!hashable(tup->items[i])) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 static int64_t dict_find(const SetaeDict *d, SetaeValue key) {
@@ -172,6 +191,16 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue
         SetaeValue r = setae_str_new(vm->heap, buf, na + nb);
         free(buf);
         return r;
+    }
+    if (op == BIN_ADD && setae_obj_type(a) == SETAE_T_TUPLE &&
+        setae_obj_type(b) == SETAE_T_TUPLE) {
+        SetaeTuple *ta = setae_to_ptr(a);
+        SetaeTuple *tb = setae_to_ptr(b);
+        SetaeValue rv = setae_tuple_new(vm->heap, NULL, ta->len + tb->len);
+        SetaeTuple *r = setae_to_ptr(rv);
+        memcpy(r->items, ta->items, ta->len * sizeof(SetaeValue));
+        memcpy(r->items + ta->len, tb->items, tb->len * sizeof(SetaeValue));
+        return rv;
     }
     if (op == BIN_ADD && setae_obj_type(a) == SETAE_T_LIST &&
         setae_obj_type(b) == SETAE_T_LIST) {
@@ -271,6 +300,8 @@ static int truthy(SetaeValue v) {
         return setae_str_len(v) != 0;
     case SETAE_T_LIST:
         return ((SetaeList *)setae_to_ptr(v))->len != 0;
+    case SETAE_T_TUPLE:
+        return ((SetaeTuple *)setae_to_ptr(v))->len != 0;
     case SETAE_T_DICT:
         return ((SetaeDict *)setae_to_ptr(v))->len != 0;
     case SETAE_T_RANGE:
@@ -297,6 +328,15 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
         SetaeList *l = setae_to_ptr(container);
         for (uint32_t i = 0; i < l->len; i++) {
             if (setae_value_eq(l->items[i], x)) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    case SETAE_T_TUPLE: {
+        SetaeTuple *t = setae_to_ptr(container);
+        for (uint32_t i = 0; i < t->len; i++) {
+            if (setae_value_eq(t->items[i], x)) {
                 return 1;
             }
         }
@@ -431,6 +471,23 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
         }
         return l->items[i];
     }
+    case SETAE_T_TUPLE: {
+        SetaeTuple *t = setae_to_ptr(obj);
+        if (!setae_is_int(idx)) {
+            setae_vm_failf(vm, "TypeError: tuple indices must be integers, not %s",
+                           setae_type_name(idx));
+            return setae_none();
+        }
+        int64_t i = setae_to_int(idx);
+        if (i < 0) {
+            i += t->len;
+        }
+        if (i < 0 || i >= (int64_t)t->len) {
+            setae_vm_failf(vm, "IndexError: tuple index out of range");
+            return setae_none();
+        }
+        return t->items[i];
+    }
     case SETAE_T_DICT: {
         SetaeDict *d = setae_to_ptr(obj);
         if (!hashable(idx)) {
@@ -528,6 +585,14 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
             return 0;
         }
         *out = l->items[it->index++];
+        return 1;
+    }
+    case SETAE_T_TUPLE: {
+        SetaeTuple *t = setae_to_ptr(it->target);
+        if (it->index >= t->len) {
+            return 0;
+        }
+        *out = t->items[it->index++];
         return 1;
     }
     case SETAE_T_DICT: {
@@ -656,6 +721,22 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                 return d->entries[i].value;
             }
             return nargs == 2 ? args[1] : setae_none();
+        }
+        if (strcmp(name, "items") == 0) {
+            if (nargs != 0) {
+                setae_vm_failf(vm, "TypeError: items() takes no arguments (%d given)",
+                               nargs);
+                return setae_none();
+            }
+            SetaeValue rv = setae_list_new(vm->heap, d->len);
+            setae_vm_push_tmp(vm, rv);
+            SetaeList *r = setae_to_ptr(rv);
+            for (uint32_t i = 0; i < d->len; i++) {
+                SetaeValue kv[2] = {d->entries[i].key, d->entries[i].value};
+                setae_list_push(r, setae_tuple_new(vm->heap, kv, 2));
+            }
+            setae_vm_pop_tmp(vm);
+            return rv;
         }
         if (strcmp(name, "keys") == 0 || strcmp(name, "values") == 0) {
             if (nargs != 0) {
@@ -848,6 +929,47 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             cell->value = stack[--sp];
             break;
         }
+        case OP_BUILD_TUPLE: {
+            int n = (int)arg;
+            SetaeValue tv = setae_tuple_new(vm->heap, &stack[sp - n], (uint32_t)n);
+            sp -= n;
+            stack[sp++] = tv;
+            break;
+        }
+        case OP_UNPACK_SEQUENCE: {
+            SetaeValue seq = stack[--sp];
+            const SetaeValue *items;
+            uint32_t len;
+            int t = setae_obj_type(seq);
+            if (t == SETAE_T_TUPLE) {
+                SetaeTuple *tp = setae_to_ptr(seq);
+                items = tp->items;
+                len = tp->len;
+            } else if (t == SETAE_T_LIST) {
+                SetaeList *l = setae_to_ptr(seq);
+                items = l->items;
+                len = l->len;
+            } else {
+                setae_vm_failf(vm, "TypeError: cannot unpack non-iterable %s object",
+                               setae_type_name(seq));
+                break;
+            }
+            if (len < arg) {
+                setae_vm_failf(
+                    vm, "ValueError: not enough values to unpack (expected %u, got %u)",
+                    arg, len);
+                break;
+            }
+            if (len > arg) {
+                setae_vm_failf(vm, "ValueError: too many values to unpack (expected %u)",
+                               arg);
+                break;
+            }
+            for (uint32_t i = arg; i-- > 0;) {
+                stack[sp++] = items[i];
+            }
+            break;
+        }
         case OP_BUILD_LIST: {
             int n = (int)arg;
             SetaeValue lv = setae_list_new(vm->heap, (uint32_t)n);
@@ -893,8 +1015,8 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         case OP_GET_ITER: {
             SetaeValue v = stack[sp - 1];
             int t = setae_obj_type(v);
-            if (t != SETAE_T_LIST && t != SETAE_T_DICT && t != SETAE_T_STR &&
-                t != SETAE_T_RANGE) {
+            if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
+                t != SETAE_T_STR && t != SETAE_T_RANGE) {
                 setae_vm_failf(vm, "TypeError: '%s' object is not iterable",
                                setae_type_name(v));
                 break;

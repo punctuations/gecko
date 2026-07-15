@@ -162,3 +162,13 @@ SetaeValue setae_cell_new(SetaeHeap *h) {
     SetaeCell *c = heap_alloc(h, sizeof(SetaeCell), SETAE_T_CELL);
     return setae_from_ptr(c);
 }
+
+SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {
+    SetaeTuple *t =
+        heap_alloc(h, sizeof(SetaeTuple) + n * sizeof(SetaeValue), SETAE_T_TUPLE);
+    t->len = n;
+    if (n > 0 && items != NULL) {
+        memcpy(t->items, items, n * sizeof(SetaeValue));
+    }
+    return setae_from_ptr(t);
+}

@@ -97,6 +97,26 @@ pub enum Expr {
         value: Box<Expr>,
         index: Box<Expr>,
     },
+    ListComp {
+        elt: Box<Expr>,
+        generators: Vec<Comprehension>,
+    },
+    DictComp {
+        key: Box<Expr>,
+        value: Box<Expr>,
+        generators: Vec<Comprehension>,
+    },
+    GeneratorExp {
+        elt: Box<Expr>,
+        generators: Vec<Comprehension>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comprehension {
+    pub target: Expr,
+    pub iter: Expr,
+    pub ifs: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

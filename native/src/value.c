@@ -171,6 +171,19 @@ int setae_value_eq(SetaeValue a, SetaeValue b) {
         }
         return 1;
     }
+    if (setae_obj_type(a) == SETAE_T_TUPLE && setae_obj_type(b) == SETAE_T_TUPLE) {
+        SetaeTuple *ta = setae_to_ptr(a);
+        SetaeTuple *tb = setae_to_ptr(b);
+        if (ta->len != tb->len) {
+            return 0;
+        }
+        for (uint32_t i = 0; i < ta->len; i++) {
+            if (!setae_value_eq(ta->items[i], tb->items[i])) {
+                return 0;
+            }
+        }
+        return 1;
+    }
     if (setae_obj_type(a) == SETAE_T_DICT && setae_obj_type(b) == SETAE_T_DICT) {
         SetaeDict *da = setae_to_ptr(a);
         SetaeDict *db = setae_to_ptr(b);

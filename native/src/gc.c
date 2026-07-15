@@ -25,6 +25,13 @@ static void mark(SetaeValue v) {
         }
         break;
     }
+    case SETAE_T_TUPLE: {
+        SetaeTuple *t = (SetaeTuple *)o;
+        for (uint32_t i = 0; i < t->len; i++) {
+            mark(t->items[i]);
+        }
+        break;
+    }
     case SETAE_T_ITER:
         mark(((SetaeIter *)o)->target);
         break;
@@ -68,6 +75,9 @@ void setae_gc_collect(SetaeVM *vm) {
     }
     for (size_t i = 0; i < vm->ncodes; i++) {
         mark_code(vm->codes[i]);
+    }
+    for (int i = 0; i < vm->ntmp; i++) {
+        mark(vm->tmp_roots[i]);
     }
     setae_heap_sweep(vm->heap);
 }

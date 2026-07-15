@@ -12,10 +12,14 @@ pub struct CompileError {
 }
 
 pub fn compile(module: &Module) -> Result<Code, CompileError> {
+    let mut module = module.clone();
+    let mut comps = 0u32;
+    desugar_block(&mut module.body, &mut comps);
     let mut c = Compiler {
         code: new_code("<module>", 0, 0, 0, 0),
         scope: None,
         next_child: 0,
+        loops: Vec::new(),
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
@@ -23,6 +27,197 @@ pub fn compile(module: &Module) -> Result<Code, CompileError> {
     let mut code = c.code;
     assemble(&mut code);
     Ok(code)
+}
+
+fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
+    let mut i = 0;
+    while i < stmts.len() {
+        match &mut stmts[i] {
+            Stmt::FunctionDef { body, .. } => desugar_block(body, n),
+            Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
+                desugar_block(body, n);
+                desugar_block(orelse, n);
+            }
+            Stmt::For { body, orelse, .. } => {
+                desugar_block(body, n);
+                desugar_block(orelse, n);
+            }
+            _ => {}
+        }
+        let mut hoisted = Vec::new();
+        stmt_exprs(&mut stmts[i], &mut hoisted, n);
+        let count = hoisted.len();
+        for (k, h) in hoisted.into_iter().enumerate() {
+            stmts.insert(i + k, h);
+        }
+        i += count + 1;
+    }
+}
+
+fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
+    match s {
+        Stmt::Expr(e) => desugar_expr(e, hoisted, n),
+        Stmt::Assign { targets, value } => {
+            desugar_expr(value, hoisted, n);
+            for t in targets {
+                desugar_expr(t, hoisted, n);
+            }
+        }
+        Stmt::AugAssign { target, value, .. } => {
+            desugar_expr(target, hoisted, n);
+            desugar_expr(value, hoisted, n);
+        }
+        Stmt::If { test, .. } | Stmt::While { test, .. } => desugar_expr(test, hoisted, n),
+        Stmt::For { iter, .. } => desugar_expr(iter, hoisted, n),
+        Stmt::Return(Some(e)) => desugar_expr(e, hoisted, n),
+        _ => {}
+    }
+}
+
+fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
+    match e {
+        Expr::ListComp { .. } | Expr::DictComp { .. } => {
+            let owned = std::mem::replace(e, Expr::None);
+            *e = lower_comp(owned, hoisted, n);
+        }
+        Expr::List(elts) | Expr::Tuple(elts) => {
+            for x in elts {
+                desugar_expr(x, hoisted, n);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                desugar_expr(k, hoisted, n);
+                desugar_expr(v, hoisted, n);
+            }
+        }
+        Expr::Unary { operand, .. } => desugar_expr(operand, hoisted, n),
+        Expr::Bin { left, right, .. } => {
+            desugar_expr(left, hoisted, n);
+            desugar_expr(right, hoisted, n);
+        }
+        Expr::Bool_ { values, .. } => {
+            for v in values {
+                desugar_expr(v, hoisted, n);
+            }
+        }
+        Expr::Compare {
+            left, comparators, ..
+        } => {
+            desugar_expr(left, hoisted, n);
+            for c in comparators {
+                desugar_expr(c, hoisted, n);
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            desugar_expr(func, hoisted, n);
+            for a in args {
+                desugar_expr(a, hoisted, n);
+            }
+            for k in keywords {
+                desugar_expr(&mut k.value, hoisted, n);
+            }
+        }
+        Expr::Attribute { value, .. } => desugar_expr(value, hoisted, n),
+        Expr::Subscript { value, index } => {
+            desugar_expr(value, hoisted, n);
+            desugar_expr(index, hoisted, n);
+        }
+        _ => {}
+    }
+}
+
+fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
+    *n += 1;
+    let acc = || Expr::Name(".acc".into());
+    let (fname, generators, innermost, empty_acc) = match comp {
+        Expr::ListComp { elt, generators } => {
+            let append = Stmt::Expr(Expr::Call {
+                func: Box::new(Expr::Attribute {
+                    value: Box::new(acc()),
+                    attr: "append".into(),
+                }),
+                args: vec![*elt],
+                keywords: Vec::new(),
+            });
+            (
+                format!("<listcomp{}>", *n),
+                generators,
+                append,
+                Expr::List(Vec::new()),
+            )
+        }
+        Expr::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            let setitem = Stmt::Assign {
+                targets: vec![Expr::Subscript {
+                    value: Box::new(acc()),
+                    index: key,
+                }],
+                value: *value,
+            };
+            (
+                format!("<dictcomp{}>", *n),
+                generators,
+                setitem,
+                Expr::Dict(Vec::new()),
+            )
+        }
+        _ => unreachable!("lower_comp on a non-comprehension"),
+    };
+    let mut outer_iter = Expr::None;
+    let mut cur = innermost;
+    for (gi, g) in generators.into_iter().enumerate().rev() {
+        for cond in g.ifs.into_iter().rev() {
+            cur = Stmt::If {
+                test: cond,
+                body: vec![cur],
+                orelse: Vec::new(),
+            };
+        }
+        let iter = if gi == 0 {
+            outer_iter = g.iter;
+            Expr::Name(".0".into())
+        } else {
+            g.iter
+        };
+        cur = Stmt::For {
+            target: g.target,
+            iter,
+            body: vec![cur],
+            orelse: Vec::new(),
+        };
+    }
+    let mut body = vec![
+        Stmt::Assign {
+            targets: vec![acc()],
+            value: empty_acc,
+        },
+        cur,
+        Stmt::Return(Some(acc())),
+    ];
+    desugar_block(&mut body, n);
+    hoisted.push(Stmt::FunctionDef {
+        name: fname.clone(),
+        params: vec![Param {
+            name: ".0".into(),
+            default: None,
+        }],
+        body,
+    });
+    desugar_expr(&mut outer_iter, hoisted, n);
+    Expr::Call {
+        func: Box::new(Expr::Name(fname)),
+        args: vec![outer_iter],
+        keywords: Vec::new(),
+    }
 }
 
 fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) -> Code {
@@ -70,10 +265,17 @@ fn resolve(scope: Option<&ScopeInfo>, name: &str) -> Slot {
     Slot::Global
 }
 
+struct Loop {
+    head: u32,
+    is_for: bool,
+    breaks: Vec<usize>,
+}
+
 struct Compiler {
     code: Code,
     scope: Option<ScopeInfo>,
     next_child: usize,
+    loops: Vec<Loop>,
 }
 
 fn unsupported<T>(what: &str) -> Result<T, CompileError> {
@@ -88,14 +290,24 @@ fn add_unique(out: &mut Vec<String>, name: &str) {
     }
 }
 
+fn target_names(target: &Expr, out: &mut Vec<String>) {
+    match target {
+        Expr::Name(n) => add_unique(out, n),
+        Expr::Tuple(elts) | Expr::List(elts) => {
+            for t in elts {
+                target_names(t, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
     for s in stmts {
         match s {
             Stmt::Assign { targets, .. } => {
                 for t in targets {
-                    if let Expr::Name(n) = t {
-                        add_unique(out, n);
-                    }
+                    target_names(t, out);
                 }
             }
             Stmt::AugAssign {
@@ -108,9 +320,7 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
                 orelse,
                 ..
             } => {
-                if let Expr::Name(n) = target {
-                    add_unique(out, n);
-                }
+                target_names(target, out);
                 collect_assigned(body, out);
                 collect_assigned(orelse, out);
             }
@@ -196,6 +406,7 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
             expr_reads(value, out);
             expr_reads(index, out);
         }
+        Expr::ListComp { .. } | Expr::DictComp { .. } | Expr::GeneratorExp { .. } => {}
     }
 }
 
@@ -410,6 +621,7 @@ impl Compiler {
             ),
             scope: Some(info),
             next_child: 0,
+            loops: Vec::new(),
         };
         let cells = sub.scope.as_ref().unwrap().cells.clone();
         for (ci, cname) in cells.iter().enumerate() {
@@ -451,19 +663,8 @@ impl Compiler {
                 if targets.len() != 1 {
                     return unsupported("chained assignment");
                 }
-                match &targets[0] {
-                    Expr::Name(name) => {
-                        self.expr(value)?;
-                        self.store(name);
-                    }
-                    Expr::Subscript { value: obj, index } => {
-                        self.expr(value)?;
-                        self.expr(obj)?;
-                        self.expr(index)?;
-                        self.emit(Op::StoreSubscr, 0);
-                    }
-                    _ => return unsupported("this assignment target"),
-                }
+                self.expr(value)?;
+                self.store_target(&targets[0])?;
                 Ok(())
             }
             Stmt::AugAssign { target, op, value } => {
@@ -498,15 +699,24 @@ impl Compiler {
             Stmt::While { test, body, orelse } => {
                 let start = self.here();
                 self.expr(test)?;
-                let to_end = self.emit_jump(Op::PopJumpIfFalse);
+                let to_orelse = self.emit_jump(Op::PopJumpIfFalse);
+                self.loops.push(Loop {
+                    head: start,
+                    is_for: false,
+                    breaks: Vec::new(),
+                });
                 for s in body {
                     self.stmt(s)?;
                 }
+                let done = self.loops.pop().unwrap();
                 self.emit(Op::Jump, start);
-                self.patch(to_end);
-                // No break yet, so the else clause always runs after the loop.
+                self.patch(to_orelse);
+                // A break skips the else clause.
                 for s in orelse {
                     self.stmt(s)?;
+                }
+                for b in done.breaks {
+                    self.patch(b);
                 }
                 Ok(())
             }
@@ -516,22 +726,28 @@ impl Compiler {
                 body,
                 orelse,
             } => {
-                let Expr::Name(name) = target else {
-                    return unsupported("this for target");
-                };
                 self.expr(iter)?;
                 self.emit(Op::GetIter, 0);
                 let start = self.here();
                 let exit = self.emit_jump(Op::ForIter);
-                self.store(name);
+                self.store_target(target)?;
+                self.loops.push(Loop {
+                    head: start,
+                    is_for: true,
+                    breaks: Vec::new(),
+                });
                 for s in body {
                     self.stmt(s)?;
                 }
+                let done = self.loops.pop().unwrap();
                 self.emit(Op::Jump, start);
                 self.patch(exit);
-                // No break yet, so the else clause always runs after the loop.
+                // A break skips the else clause.
                 for s in orelse {
                     self.stmt(s)?;
+                }
+                for b in done.breaks {
+                    self.patch(b);
                 }
                 Ok(())
             }
@@ -556,7 +772,52 @@ impl Compiler {
                 Ok(())
             }
             Stmt::Pass => Ok(()),
-            Stmt::Break | Stmt::Continue => unsupported("break and continue"),
+            Stmt::Break => {
+                let Some(l) = self.loops.last() else {
+                    return Err(CompileError {
+                        message: "'break' outside loop".into(),
+                    });
+                };
+                if l.is_for {
+                    self.emit(Op::PopTop, 0);
+                }
+                let j = self.emit_jump(Op::Jump);
+                self.loops.last_mut().unwrap().breaks.push(j);
+                Ok(())
+            }
+            Stmt::Continue => {
+                let Some(l) = self.loops.last() else {
+                    return Err(CompileError {
+                        message: "'continue' not properly in loop".into(),
+                    });
+                };
+                let head = l.head;
+                self.emit(Op::Jump, head);
+                Ok(())
+            }
+        }
+    }
+
+    fn store_target(&mut self, target: &Expr) -> Result<(), CompileError> {
+        match target {
+            Expr::Name(name) => {
+                self.store(name);
+                Ok(())
+            }
+            Expr::Subscript { value, index } => {
+                self.expr(value)?;
+                self.expr(index)?;
+                self.emit(Op::StoreSubscr, 0);
+                Ok(())
+            }
+            Expr::Tuple(elts) | Expr::List(elts) => {
+                self.emit(Op::UnpackSequence, elts.len() as u32);
+                for t in elts {
+                    self.store_target(t)?;
+                }
+                Ok(())
+            }
+            _ => unsupported("this assignment target"),
         }
     }
 
@@ -581,6 +842,12 @@ impl Compiler {
                     self.expr(e)?;
                 }
                 self.emit(Op::BuildList, elts.len() as u32);
+            }
+            Expr::Tuple(elts) => {
+                for e in elts {
+                    self.expr(e)?;
+                }
+                self.emit(Op::BuildTuple, elts.len() as u32);
             }
             Expr::Dict(pairs) => {
                 for (k, v) in pairs {
@@ -674,7 +941,12 @@ impl Compiler {
                 }
             }
             Expr::Attribute { .. } => return unsupported("attribute access"),
-            Expr::Tuple(_) => return unsupported("tuples"),
+            Expr::GeneratorExp { .. } => return unsupported("generator expressions"),
+            Expr::ListComp { .. } | Expr::DictComp { .. } => {
+                return Err(CompileError {
+                    message: "comprehension survived desugaring".into(),
+                });
+            }
         }
         Ok(())
     }
@@ -813,8 +1085,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported() {
-        assert!(err("x, y = 1, 2\n").contains("this assignment target"));
-        assert!(err("break\n").contains("break and continue"));
+        assert!(err("x = y = 1\n").contains("chained assignment"));
+        assert!(err("x = (i for i in [1])\n").contains("generator expressions"));
+        assert!(err("break\n").contains("outside loop"));
+        assert!(err("continue\n").contains("in loop"));
     }
 
     #[test]
@@ -926,6 +1200,43 @@ mod tests {
     fn nonlocal_without_binding_errors() {
         assert!(err("def f():\n    nonlocal x\n    x = 1\n").contains("no binding for nonlocal"));
         assert!(err("nonlocal x\n").contains("module level"));
+    }
+
+    #[test]
+    fn break_in_for_pops_the_iterator() {
+        let c = code("for i in [1]:\n    break\n");
+        let pos = c.ops.iter().position(|i| i.op == Op::PopTop).unwrap();
+        assert_eq!(c.ops[pos + 1].op, Op::Jump);
+        assert_eq!(c.ops[pos + 1].arg as usize, c.ops.len());
+    }
+
+    #[test]
+    fn comprehension_desugars_to_a_hidden_function() {
+        let c = code("l = [x * 2 for x in range(3)]\n");
+        assert_eq!(c.codes.len(), 1);
+        let comp = &c.codes[0];
+        assert_eq!(comp.name, "<listcomp1>");
+        assert_eq!(comp.nparams, 1);
+        assert!(comp.ops.iter().any(|i| i.op == Op::ForIter));
+        assert!(comp.ops.iter().any(|i| i.op == Op::CallMethod));
+        assert!(c.names.iter().any(|n| n == "<listcomp1>"));
+    }
+
+    #[test]
+    fn tuple_assignment_unpacks() {
+        let c = code("a, b = 1, 2\n");
+        let ops: Vec<Op> = c.ops.iter().map(|i| i.op).collect();
+        assert_eq!(
+            ops,
+            vec![
+                Op::LoadConst,
+                Op::LoadConst,
+                Op::BuildTuple,
+                Op::UnpackSequence,
+                Op::StoreName,
+                Op::StoreName
+            ]
+        );
     }
 
     #[test]

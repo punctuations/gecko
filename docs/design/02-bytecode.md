@@ -47,7 +47,8 @@ Implemented:
 - CALL, RETURN
 - MAKE_FUNCTION (arg is a child code index; pops the child's captured cells)
 - LOAD_CLOSURE (pushes a cell), LOAD_DEREF, STORE_DEREF (cell contents)
-- BUILD_LIST, BUILD_DICT (arg is the element or pair count)
+- BUILD_LIST, BUILD_TUPLE, BUILD_DICT (arg is the element or pair count)
+- UNPACK_SEQUENCE (arg is the target count; pushes elements in reverse)
 - SUBSCR, STORE_SUBSCR
 - GET_ITER, FOR_ITER (arg is the jump target once exhausted)
 - CALL_METHOD (arg packs a name index in the high bits and the argument count
@@ -61,9 +62,8 @@ A function call runs the callee's code object in a new frame. The VM implements
 frames as C recursion with a depth cap. Falling off the end of a function
 returns None via a compiler-emitted LOAD_CONST and RETURN.
 
-Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector,
-BUILD_TUPLE. Attribute access beyond method calls arrives with classes
-(v0.0.2).
+Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector.
+Attribute access beyond method calls arrives with classes (v0.0.2).
 
 ## Dispatch
 

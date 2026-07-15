@@ -457,6 +457,27 @@ mod machine_tests {
     }
 
     #[test]
+    fn tuples_build_and_unpack_in_order() {
+        let mut m = blank(2, 0, 0, 0);
+        m.consts = vec![Const::Int(7), Const::Int(8)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::BuildTuple, 2),
+            ins(Op::UnpackSequence, 2),
+            ins(Op::StoreLocal, 0),
+            ins(Op::StoreLocal, 1),
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadLocal, 1),
+            ins(Op::BinaryOp, bytecode::BIN_SUB),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), -1);
+    }
+
+    #[test]
     fn extended_arg_reaches_a_high_const() {
         let mut m = blank(0, 0, 0, 0);
         for i in 0..300 {

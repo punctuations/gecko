@@ -145,6 +145,27 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
         l->obj.gc &= ~1u;
         return;
     }
+    case SETAE_T_TUPLE: {
+        SetaeTuple *t = setae_to_ptr(v);
+        if (t->obj.gc & 1) {
+            out_str(vm, "(...)");
+            return;
+        }
+        t->obj.gc |= 1;
+        out_str(vm, "(");
+        for (uint32_t i = 0; i < t->len; i++) {
+            if (i > 0) {
+                out_str(vm, ", ");
+            }
+            repr(vm, t->items[i], 1);
+        }
+        if (t->len == 1) {
+            out_str(vm, ",");
+        }
+        out_str(vm, ")");
+        t->obj.gc &= ~1u;
+        return;
+    }
     case SETAE_T_DICT: {
         SetaeDict *d = setae_to_ptr(v);
         if (d->obj.gc & 1) {
@@ -220,6 +241,8 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_from_int((int32_t)setae_str_count(v));
     case SETAE_T_LIST:
         return setae_from_int((int32_t)((SetaeList *)setae_to_ptr(v))->len);
+    case SETAE_T_TUPLE:
+        return setae_from_int((int32_t)((SetaeTuple *)setae_to_ptr(v))->len);
     case SETAE_T_DICT:
         return setae_from_int((int32_t)((SetaeDict *)setae_to_ptr(v))->len);
     case SETAE_T_RANGE: {
