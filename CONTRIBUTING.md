@@ -26,7 +26,9 @@ cargo test
 ```
 
 Tests sit next to the code they cover. The tests that run source text through
-the whole pipeline live in crates/gecko.
+the whole pipeline live in crates/gecko. crates/runtime holds VM-level tests
+that hand-assemble bytecode, so the interpreter is covered without the compiler
+in front of it.
 
 ## Layout
 

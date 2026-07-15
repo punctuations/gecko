@@ -39,6 +39,7 @@ pub enum Stmt {
         value: Expr,
     },
     Expr(Expr),
+    Nonlocal(Vec<String>),
     Pass,
     Break,
     Continue,

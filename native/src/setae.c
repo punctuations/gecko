@@ -570,7 +570,7 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
 }
 
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
-                           int nargs);
+                           int nargs, const SetaeValue *captured);
 
 static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                              int nargs) {
@@ -587,7 +587,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                            setae_code_fname(f->code), nparams, nargs);
             return setae_none();
         }
-        return run_code(vm, f->code, args, nargs);
+        return run_code(vm, f->code, args, nargs, f->cells);
     }
     setae_vm_failf(vm, "TypeError: '%s' object is not callable", setae_type_name(callee));
     return setae_none();
@@ -678,7 +678,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
 }
 
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
-                           int nargs) {
+                           int nargs, const SetaeValue *captured) {
     if (vm->depth >= MAX_DEPTH) {
         setae_vm_failf(vm, "RecursionError: maximum recursion depth exceeded");
         return setae_none();
@@ -689,17 +689,28 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t ncode;
     const uint8_t *bytes = setae_code_bytes(code, &ncode);
     uint32_t nlocals = setae_code_nlocals(code);
+    uint32_t ncells = setae_code_ncells(code);
+    uint32_t nfrees = setae_code_nfrees(code);
+    uint32_t fixed = nlocals + ncells + nfrees;
 
-    SetaeValue *frame = calloc(nlocals + STACK_MAX, sizeof(SetaeValue));
+    SetaeValue *frame = calloc(fixed + STACK_MAX, sizeof(SetaeValue));
     SetaeValue *locals = frame;
-    SetaeValue *stack = frame + nlocals;
+    SetaeValue *cellbase = frame + nlocals;
+    SetaeValue *stack = frame + fixed;
     for (int i = 0; i < nargs; i++) {
         locals[i] = args[i];
     }
     int sp = 0;
 
-    SetaeFrame fr = {frame, nlocals, 0, vm->frames};
+    SetaeFrame fr = {frame, fixed, 0, vm->frames};
     vm->frames = &fr;
+
+    for (uint32_t i = 0; i < ncells; i++) {
+        cellbase[i] = setae_cell_new(vm->heap);
+    }
+    for (uint32_t i = 0; i < nfrees; i++) {
+        cellbase[ncells + i] = captured[i];
+    }
 
     SetaeValue result = setae_none();
     uint32_t ip = 0;
@@ -813,7 +824,28 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 setae_vm_failf(vm, "RuntimeError: bad code index %u", arg);
                 break;
             }
-            stack[sp++] = setae_func_new(vm->heap, child);
+            uint32_t nf = setae_code_nfrees(child);
+            SetaeValue f = setae_func_new(vm->heap, child, &stack[sp - nf], nf);
+            sp -= (int)nf;
+            stack[sp++] = f;
+            break;
+        }
+        case OP_LOAD_CLOSURE:
+            stack[sp++] = cellbase[arg];
+            break;
+        case OP_LOAD_DEREF: {
+            SetaeCell *cell = setae_to_ptr(cellbase[arg]);
+            if (cell->value == 0) {
+                setae_vm_failf(
+                    vm, "UnboundLocalError: variable referenced before assignment");
+                break;
+            }
+            stack[sp++] = cell->value;
+            break;
+        }
+        case OP_STORE_DEREF: {
+            SetaeCell *cell = setae_to_ptr(cellbase[arg]);
+            cell->value = stack[--sp];
             break;
         }
         case OP_BUILD_LIST: {
@@ -905,5 +937,5 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
     attach_code(vm, code);
-    return run_code(vm, code, NULL, 0);
+    return run_code(vm, code, NULL, 0, NULL);
 }

@@ -251,6 +251,58 @@ mod tests {
     }
 
     #[test]
+    fn unicode_strings_index_by_code_point() {
+        let src = "s = \"h\u{e9}llo\"\nprint(len(s), s[1], s[-1])\nfor c in \"\u{e9}\u{fc}\":\n    print(c)\n";
+        assert_eq!(run_source(src).unwrap(), "5 \u{e9} o\n\u{e9}\n\u{fc}\n");
+    }
+
+    #[test]
+    fn container_edge_cases() {
+        let src = "l = [1, 2, 3]\nprint(l.pop(0), l)\nd = {}\nprint(d.get(\"x\"))\nr = range(10, 0, -2)\nprint(len(r), r[0], r[4], 8 in r, 7 in r)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "1 [2, 3]\nNone\n5 10 2 True False\n"
+        );
+    }
+
+    #[test]
+    fn closures_capture_and_update() {
+        let src = "def counter():\n    n = 0\n    def inc():\n        nonlocal n\n        n += 1\n        return n\n    return inc\nc = counter()\nd = counter()\nprint(c(), c(), d(), c())\n";
+        assert_eq!(run_source(src).unwrap(), "1 2 1 3\n");
+    }
+
+    #[test]
+    fn closures_share_one_cell() {
+        let src = "def pair():\n    v = 0\n    def set5():\n        nonlocal v\n        v = 5\n    def get():\n        return v\n    set5()\n    return get()\nprint(pair())\n";
+        assert_eq!(run_source(src).unwrap(), "5\n");
+    }
+
+    #[test]
+    fn closures_capture_transitively() {
+        let src = "def a():\n    x = 7\n    def b():\n        def inner():\n            return x\n        return inner()\n    return b()\nprint(a())\n";
+        assert_eq!(run_source(src).unwrap(), "7\n");
+    }
+
+    #[test]
+    fn loop_closures_share_the_variable() {
+        let src = "def late():\n    fs = []\n    for i in range(3):\n        def f():\n            return i\n        fs.append(f)\n    return fs\nfs = late()\nprint(fs[0](), fs[1](), fs[2]())\n";
+        assert_eq!(run_source(src).unwrap(), "2 2 2\n");
+    }
+
+    #[test]
+    fn reading_an_unset_cell_fails() {
+        let src = "def outer():\n    def get():\n        return v\n    r = get()\n    v = 1\n    return r\nouter()\n";
+        let f = run_source(src).unwrap_err();
+        assert!(f.message.contains("UnboundLocalError"));
+    }
+
+    #[test]
+    fn cells_survive_collection() {
+        let src = "def counter():\n    n = 0\n    def inc():\n        nonlocal n\n        n += 1\n        return n\n    return inc\nc = counter()\nj = 0\nwhile j < 20000:\n    g = [\"x\" + \"y\", {\"k\": j}]\n    j += 1\nprint(c(), c())\n";
+        assert_eq!(run_source(src).unwrap(), "1 2\n");
+    }
+
+    #[test]
     fn garbage_stays_bounded() {
         let src =
             "i = 0\nwhile i < 20000:\n    s = \"a\" + \"b\"\n    l = [s, {\"k\": s}]\n    i += 1\n";

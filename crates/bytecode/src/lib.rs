@@ -10,6 +10,8 @@ pub struct Code {
     pub ops: Vec<Instr>,
     pub nlocals: u32,
     pub nparams: u32,
+    pub ncells: u32,
+    pub nfrees: u32,
     pub codes: Vec<Code>,
 }
 
@@ -57,6 +59,9 @@ pub enum Op {
     ForIter = 23,
     CallMethod = 24,
     ExtendedArg = 25,
+    LoadClosure = 26,
+    LoadDeref = 27,
+    StoreDeref = 28,
 }
 
 /// `BinaryOp` argument selectors, matching the C `SetaeBinOp` enum.

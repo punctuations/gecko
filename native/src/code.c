@@ -23,6 +23,8 @@ struct SetaeCode {
     char *fname;
     uint32_t nlocals;
     uint32_t nparams;
+    uint32_t ncells;
+    uint32_t nfrees;
 };
 
 SetaeCode *setae_code_new(void) {
@@ -95,6 +97,14 @@ void setae_code_set_nparams(SetaeCode *c, uint32_t n) {
     c->nparams = n;
 }
 
+void setae_code_set_ncells(SetaeCode *c, uint32_t n) {
+    c->ncells = n;
+}
+
+void setae_code_set_nfrees(SetaeCode *c, uint32_t n) {
+    c->nfrees = n;
+}
+
 void setae_code_set_name(SetaeCode *c, const char *name) {
     free(c->fname);
     size_t n = strlen(name) + 1;
@@ -125,6 +135,14 @@ uint32_t setae_code_nlocals(const SetaeCode *c) {
 
 uint32_t setae_code_nparams(const SetaeCode *c) {
     return c->nparams;
+}
+
+uint32_t setae_code_ncells(const SetaeCode *c) {
+    return c->ncells;
+}
+
+uint32_t setae_code_nfrees(const SetaeCode *c) {
+    return c->nfrees;
 }
 
 const char *setae_code_fname(const SetaeCode *c) {

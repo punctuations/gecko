@@ -16,7 +16,8 @@ The Rust compiler emits one code object per function and one per module body:
 - code: the instruction bytes.
 - nlocals: the number of local slots.
 - stacksize: the deepest the operand stack gets, computed by the compiler.
-- cellvars, freevars: closure slots. Empty until v0.0.2.
+- ncells, nfrees: closure slots. A frame lays out locals, then cells it owns,
+  then cells it captured, then the operand stack.
 
 A code object is a value, see 01-object-model.md, and is the unit the VM runs.
 
@@ -44,7 +45,8 @@ Implemented:
 - JUMP, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE
 - JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP
 - CALL, RETURN
-- MAKE_FUNCTION (arg is a child code index)
+- MAKE_FUNCTION (arg is a child code index; pops the child's captured cells)
+- LOAD_CLOSURE (pushes a cell), LOAD_DEREF, STORE_DEREF (cell contents)
 - BUILD_LIST, BUILD_DICT (arg is the element or pair count)
 - SUBSCR, STORE_SUBSCR
 - GET_ITER, FOR_ITER (arg is the jump target once exhausted)

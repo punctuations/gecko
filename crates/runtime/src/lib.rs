@@ -36,6 +36,9 @@ pub const OP_GET_ITER: u8 = 22;
 pub const OP_FOR_ITER: u8 = 23;
 pub const OP_CALL_METHOD: u8 = 24;
 pub const OP_EXTENDED_ARG: u8 = 25;
+pub const OP_LOAD_CLOSURE: u8 = 26;
+pub const OP_LOAD_DEREF: u8 = 27;
+pub const OP_STORE_DEREF: u8 = 28;
 
 pub const BIN_ADD: u8 = 0;
 pub const BIN_SUB: u8 = 1;
@@ -77,6 +80,8 @@ unsafe extern "C" {
     pub fn setae_code_emit(c: *mut SetaeCode, op: u8, arg: u8);
     pub fn setae_code_set_nlocals(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_nparams(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_set_ncells(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_set_nfrees(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_name(c: *mut SetaeCode, name: *const c_char);
 
     pub fn setae_vm_new(h: *mut SetaeHeap) -> *mut SetaeVm;
@@ -265,6 +270,8 @@ impl Vm {
             }
             setae_code_set_nlocals(gc, code.nlocals);
             setae_code_set_nparams(gc, code.nparams);
+            setae_code_set_ncells(gc, code.ncells);
+            setae_code_set_nfrees(gc, code.nfrees);
             let cs = CString::new(code.name.as_str()).expect("name has no interior NUL");
             setae_code_set_name(gc, cs.as_ptr());
             for child in &code.codes {
@@ -290,6 +297,228 @@ impl Drop for Vm {
             setae_vm_destroy(self.vm);
             setae_heap_destroy(self.heap);
         }
+    }
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+    use bytecode::{Code, Const, Instr, Op};
+
+    fn blank(nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) -> Code {
+        Code {
+            name: "test".into(),
+            consts: Vec::new(),
+            names: Vec::new(),
+            ops: Vec::new(),
+            nlocals,
+            nparams,
+            ncells,
+            nfrees,
+            codes: Vec::new(),
+        }
+    }
+
+    fn ins(op: Op, arg: u32) -> Instr {
+        Instr { op, arg }
+    }
+
+    fn int_result(run: &Run) -> i32 {
+        assert!(!run.error, "{}", run.message);
+        assert_eq!(unsafe { setae_is_int(run.result) }, 1);
+        unsafe { setae_to_int(run.result) }
+    }
+
+    #[test]
+    fn calls_a_function_through_make_function() {
+        let mut add = blank(2, 2, 0, 0);
+        add.ops = vec![
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadLocal, 1),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::Return, 0),
+        ];
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Int(2), Const::Int(40)];
+        m.codes = vec![add];
+        m.ops = vec![
+            ins(Op::MakeFunction, 0),
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::Call, 2),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 42);
+    }
+
+    #[test]
+    fn a_callee_writes_back_through_a_captured_cell() {
+        let mut inner = blank(0, 0, 0, 1);
+        inner.consts = vec![Const::Int(9)];
+        inner.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::StoreDeref, 0),
+            ins(Op::LoadConst, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut outer = blank(0, 0, 1, 0);
+        outer.codes = vec![inner];
+        outer.ops = vec![
+            ins(Op::LoadClosure, 0),
+            ins(Op::MakeFunction, 0),
+            ins(Op::Call, 0),
+            ins(Op::PopTop, 0),
+            ins(Op::LoadDeref, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut m = blank(0, 0, 0, 0);
+        m.codes = vec![outer];
+        m.ops = vec![
+            ins(Op::MakeFunction, 0),
+            ins(Op::Call, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 9);
+    }
+
+    #[test]
+    fn cells_flow_from_store_deref_to_a_capturing_callee() {
+        let mut inner = blank(0, 0, 0, 1);
+        inner.ops = vec![ins(Op::LoadDeref, 0), ins(Op::Return, 0)];
+        let mut outer = blank(0, 0, 1, 0);
+        outer.consts = vec![Const::Int(5)];
+        outer.codes = vec![inner];
+        outer.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::StoreDeref, 0),
+            ins(Op::LoadClosure, 0),
+            ins(Op::MakeFunction, 0),
+            ins(Op::Call, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut m = blank(0, 0, 0, 0);
+        m.codes = vec![outer];
+        m.ops = vec![
+            ins(Op::MakeFunction, 0),
+            ins(Op::Call, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 5);
+    }
+
+    #[test]
+    fn builds_a_list_and_subscripts_it() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Int(10), Const::Int(20), Const::Int(1)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::BuildList, 2),
+            ins(Op::LoadConst, 2),
+            ins(Op::Subscr, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 20);
+    }
+
+    #[test]
+    fn for_iter_walks_a_list() {
+        let mut m = blank(2, 0, 0, 0);
+        m.consts = vec![Const::Int(0), Const::Int(3), Const::Int(4), Const::Int(5)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::StoreLocal, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::LoadConst, 2),
+            ins(Op::LoadConst, 3),
+            ins(Op::BuildList, 3),
+            ins(Op::GetIter, 0),
+            ins(Op::ForIter, 14),
+            ins(Op::StoreLocal, 1),
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadLocal, 1),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::StoreLocal, 0),
+            ins(Op::Jump, 7),
+            ins(Op::LoadLocal, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 12);
+    }
+
+    #[test]
+    fn extended_arg_reaches_a_high_const() {
+        let mut m = blank(0, 0, 0, 0);
+        for i in 0..300 {
+            m.consts.push(Const::Int(i));
+        }
+        m.ops = vec![
+            ins(Op::ExtendedArg, 1),
+            ins(Op::LoadConst, 0x2b),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 299);
+    }
+
+    #[test]
+    fn calling_an_int_reports_a_type_error() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Int(1)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 0),
+            ins(Op::Call, 1),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert!(run.error);
+        assert!(run.message.contains("not callable"), "{}", run.message);
+    }
+
+    #[test]
+    fn a_hot_loop_of_garbage_gets_collected() {
+        let mut m = blank(1, 0, 0, 0);
+        m.consts = vec![
+            Const::Int(3000),
+            Const::Str("a".into()),
+            Const::Str("b".into()),
+            Const::Int(1),
+        ];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::StoreLocal, 0),
+            ins(Op::LoadLocal, 0),
+            ins(Op::PopJumpIfFalse, 13),
+            ins(Op::LoadConst, 1),
+            ins(Op::LoadConst, 2),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::PopTop, 0),
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadConst, 3),
+            ins(Op::BinaryOp, bytecode::BIN_SUB),
+            ins(Op::StoreLocal, 0),
+            ins(Op::Jump, 2),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert!(!run.error, "{}", run.message);
+        assert!(
+            vm.heap_live() < 1500,
+            "heap has {} live objects",
+            vm.heap_live()
+        );
     }
 }
 

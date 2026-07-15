@@ -28,6 +28,16 @@ static void mark(SetaeValue v) {
     case SETAE_T_ITER:
         mark(((SetaeIter *)o)->target);
         break;
+    case SETAE_T_CELL:
+        mark(((SetaeCell *)o)->value);
+        break;
+    case SETAE_T_FUNCTION: {
+        SetaeFunc *f = (SetaeFunc *)o;
+        for (uint32_t i = 0; i < f->nfree; i++) {
+            mark(f->cells[i]);
+        }
+        break;
+    }
     }
 }
 
@@ -51,7 +61,7 @@ void setae_gc_collect(SetaeVM *vm) {
         mark(vm->globals[i].value);
     }
     for (const SetaeFrame *f = vm->frames; f != NULL; f = f->parent) {
-        uint32_t n = f->nlocals + (uint32_t)f->sp;
+        uint32_t n = f->fixed + (uint32_t)f->sp;
         for (uint32_t i = 0; i < n; i++) {
             mark(f->slots[i]);
         }

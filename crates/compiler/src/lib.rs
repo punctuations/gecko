@@ -13,8 +13,9 @@ pub struct CompileError {
 
 pub fn compile(module: &Module) -> Result<Code, CompileError> {
     let mut c = Compiler {
-        code: new_code("<module>", 0, 0),
+        code: new_code("<module>", 0, 0, 0, 0),
         scope: None,
+        next_child: 0,
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
@@ -24,7 +25,7 @@ pub fn compile(module: &Module) -> Result<Code, CompileError> {
     Ok(code)
 }
 
-fn new_code(name: &str, nlocals: u32, nparams: u32) -> Code {
+fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) -> Code {
     Code {
         name: name.to_string(),
         consts: Vec::new(),
@@ -32,18 +33,47 @@ fn new_code(name: &str, nlocals: u32, nparams: u32) -> Code {
         ops: Vec::new(),
         nlocals,
         nparams,
+        ncells,
+        nfrees,
         codes: Vec::new(),
     }
 }
 
-struct Scope {
+#[derive(Debug, Clone)]
+struct ScopeInfo {
     locals: Vec<String>,
-    enclosing: Vec<String>,
+    cells: Vec<String>,
+    frees: Vec<String>,
+    children: Vec<ScopeInfo>,
+}
+
+enum Slot {
+    Cell(u32),
+    Free(u32),
+    Local(u32),
+    Global,
+}
+
+fn resolve(scope: Option<&ScopeInfo>, name: &str) -> Slot {
+    let Some(s) = scope else {
+        return Slot::Global;
+    };
+    if let Some(i) = s.cells.iter().position(|n| n == name) {
+        return Slot::Cell(i as u32);
+    }
+    if let Some(i) = s.frees.iter().position(|n| n == name) {
+        return Slot::Free(s.cells.len() as u32 + i as u32);
+    }
+    if let Some(i) = s.locals.iter().position(|n| n == name) {
+        return Slot::Local(i as u32);
+    }
+    Slot::Global
 }
 
 struct Compiler {
     code: Code,
-    scope: Option<Scope>,
+    scope: Option<ScopeInfo>,
+    next_child: usize,
 }
 
 fn unsupported<T>(what: &str) -> Result<T, CompileError> {
@@ -94,6 +124,204 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
     }
 }
 
+fn collect_nonlocals(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Nonlocal(names) => {
+                for n in names {
+                    add_unique(out, n);
+                }
+            }
+            Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
+                collect_nonlocals(body, out);
+                collect_nonlocals(orelse, out);
+            }
+            Stmt::For { body, orelse, .. } => {
+                collect_nonlocals(body, out);
+                collect_nonlocals(orelse, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn expr_reads(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Name(n) => add_unique(out, n),
+        Expr::Int { .. } | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => {}
+        Expr::List(elts) | Expr::Tuple(elts) => {
+            for e in elts {
+                expr_reads(e, out);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                expr_reads(k, out);
+                expr_reads(v, out);
+            }
+        }
+        Expr::Unary { operand, .. } => expr_reads(operand, out),
+        Expr::Bin { left, right, .. } => {
+            expr_reads(left, out);
+            expr_reads(right, out);
+        }
+        Expr::Bool_ { values, .. } => {
+            for v in values {
+                expr_reads(v, out);
+            }
+        }
+        Expr::Compare {
+            left, comparators, ..
+        } => {
+            expr_reads(left, out);
+            for c in comparators {
+                expr_reads(c, out);
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_reads(func, out);
+            for a in args {
+                expr_reads(a, out);
+            }
+            for k in keywords {
+                expr_reads(&k.value, out);
+            }
+        }
+        Expr::Attribute { value, .. } => expr_reads(value, out),
+        Expr::Subscript { value, index } => {
+            expr_reads(value, out);
+            expr_reads(index, out);
+        }
+    }
+}
+
+fn collect_reads(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Expr(e) => expr_reads(e, out),
+            Stmt::Assign { targets, value } => {
+                expr_reads(value, out);
+                for t in targets {
+                    if !matches!(t, Expr::Name(_)) {
+                        expr_reads(t, out);
+                    }
+                }
+            }
+            Stmt::AugAssign { target, value, .. } => {
+                expr_reads(target, out);
+                expr_reads(value, out);
+            }
+            Stmt::If { test, body, orelse } | Stmt::While { test, body, orelse } => {
+                expr_reads(test, out);
+                collect_reads(body, out);
+                collect_reads(orelse, out);
+            }
+            Stmt::For {
+                iter, body, orelse, ..
+            } => {
+                expr_reads(iter, out);
+                collect_reads(body, out);
+                collect_reads(orelse, out);
+            }
+            Stmt::Return(Some(e)) => expr_reads(e, out),
+            _ => {}
+        }
+    }
+}
+
+fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<(&'a [Param], &'a [Stmt])>) {
+    for s in stmts {
+        match s {
+            Stmt::FunctionDef { params, body, .. } => out.push((params, body)),
+            Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
+                for_each_def(body, out);
+                for_each_def(orelse, out);
+            }
+            Stmt::For { body, orelse, .. } => {
+                for_each_def(body, out);
+                for_each_def(orelse, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn analyze_function(
+    params: &[Param],
+    body: &[Stmt],
+    enclosing: &[Vec<String>],
+) -> Result<ScopeInfo, CompileError> {
+    let mut nonlocals = Vec::new();
+    collect_nonlocals(body, &mut nonlocals);
+
+    let mut locals: Vec<String> = Vec::new();
+    for p in params {
+        if locals.iter().any(|n| n == &p.name) {
+            return Err(CompileError {
+                message: format!("duplicate parameter '{}'", p.name),
+            });
+        }
+        locals.push(p.name.clone());
+    }
+    for n in &nonlocals {
+        if locals.iter().any(|l| l == n) {
+            return Err(CompileError {
+                message: format!("name '{n}' is parameter and nonlocal"),
+            });
+        }
+        if !enclosing.iter().any(|s| s.iter().any(|b| b == n)) {
+            return Err(CompileError {
+                message: format!("no binding for nonlocal '{n}' found"),
+            });
+        }
+    }
+    collect_assigned(body, &mut locals);
+    locals.retain(|l| !nonlocals.iter().any(|n| n == l));
+
+    let mut frees = nonlocals;
+    let mut reads = Vec::new();
+    collect_reads(body, &mut reads);
+    for r in &reads {
+        if locals.iter().any(|l| l == r) || frees.iter().any(|f| f == r) {
+            continue;
+        }
+        if enclosing.iter().any(|s| s.iter().any(|b| b == r)) {
+            frees.push(r.clone());
+        }
+    }
+
+    let mut chain: Vec<Vec<String>> = enclosing.to_vec();
+    let mut bindings = locals.clone();
+    bindings.extend(frees.iter().cloned());
+    chain.push(bindings);
+
+    let mut cells: Vec<String> = Vec::new();
+    let mut children = Vec::new();
+    let mut defs = Vec::new();
+    for_each_def(body, &mut defs);
+    for (cparams, cbody) in defs {
+        let ci = analyze_function(cparams, cbody, &chain)?;
+        for f in &ci.frees {
+            if locals.iter().any(|l| l == f) {
+                add_unique(&mut cells, f);
+            } else {
+                add_unique(&mut frees, f);
+            }
+        }
+        children.push(ci);
+    }
+    Ok(ScopeInfo {
+        locals,
+        cells,
+        frees,
+        children,
+    })
+}
+
 impl Compiler {
     fn emit(&mut self, op: Op, arg: u32) {
         self.code.ops.push(Instr { op, arg });
@@ -137,53 +365,59 @@ impl Compiler {
     }
 
     fn load(&mut self, name: &str) -> Result<(), CompileError> {
-        if let Some(scope) = &self.scope {
-            if let Some(i) = scope.locals.iter().position(|n| n == name) {
-                self.emit(Op::LoadLocal, i as u32);
-                return Ok(());
-            }
-            if scope.enclosing.iter().any(|n| n == name) {
-                return unsupported("closures");
+        match resolve(self.scope.as_ref(), name) {
+            Slot::Cell(i) | Slot::Free(i) => self.emit(Op::LoadDeref, i),
+            Slot::Local(i) => self.emit(Op::LoadLocal, i),
+            Slot::Global => {
+                let i = self.name_idx(name);
+                self.emit(Op::LoadName, i);
             }
         }
-        let i = self.name_idx(name);
-        self.emit(Op::LoadName, i);
         Ok(())
     }
 
     fn store(&mut self, name: &str) {
-        if let Some(scope) = &self.scope {
-            if let Some(i) = scope.locals.iter().position(|n| n == name) {
-                self.emit(Op::StoreLocal, i as u32);
-                return;
+        match resolve(self.scope.as_ref(), name) {
+            Slot::Cell(i) | Slot::Free(i) => self.emit(Op::StoreDeref, i),
+            Slot::Local(i) => self.emit(Op::StoreLocal, i),
+            Slot::Global => {
+                let i = self.name_idx(name);
+                self.emit(Op::StoreName, i);
             }
         }
-        let i = self.name_idx(name);
-        self.emit(Op::StoreName, i);
     }
 
     fn funcdef(&mut self, name: &str, params: &[Param], body: &[Stmt]) -> Result<(), CompileError> {
         if params.iter().any(|p| p.default.is_some()) {
             return unsupported("parameter defaults");
         }
-        let mut locals = Vec::new();
-        for p in params {
-            if locals.iter().any(|n| n == &p.name) {
-                return Err(CompileError {
-                    message: format!("duplicate parameter '{}'", p.name),
-                });
+        let info = match &self.scope {
+            Some(s) => {
+                let ci = s.children[self.next_child].clone();
+                self.next_child += 1;
+                ci
             }
-            locals.push(p.name.clone());
-        }
-        collect_assigned(body, &mut locals);
-        let enclosing = match &self.scope {
-            Some(s) => s.locals.iter().chain(s.enclosing.iter()).cloned().collect(),
-            None => Vec::new(),
+            None => analyze_function(params, body, &[])?,
         };
+        let frees = info.frees.clone();
         let mut sub = Compiler {
-            code: new_code(name, locals.len() as u32, params.len() as u32),
-            scope: Some(Scope { locals, enclosing }),
+            code: new_code(
+                name,
+                info.locals.len() as u32,
+                params.len() as u32,
+                info.cells.len() as u32,
+                info.frees.len() as u32,
+            ),
+            scope: Some(info),
+            next_child: 0,
         };
+        let cells = sub.scope.as_ref().unwrap().cells.clone();
+        for (ci, cname) in cells.iter().enumerate() {
+            if let Some(pi) = params.iter().position(|p| &p.name == cname) {
+                sub.emit(Op::LoadLocal, pi as u32);
+                sub.emit(Op::StoreDeref, ci as u32);
+            }
+        }
         for s in body {
             sub.stmt(s)?;
         }
@@ -191,6 +425,16 @@ impl Compiler {
         sub.emit(Op::Return, 0);
         let idx = self.code.codes.len() as u32;
         self.code.codes.push(sub.code);
+        for f in &frees {
+            match resolve(self.scope.as_ref(), f) {
+                Slot::Cell(i) | Slot::Free(i) => self.emit(Op::LoadClosure, i),
+                _ => {
+                    return Err(CompileError {
+                        message: format!("cannot capture '{f}'"),
+                    });
+                }
+            }
+        }
         self.emit(Op::MakeFunction, idx);
         self.store(name);
         Ok(())
@@ -301,6 +545,14 @@ impl Compiler {
                     None => self.load_const(Const::None),
                 }
                 self.emit(Op::Return, 0);
+                Ok(())
+            }
+            Stmt::Nonlocal(_) => {
+                if self.scope.is_none() {
+                    return Err(CompileError {
+                        message: "nonlocal declaration not allowed at module level".into(),
+                    });
+                }
                 Ok(())
             }
             Stmt::Pass => Ok(()),
@@ -622,9 +874,64 @@ mod tests {
     }
 
     #[test]
-    fn rejects_closures() {
+    fn closures_get_cells_and_frees() {
         let src = "def f():\n    x = 1\n    def g():\n        return x\n    return g\n";
-        assert!(err(src).contains("closures"));
+        let c = code(src);
+        let f = &c.codes[0];
+        assert_eq!(f.ncells, 1);
+        assert_eq!(f.nfrees, 0);
+        let g = &f.codes[0];
+        assert_eq!(g.ncells, 0);
+        assert_eq!(g.nfrees, 1);
+        assert!(f.ops.iter().any(|i| i.op == Op::LoadClosure));
+        assert!(g.ops.iter().any(|i| i.op == Op::LoadDeref));
+    }
+
+    #[test]
+    fn nonlocal_stores_through_the_cell() {
+        let src = "def outer():\n    n = 0\n    def inc():\n        nonlocal n\n        n += 1\n    inc()\n    return n\n";
+        let c = code(src);
+        let outer = &c.codes[0];
+        assert_eq!(outer.ncells, 1);
+        assert!(outer.ops.iter().any(|i| i.op == Op::StoreDeref));
+        let inc = &outer.codes[0];
+        assert_eq!(inc.nfrees, 1);
+        assert!(inc.ops.iter().any(|i| i.op == Op::StoreDeref));
+        assert_eq!(inc.nlocals, 0);
+    }
+
+    #[test]
+    fn captured_param_gets_a_prologue_copy() {
+        let src = "def make(y):\n    def get():\n        return y\n    return get\n";
+        let c = code(src);
+        let make = &c.codes[0];
+        assert_eq!(make.ncells, 1);
+        let ops: Vec<Op> = make.ops.iter().take(2).map(|i| i.op).collect();
+        assert_eq!(ops, vec![Op::LoadLocal, Op::StoreDeref]);
+    }
+
+    #[test]
+    fn transitive_capture_passes_through() {
+        let src = "def a():\n    x = 1\n    def b():\n        def c():\n            return x\n        return c()\n    return b()\n";
+        let c = code(src);
+        let a = &c.codes[0];
+        let b = &a.codes[0];
+        assert_eq!(a.ncells, 1);
+        assert_eq!(b.nfrees, 1);
+        assert_eq!(b.codes[0].nfrees, 1);
+        assert!(b.ops.iter().any(|i| i.op == Op::LoadClosure));
+    }
+
+    #[test]
+    fn nonlocal_without_binding_errors() {
+        assert!(err("def f():\n    nonlocal x\n    x = 1\n").contains("no binding for nonlocal"));
+        assert!(err("nonlocal x\n").contains("module level"));
+    }
+
+    #[test]
+    fn nonlocal_parameter_errors() {
+        let src = "def f():\n    x = 1\n    def g(x):\n        nonlocal x\n    return g\n";
+        assert!(err(src).contains("parameter and nonlocal"));
     }
 
     #[test]

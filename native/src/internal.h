@@ -38,7 +38,14 @@ typedef struct SetaeIter {
 typedef struct SetaeFunc {
     SetaeObject obj;
     const SetaeCode *code;
+    SetaeValue *cells;
+    uint32_t nfree;
 } SetaeFunc;
+
+typedef struct SetaeCell {
+    SetaeObject obj;
+    SetaeValue value;
+} SetaeCell;
 
 SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
@@ -46,7 +53,9 @@ SetaeValue setae_dict_new(SetaeHeap *h);
 void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
-SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code);
+SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
+                          uint32_t nfree);
+SetaeValue setae_cell_new(SetaeHeap *h);
 
 const char *setae_type_name(SetaeValue v);
 int setae_value_eq(SetaeValue a, SetaeValue b);
@@ -60,7 +69,7 @@ typedef struct SetaeGlobal {
 
 typedef struct SetaeFrame {
     SetaeValue *slots;
-    uint32_t nlocals;
+    uint32_t fixed;
     int sp;
     struct SetaeFrame *parent;
 } SetaeFrame;
@@ -96,6 +105,8 @@ const char *setae_code_name(const SetaeCode *c, uint32_t i);
 const uint8_t *setae_code_bytes(const SetaeCode *c, uint32_t *n);
 uint32_t setae_code_nlocals(const SetaeCode *c);
 uint32_t setae_code_nparams(const SetaeCode *c);
+uint32_t setae_code_ncells(const SetaeCode *c);
+uint32_t setae_code_nfrees(const SetaeCode *c);
 const char *setae_code_fname(const SetaeCode *c);
 const SetaeCode *setae_code_child(const SetaeCode *c, uint32_t i);
 

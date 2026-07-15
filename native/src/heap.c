@@ -68,6 +68,9 @@ static void obj_free(SetaeObject *o) {
     case SETAE_T_DICT:
         free(((SetaeDict *)o)->entries);
         break;
+    case SETAE_T_FUNCTION:
+        free(((SetaeFunc *)o)->cells);
+        break;
     }
     free(o);
 }
@@ -143,8 +146,19 @@ SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target) {
     return setae_from_ptr(it);
 }
 
-SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code) {
+SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
+                          uint32_t nfree) {
     SetaeFunc *f = heap_alloc(h, sizeof(SetaeFunc), SETAE_T_FUNCTION);
     f->code = code;
+    f->nfree = nfree;
+    if (nfree > 0) {
+        f->cells = malloc(nfree * sizeof(SetaeValue));
+        memcpy(f->cells, cells, nfree * sizeof(SetaeValue));
+    }
     return setae_from_ptr(f);
+}
+
+SetaeValue setae_cell_new(SetaeHeap *h) {
+    SetaeCell *c = heap_alloc(h, sizeof(SetaeCell), SETAE_T_CELL);
+    return setae_from_ptr(c);
 }

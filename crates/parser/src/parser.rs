@@ -168,6 +168,14 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Continue)
             }
+            TokenKind::Keyword(Kw::Nonlocal) => {
+                self.advance();
+                let mut names = vec![self.expect_name()?];
+                while self.eat_op(Op::Comma) {
+                    names.push(self.expect_name()?);
+                }
+                Ok(Stmt::Nonlocal(names))
+            }
             TokenKind::Keyword(Kw::Return) => {
                 self.advance();
                 if matches!(self.kind(), TokenKind::Newline | TokenKind::Eof)

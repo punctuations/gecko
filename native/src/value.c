@@ -125,6 +125,8 @@ const char *setae_type_name(SetaeValue v) {
         return "range";
     case SETAE_T_ITER:
         return "iterator";
+    case SETAE_T_CELL:
+        return "cell";
     default:
         return "object";
     }

@@ -146,6 +146,18 @@ mod tests {
     }
 
     #[test]
+    fn nonlocal_takes_names() {
+        let s = one("nonlocal a, b\n");
+        assert_eq!(s, Stmt::Nonlocal(vec!["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn nonlocal_needs_a_name() {
+        assert!(parse("nonlocal\n").is_err());
+        assert!(parse("nonlocal 1\n").is_err());
+    }
+
+    #[test]
     fn errors_on_garbage() {
         assert!(parse("def (:\n").is_err());
     }
