@@ -8,11 +8,23 @@ pub struct Code {
     pub consts: Vec<Const>,
     pub names: Vec<String>,
     pub ops: Vec<Instr>,
+    pub excs: Vec<ExcEntry>,
     pub nlocals: u32,
     pub nparams: u32,
     pub ncells: u32,
     pub nfrees: u32,
     pub codes: Vec<Code>,
+}
+
+/// Exception table entry. Instruction units in [start, end) are protected: an
+/// error there cuts the operand stack to depth, pushes the exception, and
+/// jumps to target. First matching entry wins, so inner ranges come first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExcEntry {
+    pub start: u32,
+    pub end: u32,
+    pub target: u32,
+    pub depth: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +76,9 @@ pub enum Op {
     StoreDeref = 28,
     BuildTuple = 29,
     UnpackSequence = 30,
+    Raise = 31,
+    ExcMatch = 32,
+    Reraise = 33,
 }
 
 /// `BinaryOp` argument selectors, matching the C `SetaeBinOp` enum.
@@ -73,6 +88,10 @@ pub const BIN_MUL: u32 = 2;
 pub const BIN_DIV: u32 = 3;
 pub const BIN_MOD: u32 = 4;
 pub const BIN_FLOORDIV: u32 = 5;
+
+/// Set on a `BinaryOp` argument when it came from an augmented assignment, so
+/// a type error reports `+=` rather than `+`.
+pub const BIN_AUG_FLAG: u32 = 0x80;
 
 /// `CompareOp` argument selectors, matching the C `SetaeCmpOp` enum.
 pub const CMP_EQ: u32 = 0;

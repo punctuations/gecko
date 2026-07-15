@@ -127,6 +127,10 @@ const char *setae_type_name(SetaeValue v) {
         return "iterator";
     case SETAE_T_CELL:
         return "cell";
+    case SETAE_T_EXCTYPE:
+        return "type";
+    case SETAE_T_EXC:
+        return ((SetaeExc *)setae_to_ptr(v))->kind;
     default:
         return "object";
     }

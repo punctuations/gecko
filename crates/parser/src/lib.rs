@@ -158,6 +158,36 @@ mod tests {
     }
 
     #[test]
+    fn try_parses_handlers_else_finally() {
+        let s = one(
+            "try:\n    pass\nexcept ValueError as e:\n    pass\nexcept:\n    pass\nelse:\n    pass\nfinally:\n    pass\n",
+        );
+        let Stmt::Try {
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert_eq!(handlers.len(), 2);
+        assert_eq!(handlers[0].name.as_deref(), Some("e"));
+        assert!(handlers[1].typ.is_none());
+        assert_eq!(orelse.len(), 1);
+        assert_eq!(finalbody.len(), 1);
+    }
+
+    #[test]
+    fn try_clause_order_is_enforced() {
+        assert!(
+            parse("try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n").is_err()
+        );
+        assert!(parse("try:\n    pass\nelse:\n    pass\n").is_err());
+        assert!(parse("try:\n    pass\n").is_err());
+    }
+
+    #[test]
     fn errors_on_garbage() {
         assert!(parse("def (:\n").is_err());
     }

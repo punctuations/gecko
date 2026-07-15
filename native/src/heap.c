@@ -163,6 +163,19 @@ SetaeValue setae_cell_new(SetaeHeap *h) {
     return setae_from_ptr(c);
 }
 
+SetaeValue setae_exctype_new(SetaeHeap *h, const char *name) {
+    SetaeExcType *t = heap_alloc(h, sizeof(SetaeExcType), SETAE_T_EXCTYPE);
+    t->name = name;
+    return setae_from_ptr(t);
+}
+
+SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message) {
+    SetaeExc *e = heap_alloc(h, sizeof(SetaeExc), SETAE_T_EXC);
+    e->kind = kind;
+    e->message = message;
+    return setae_from_ptr(e);
+}
+
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {
     SetaeTuple *t =
         heap_alloc(h, sizeof(SetaeTuple) + n * sizeof(SetaeValue), SETAE_T_TUPLE);

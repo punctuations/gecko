@@ -213,6 +213,29 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
         out_str(vm, ">");
         return;
     }
+    case SETAE_T_EXCTYPE: {
+        SetaeExcType *t = setae_to_ptr(v);
+        out_str(vm, "<class '");
+        out_str(vm, t->name);
+        out_str(vm, "'>");
+        return;
+    }
+    case SETAE_T_EXC: {
+        SetaeExc *e = setae_to_ptr(v);
+        if (!nested) {
+            if (!setae_is_none(e->message)) {
+                repr(vm, e->message, 0);
+            }
+            return;
+        }
+        out_str(vm, e->kind);
+        out_str(vm, "(");
+        if (!setae_is_none(e->message)) {
+            repr(vm, e->message, 1);
+        }
+        out_str(vm, ")");
+        return;
+    }
     default:
         out_str(vm, "<object>");
     }
@@ -231,7 +254,7 @@ static SetaeValue builtin_print(SetaeVM *vm, SetaeValue *args, int nargs) {
 
 static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (nargs != 1) {
-        setae_vm_failf(vm, "TypeError: len() takes exactly one argument (%d given)",
+        setae_vm_raise(vm, "TypeError", "len() takes exactly one argument (%d given)",
                        nargs);
         return setae_none();
     }
@@ -253,7 +276,7 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_from_int((int32_t)n);
     }
     default:
-        setae_vm_failf(vm, "TypeError: object of type '%s' has no len()",
+        setae_vm_raise(vm, "TypeError", "object of type '%s' has no len()",
                        setae_type_name(v));
         return setae_none();
     }
@@ -261,12 +284,12 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
 
 static SetaeValue builtin_range(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (nargs < 1 || nargs > 3) {
-        setae_vm_failf(vm, "TypeError: range expected 1 to 3 arguments, got %d", nargs);
+        setae_vm_raise(vm, "TypeError", "range expected 1 to 3 arguments, got %d", nargs);
         return setae_none();
     }
     for (int i = 0; i < nargs; i++) {
         if (!setae_is_int(args[i])) {
-            setae_vm_failf(vm, "TypeError: '%s' object cannot be interpreted as an integer",
+            setae_vm_raise(vm, "TypeError", "'%s' object cannot be interpreted as an integer",
                            setae_type_name(args[i]));
             return setae_none();
         }
@@ -284,15 +307,24 @@ static SetaeValue builtin_range(SetaeVM *vm, SetaeValue *args, int nargs) {
         }
     }
     if (step == 0) {
-        setae_vm_failf(vm, "ValueError: range() arg 3 must not be zero");
+        setae_vm_raise(vm, "ValueError", "range() arg 3 must not be zero");
         return setae_none();
     }
     return setae_range_new(setae_vm_heap(vm), start, stop, step);
 }
+
+static const char *const EXC_KINDS[] = {
+    "Exception",         "TypeError",     "ValueError",        "KeyError",
+    "IndexError",        "NameError",     "UnboundLocalError", "ZeroDivisionError",
+    "RuntimeError",      "RecursionError", "AttributeError",
+};
 
 void setae_vm_register_builtins(SetaeVM *vm) {
     SetaeHeap *h = setae_vm_heap(vm);
     setae_vm_set_global(vm, "print", setae_builtin_new(h, builtin_print, "print"));
     setae_vm_set_global(vm, "len", setae_builtin_new(h, builtin_len, "len"));
     setae_vm_set_global(vm, "range", setae_builtin_new(h, builtin_range, "range"));
+    for (size_t i = 0; i < sizeof(EXC_KINDS) / sizeof(EXC_KINDS[0]); i++) {
+        setae_vm_set_global(vm, EXC_KINDS[i], setae_exctype_new(h, EXC_KINDS[i]));
+    }
 }

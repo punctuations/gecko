@@ -38,6 +38,9 @@ static void mark(SetaeValue v) {
     case SETAE_T_CELL:
         mark(((SetaeCell *)o)->value);
         break;
+    case SETAE_T_EXC:
+        mark(((SetaeExc *)o)->message);
+        break;
     case SETAE_T_FUNCTION: {
         SetaeFunc *f = (SetaeFunc *)o;
         for (uint32_t i = 0; i < f->nfree; i++) {
@@ -79,5 +82,6 @@ void setae_gc_collect(SetaeVM *vm) {
     for (int i = 0; i < vm->ntmp; i++) {
         mark(vm->tmp_roots[i]);
     }
+    mark(vm->exc);
     setae_heap_sweep(vm->heap);
 }

@@ -82,6 +82,7 @@ unsafe extern "C" {
     pub fn setae_code_set_nparams(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_ncells(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_nfrees(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_add_exc(c: *mut SetaeCode, start: u32, end: u32, target: u32, depth: u32);
     pub fn setae_code_set_name(c: *mut SetaeCode, name: *const c_char);
 
     pub fn setae_vm_new(h: *mut SetaeHeap) -> *mut SetaeVm;
@@ -268,6 +269,9 @@ impl Vm {
             for instr in &code.ops {
                 setae_code_emit(gc, instr.op as u8, instr.arg as u8);
             }
+            for e in &code.excs {
+                setae_code_add_exc(gc, e.start, e.end, e.target, e.depth);
+            }
             setae_code_set_nlocals(gc, code.nlocals);
             setae_code_set_nparams(gc, code.nparams);
             setae_code_set_ncells(gc, code.ncells);
@@ -311,6 +315,7 @@ mod machine_tests {
             consts: Vec::new(),
             names: Vec::new(),
             ops: Vec::new(),
+            excs: Vec::new(),
             nlocals,
             nparams,
             ncells,
@@ -491,6 +496,30 @@ mod machine_tests {
         let mut vm = Vm::new();
         let run = vm.run(&m);
         assert_eq!(int_result(&run), 299);
+    }
+
+    #[test]
+    fn the_exception_table_unwinds_and_recovers() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Int(1), Const::Int(0), Const::Int(7)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::BinaryOp, bytecode::BIN_DIV),
+            ins(Op::Return, 0),
+            ins(Op::PopTop, 0),
+            ins(Op::LoadConst, 2),
+            ins(Op::Return, 0),
+        ];
+        m.excs = vec![bytecode::ExcEntry {
+            start: 0,
+            end: 4,
+            target: 4,
+            depth: 0,
+        }];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 7);
     }
 
     #[test]

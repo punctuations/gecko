@@ -45,6 +45,8 @@ typedef enum {
     SETAE_T_RANGE,
     SETAE_T_ITER,
     SETAE_T_CELL,
+    SETAE_T_EXCTYPE,
+    SETAE_T_EXC,
 } SetaeType;
 
 /* Header of every heap object. The payload follows it in memory. */
@@ -120,6 +122,9 @@ typedef enum {
     OP_STORE_DEREF,
     OP_BUILD_TUPLE,
     OP_UNPACK_SEQUENCE,
+    OP_RAISE,
+    OP_EXC_MATCH,
+    OP_RERAISE,
 } SetaeOp;
 
 typedef enum {
@@ -154,6 +159,8 @@ void setae_code_set_nlocals(SetaeCode *c, uint32_t n);
 void setae_code_set_nparams(SetaeCode *c, uint32_t n);
 void setae_code_set_ncells(SetaeCode *c, uint32_t n);
 void setae_code_set_nfrees(SetaeCode *c, uint32_t n);
+void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t target,
+                        uint32_t depth);
 void setae_code_set_name(SetaeCode *c, const char *name);
 
 /* Setae: the bytecode VM. See docs/design/02-bytecode.md. */

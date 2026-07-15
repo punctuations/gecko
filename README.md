@@ -30,11 +30,12 @@ literals, names, assignment (including `x[i] = v` and augmented forms),
 arithmetic with `%` and `//`, comparisons and membership, `and`, `or`, `not`,
 `if`, `elif`, `else`, `while`, `for` with `break` and `continue`, functions
 with positional parameters, recursion, closures with `nonlocal`, lists, dicts,
-tuples with unpacking, list and dict comprehensions, subscripting, iteration
+tuples with unpacking, list and dict comprehensions, `try`/`except`/`else`/
+`finally` with `raise` and the builtin exception types, subscripting, iteration
 over lists, tuples, dicts, strings, and ranges, the methods `append`, `pop`,
 `get`, `keys`, `values`, and `items`, and the builtins `print`, `len`, and
 `range`. Anything outside that subset (defaults, keyword arguments, generator
-expressions, classes, exceptions) is rejected at compile time. A precise, non-moving mark-sweep collector
+expressions, classes, bare `raise`) is rejected at compile time. A precise, non-moving mark-sweep collector
 reclaims garbage when allocation passes a threshold that grows with the live
 size.
 

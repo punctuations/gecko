@@ -20,6 +20,7 @@ pub fn compile(module: &Module) -> Result<Code, CompileError> {
         scope: None,
         next_child: 0,
         loops: Vec::new(),
+        finally_loops: Vec::new(),
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
@@ -41,6 +42,19 @@ fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
             Stmt::For { body, orelse, .. } => {
                 desugar_block(body, n);
                 desugar_block(orelse, n);
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                desugar_block(body, n);
+                for h in handlers.iter_mut() {
+                    desugar_block(&mut h.body, n);
+                }
+                desugar_block(orelse, n);
+                desugar_block(finalbody, n);
             }
             _ => {}
         }
@@ -70,6 +84,14 @@ fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
         Stmt::If { test, .. } | Stmt::While { test, .. } => desugar_expr(test, hoisted, n),
         Stmt::For { iter, .. } => desugar_expr(iter, hoisted, n),
         Stmt::Return(Some(e)) => desugar_expr(e, hoisted, n),
+        Stmt::Raise(Some(e)) => desugar_expr(e, hoisted, n),
+        Stmt::Try { handlers, .. } => {
+            for h in handlers.iter_mut() {
+                if let Some(t) = &mut h.typ {
+                    desugar_expr(t, hoisted, n);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -226,6 +248,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         consts: Vec::new(),
         names: Vec::new(),
         ops: Vec::new(),
+        excs: Vec::new(),
         nlocals,
         nparams,
         ncells,
@@ -276,6 +299,7 @@ struct Compiler {
     scope: Option<ScopeInfo>,
     next_child: usize,
     loops: Vec<Loop>,
+    finally_loops: Vec<usize>,
 }
 
 fn unsupported<T>(what: &str) -> Result<T, CompileError> {
@@ -328,6 +352,22 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_assigned(body, out);
                 collect_assigned(orelse, out);
             }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                collect_assigned(body, out);
+                for h in handlers {
+                    if let Some(n) = &h.name {
+                        add_unique(out, n);
+                    }
+                    collect_assigned(&h.body, out);
+                }
+                collect_assigned(orelse, out);
+                collect_assigned(finalbody, out);
+            }
             Stmt::FunctionDef { name, .. } => add_unique(out, name),
             _ => {}
         }
@@ -349,6 +389,19 @@ fn collect_nonlocals(stmts: &[Stmt], out: &mut Vec<String>) {
             Stmt::For { body, orelse, .. } => {
                 collect_nonlocals(body, out);
                 collect_nonlocals(orelse, out);
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                collect_nonlocals(body, out);
+                for h in handlers {
+                    collect_nonlocals(&h.body, out);
+                }
+                collect_nonlocals(orelse, out);
+                collect_nonlocals(finalbody, out);
             }
             _ => {}
         }
@@ -439,6 +492,23 @@ fn collect_reads(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_reads(orelse, out);
             }
             Stmt::Return(Some(e)) => expr_reads(e, out),
+            Stmt::Raise(Some(e)) => expr_reads(e, out),
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                collect_reads(body, out);
+                for h in handlers {
+                    if let Some(t) = &h.typ {
+                        expr_reads(t, out);
+                    }
+                    collect_reads(&h.body, out);
+                }
+                collect_reads(orelse, out);
+                collect_reads(finalbody, out);
+            }
             _ => {}
         }
     }
@@ -455,6 +525,19 @@ fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<(&'a [Param], &'a [Stmt])>)
             Stmt::For { body, orelse, .. } => {
                 for_each_def(body, out);
                 for_each_def(orelse, out);
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                for_each_def(body, out);
+                for h in handlers {
+                    for_each_def(&h.body, out);
+                }
+                for_each_def(orelse, out);
+                for_each_def(finalbody, out);
             }
             _ => {}
         }
@@ -622,6 +705,7 @@ impl Compiler {
             scope: Some(info),
             next_child: 0,
             loops: Vec::new(),
+            finally_loops: Vec::new(),
         };
         let cells = sub.scope.as_ref().unwrap().cells.clone();
         for (ci, cname) in cells.iter().enumerate() {
@@ -674,7 +758,7 @@ impl Compiler {
                 self.load(name)?;
                 self.expr(value)?;
                 let sel = bin_selector(*op)?;
-                self.emit(Op::BinaryOp, sel);
+                self.emit(Op::BinaryOp, sel | bytecode::BIN_AUG_FLAG);
                 self.store(name);
                 Ok(())
             }
@@ -756,11 +840,28 @@ impl Compiler {
                 if self.scope.is_none() {
                     return unsupported("return outside a function");
                 }
+                if !self.finally_loops.is_empty() {
+                    return unsupported("return out of a try with a finally clause");
+                }
                 match value {
                     Some(e) => self.expr(e)?,
                     None => self.load_const(Const::None),
                 }
                 self.emit(Op::Return, 0);
+                Ok(())
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => self.try_stmt(body, handlers, orelse, finalbody),
+            Stmt::Raise(value) => {
+                let Some(e) = value else {
+                    return unsupported("bare raise");
+                };
+                self.expr(e)?;
+                self.emit(Op::Raise, 0);
                 Ok(())
             }
             Stmt::Nonlocal(_) => {
@@ -778,6 +879,13 @@ impl Compiler {
                         message: "'break' outside loop".into(),
                     });
                 };
+                if self
+                    .finally_loops
+                    .last()
+                    .is_some_and(|fl| self.loops.len() <= *fl)
+                {
+                    return unsupported("break out of a try with a finally clause");
+                }
                 if l.is_for {
                     self.emit(Op::PopTop, 0);
                 }
@@ -791,11 +899,96 @@ impl Compiler {
                         message: "'continue' not properly in loop".into(),
                     });
                 };
+                if self
+                    .finally_loops
+                    .last()
+                    .is_some_and(|fl| self.loops.len() <= *fl)
+                {
+                    return unsupported("continue out of a try with a finally clause");
+                }
                 let head = l.head;
                 self.emit(Op::Jump, head);
                 Ok(())
             }
         }
+    }
+
+    fn try_stmt(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ast::ExceptHandler],
+        orelse: &[Stmt],
+        finalbody: &[Stmt],
+    ) -> Result<(), CompileError> {
+        let depth = self.loops.iter().filter(|l| l.is_for).count() as u32;
+        if !finalbody.is_empty() {
+            self.finally_loops.push(self.loops.len());
+        }
+        let body_start = self.here();
+        for s in body {
+            self.stmt(s)?;
+        }
+        let to_else = self.emit_jump(Op::Jump);
+        let dispatch = self.here();
+        let mut exits = Vec::new();
+        if !handlers.is_empty() {
+            for h in handlers {
+                let mut to_next = None;
+                if let Some(t) = &h.typ {
+                    self.expr(t)?;
+                    self.emit(Op::ExcMatch, 0);
+                    to_next = Some(self.emit_jump(Op::PopJumpIfFalse));
+                }
+                match &h.name {
+                    Some(n) => self.store(n),
+                    None => self.emit(Op::PopTop, 0),
+                }
+                for s in &h.body {
+                    self.stmt(s)?;
+                }
+                exits.push(self.emit_jump(Op::Jump));
+                if let Some(j) = to_next {
+                    self.patch(j);
+                }
+            }
+            self.emit(Op::Reraise, 0);
+        }
+        self.patch(to_else);
+        for s in orelse {
+            self.stmt(s)?;
+        }
+        for e in exits {
+            self.patch(e);
+        }
+        let protected_end = self.here();
+        if !handlers.is_empty() {
+            self.code.excs.push(bytecode::ExcEntry {
+                start: body_start,
+                end: dispatch,
+                target: dispatch,
+                depth,
+            });
+        }
+        if !finalbody.is_empty() {
+            self.finally_loops.pop();
+            for s in finalbody {
+                self.stmt(s)?;
+            }
+            let to_end = self.emit_jump(Op::Jump);
+            let cleanup = self.here();
+            for s in finalbody {
+                self.stmt(s)?;
+            }
+            self.emit(Op::Reraise, 0);
+            self.patch(to_end);
+            self.code.excs.push(bytecode::ExcEntry {
+                start: body_start,
+                end: protected_end,
+                target: cleanup,
+                depth,
+            });
+        }
+        Ok(())
     }
 
     fn store_target(&mut self, target: &Expr) -> Result<(), CompileError> {
@@ -1012,6 +1205,11 @@ fn assemble(code: &mut Code) {
         if !changed {
             break;
         }
+    }
+    for e in &mut code.excs {
+        e.start = offsets[e.start as usize];
+        e.end = offsets[e.end as usize];
+        e.target = offsets[e.target as usize];
     }
     let mut out = Vec::with_capacity(n);
     for instr in &ops {
@@ -1240,6 +1438,57 @@ mod tests {
     }
 
     #[test]
+    fn try_emits_a_table_entry_and_dispatch() {
+        let c = code("try:\n    x = 1\nexcept ValueError:\n    x = 2\n");
+        assert_eq!(c.excs.len(), 1);
+        let e = &c.excs[0];
+        assert_eq!(e.start, 0);
+        assert!(e.end <= e.target);
+        assert_eq!(e.depth, 0);
+        assert!(c.ops.iter().any(|i| i.op == Op::ExcMatch));
+        assert!(c.ops.iter().any(|i| i.op == Op::Reraise));
+    }
+
+    #[test]
+    fn finally_duplicates_the_cleanup() {
+        let c = code("try:\n    x = 1\nfinally:\n    y = 2\n");
+        assert_eq!(c.excs.len(), 1);
+        let stores = c
+            .ops
+            .iter()
+            .filter(|i| i.op == Op::StoreName && i.arg == 1)
+            .count();
+        assert_eq!(stores, 2);
+        assert!(c.ops.iter().any(|i| i.op == Op::Reraise));
+    }
+
+    #[test]
+    fn try_in_a_for_loop_records_iterator_depth() {
+        let c =
+            code("for i in [1]:\n    try:\n        x = 1\n    except ValueError:\n        pass\n");
+        assert_eq!(c.excs.len(), 1);
+        assert_eq!(c.excs[0].depth, 1);
+    }
+
+    #[test]
+    fn control_flow_through_finally_is_rejected() {
+        assert!(
+            err("def f():\n    try:\n        return 1\n    finally:\n        pass\n")
+                .contains("finally")
+        );
+        assert!(
+            err("for i in [1]:\n    try:\n        break\n    finally:\n        pass\n")
+                .contains("finally")
+        );
+        assert!(
+            err("for i in [1]:\n    try:\n        continue\n    finally:\n        pass\n")
+                .contains("finally")
+        );
+        let ok = "for i in [1]:\n    try:\n        for j in [1]:\n            break\n    finally:\n        pass\n";
+        assert!(compile(&parser::parse(ok).unwrap()).is_ok());
+    }
+
+    #[test]
     fn nonlocal_parameter_errors() {
         let src = "def f():\n    x = 1\n    def g(x):\n        nonlocal x\n    return g\n";
         assert!(err(src).contains("parameter and nonlocal"));
@@ -1300,7 +1549,8 @@ mod tests {
         assert!(
             c.ops
                 .iter()
-                .any(|i| i.op == Op::BinaryOp && i.arg == bytecode::BIN_ADD)
+                .any(|i| i.op == Op::BinaryOp
+                    && i.arg == (bytecode::BIN_ADD | bytecode::BIN_AUG_FLAG))
         );
     }
 }

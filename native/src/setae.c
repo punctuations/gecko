@@ -78,15 +78,78 @@ const char *setae_vm_error_msg(SetaeVM *vm) {
     return vm->errmsg;
 }
 
-void setae_vm_failf(SetaeVM *vm, const char *fmt, ...) {
+void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...) {
     if (vm->error) {
         return;
     }
-    vm->error = 1;
+    char msg[112];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(vm->errmsg, sizeof(vm->errmsg), fmt, ap);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    SetaeValue message = setae_none();
+    if (msg[0] != '\0') {
+        message = setae_str_new(vm->heap, msg, strlen(msg));
+    }
+    setae_vm_push_tmp(vm, message);
+    vm->exc = setae_exc_new(vm->heap, kind, message);
+    setae_vm_pop_tmp(vm);
+    vm->error = 1;
+    if (msg[0] != '\0') {
+        snprintf(vm->errmsg, sizeof(vm->errmsg), "%s: %s", kind, msg);
+    } else {
+        snprintf(vm->errmsg, sizeof(vm->errmsg), "%s", kind);
+    }
+}
+
+static void raise_pending(SetaeVM *vm, SetaeValue exc) {
+    SetaeExc *e = setae_to_ptr(exc);
+    vm->exc = exc;
+    vm->error = 1;
+    if (setae_is_str(e->message)) {
+        snprintf(vm->errmsg, sizeof(vm->errmsg), "%s: %.*s", e->kind,
+                 (int)setae_str_len(e->message), setae_str_data(e->message));
+    } else {
+        snprintf(vm->errmsg, sizeof(vm->errmsg), "%s", e->kind);
+    }
+}
+
+static void raise_value(SetaeVM *vm, SetaeValue v) {
+    int t = setae_obj_type(v);
+    if (t == SETAE_T_EXC) {
+        raise_pending(vm, v);
+        return;
+    }
+    if (t == SETAE_T_EXCTYPE) {
+        SetaeExcType *et = setae_to_ptr(v);
+        raise_pending(vm, setae_exc_new(vm->heap, et->name, setae_none()));
+        return;
+    }
+    setae_vm_raise(vm, "TypeError", "exceptions must derive from BaseException");
+}
+
+static int exc_matches(SetaeVM *vm, SetaeValue exc, SetaeValue type) {
+    if (setae_obj_type(type) == SETAE_T_TUPLE) {
+        SetaeTuple *t = setae_to_ptr(type);
+        for (uint32_t i = 0; i < t->len; i++) {
+            if (exc_matches(vm, exc, t->items[i])) {
+                return 1;
+            }
+            if (vm->error) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+    if (setae_obj_type(type) != SETAE_T_EXCTYPE) {
+        setae_vm_raise(
+            vm, "TypeError",
+            "catching classes that do not inherit from BaseException is not allowed");
+        return 0;
+    }
+    SetaeExcType *et = setae_to_ptr(type);
+    SetaeExc *e = setae_to_ptr(exc);
+    return strcmp(et->name, "Exception") == 0 || strcmp(et->name, e->kind) == 0;
 }
 
 const char *setae_vm_output(SetaeVM *vm, size_t *len) {
@@ -164,24 +227,14 @@ static void dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
     }
 }
 
-static const char *bin_symbol(SetaeBinOp op) {
-    switch (op) {
-    case BIN_ADD:
-        return "+";
-    case BIN_SUB:
-        return "-";
-    case BIN_MUL:
-        return "*";
-    case BIN_DIV:
-        return "/";
-    case BIN_MOD:
-        return "%";
-    default:
-        return "//";
-    }
+static const char *bin_symbol(SetaeBinOp op, int aug) {
+    static const char *const plain[] = {"+", "-", "*", "/", "%", "//"};
+    static const char *const augmented[] = {"+=", "-=", "*=", "/=", "%=", "//="};
+    return aug ? augmented[op] : plain[op];
 }
 
-static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue b) {
+static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
+                            SetaeValue b) {
     if (op == BIN_ADD && setae_is_str(a) && setae_is_str(b)) {
         size_t na = setae_str_len(a);
         size_t nb = setae_str_len(b);
@@ -219,8 +272,8 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue
     int numeric =
         (setae_is_int(a) || setae_is_float(a)) && (setae_is_int(b) || setae_is_float(b));
     if (!numeric) {
-        setae_vm_failf(vm, "TypeError: unsupported operand type(s) for %s: '%s' and '%s'",
-                       bin_symbol(op), setae_type_name(a), setae_type_name(b));
+        setae_vm_raise(vm, "TypeError", "unsupported operand type(s) for %s: '%s' and '%s'",
+                       bin_symbol(op, aug), setae_type_name(a), setae_type_name(b));
         return setae_none();
     }
     if (setae_is_int(a) && setae_is_int(b) && op != BIN_DIV) {
@@ -228,7 +281,7 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue
         int64_t y = setae_to_int(b);
         if (op == BIN_MOD || op == BIN_FLOORDIV) {
             if (y == 0) {
-                setae_vm_failf(vm, "ZeroDivisionError: integer division or modulo by zero");
+                setae_vm_raise(vm, "ZeroDivisionError", "integer division or modulo by zero");
                 return setae_none();
             }
             if (op == BIN_MOD) {
@@ -258,13 +311,13 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue
         return setae_from_float(x * y);
     case BIN_DIV:
         if (y == 0.0) {
-            setae_vm_failf(vm, "ZeroDivisionError: division by zero");
+            setae_vm_raise(vm, "ZeroDivisionError", "division by zero");
             return setae_none();
         }
         return setae_from_float(x / y);
     case BIN_MOD: {
         if (y == 0.0) {
-            setae_vm_failf(vm, "ZeroDivisionError: float modulo");
+            setae_vm_raise(vm, "ZeroDivisionError", "float modulo");
             return setae_none();
         }
         double r = fmod(x, y);
@@ -275,7 +328,7 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, SetaeValue a, SetaeValue
     }
     default:
         if (y == 0.0) {
-            setae_vm_failf(vm, "ZeroDivisionError: float floor division by zero");
+            setae_vm_raise(vm, "ZeroDivisionError", "float floor division by zero");
             return setae_none();
         }
         return setae_from_float(floor(x / y));
@@ -346,8 +399,8 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
         return dict_find(setae_to_ptr(container), x) >= 0;
     case SETAE_T_STR: {
         if (!setae_is_str(x)) {
-            setae_vm_failf(
-                vm, "TypeError: 'in <string>' requires string as left operand, not %s",
+            setae_vm_raise(
+                vm, "TypeError", "'in <string>' requires string as left operand, not %s",
                 setae_type_name(x));
             return 0;
         }
@@ -380,7 +433,7 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
         return (v - r->start) % r->step == 0;
     }
     default:
-        setae_vm_failf(vm, "TypeError: argument of type '%s' is not iterable",
+        setae_vm_raise(vm, "TypeError", "argument of type '%s' is not iterable",
                        setae_type_name(container));
         return 0;
     }
@@ -408,7 +461,7 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
     } else if (setae_is_str(a) && setae_is_str(b)) {
         c = str_order(a, b);
     } else {
-        setae_vm_failf(vm, "TypeError: comparison not supported between '%s' and '%s'",
+        setae_vm_raise(vm, "TypeError", "comparison not supported between '%s' and '%s'",
                        setae_type_name(a), setae_type_name(b));
         return setae_none();
     }
@@ -423,7 +476,7 @@ static SetaeValue unary_neg(SetaeVM *vm, SetaeValue a) {
     if (setae_is_float(a)) {
         return setae_from_float(-setae_to_float(a));
     }
-    setae_vm_failf(vm, "TypeError: bad operand type for unary -: '%s'",
+    setae_vm_raise(vm, "TypeError", "bad operand type for unary -: '%s'",
                    setae_type_name(a));
     return setae_none();
 }
@@ -448,7 +501,7 @@ static SetaeValue str_char_at(SetaeVM *vm, SetaeValue s, size_t cp) {
         count++;
         i += charlen;
     }
-    setae_vm_failf(vm, "IndexError: string index out of range");
+    setae_vm_raise(vm, "IndexError", "string index out of range");
     return setae_none();
 }
 
@@ -457,7 +510,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(obj);
         if (!setae_is_int(idx)) {
-            setae_vm_failf(vm, "TypeError: list indices must be integers, not %s",
+            setae_vm_raise(vm, "TypeError", "list indices must be integers, not %s",
                            setae_type_name(idx));
             return setae_none();
         }
@@ -466,7 +519,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             i += l->len;
         }
         if (i < 0 || i >= (int64_t)l->len) {
-            setae_vm_failf(vm, "IndexError: list index out of range");
+            setae_vm_raise(vm, "IndexError", "list index out of range");
             return setae_none();
         }
         return l->items[i];
@@ -474,7 +527,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
     case SETAE_T_TUPLE: {
         SetaeTuple *t = setae_to_ptr(obj);
         if (!setae_is_int(idx)) {
-            setae_vm_failf(vm, "TypeError: tuple indices must be integers, not %s",
+            setae_vm_raise(vm, "TypeError", "tuple indices must be integers, not %s",
                            setae_type_name(idx));
             return setae_none();
         }
@@ -483,7 +536,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             i += t->len;
         }
         if (i < 0 || i >= (int64_t)t->len) {
-            setae_vm_failf(vm, "IndexError: tuple index out of range");
+            setae_vm_raise(vm, "IndexError", "tuple index out of range");
             return setae_none();
         }
         return t->items[i];
@@ -491,19 +544,19 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
     case SETAE_T_DICT: {
         SetaeDict *d = setae_to_ptr(obj);
         if (!hashable(idx)) {
-            setae_vm_failf(vm, "TypeError: unhashable type: '%s'", setae_type_name(idx));
+            setae_vm_raise(vm, "TypeError", "unhashable type: '%s'", setae_type_name(idx));
             return setae_none();
         }
         int64_t i = dict_find(d, idx);
         if (i < 0) {
-            setae_vm_failf(vm, "KeyError");
+            setae_vm_raise(vm, "KeyError", "");
             return setae_none();
         }
         return d->entries[i].value;
     }
     case SETAE_T_STR: {
         if (!setae_is_int(idx)) {
-            setae_vm_failf(vm, "TypeError: string indices must be integers, not %s",
+            setae_vm_raise(vm, "TypeError", "string indices must be integers, not %s",
                            setae_type_name(idx));
             return setae_none();
         }
@@ -513,7 +566,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             i += n;
         }
         if (i < 0 || i >= n) {
-            setae_vm_failf(vm, "IndexError: string index out of range");
+            setae_vm_raise(vm, "IndexError", "string index out of range");
             return setae_none();
         }
         return str_char_at(vm, obj, (size_t)i);
@@ -521,7 +574,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
     case SETAE_T_RANGE: {
         SetaeRange *r = setae_to_ptr(obj);
         if (!setae_is_int(idx)) {
-            setae_vm_failf(vm, "TypeError: range indices must be integers, not %s",
+            setae_vm_raise(vm, "TypeError", "range indices must be integers, not %s",
                            setae_type_name(idx));
             return setae_none();
         }
@@ -531,13 +584,13 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             i += n;
         }
         if (i < 0 || i >= n) {
-            setae_vm_failf(vm, "IndexError: range object index out of range");
+            setae_vm_raise(vm, "IndexError", "range object index out of range");
             return setae_none();
         }
         return from_i64(r->start + i * r->step);
     }
     default:
-        setae_vm_failf(vm, "TypeError: '%s' object is not subscriptable",
+        setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
                        setae_type_name(obj));
         return setae_none();
     }
@@ -548,7 +601,7 @@ static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeVa
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(obj);
         if (!setae_is_int(idx)) {
-            setae_vm_failf(vm, "TypeError: list indices must be integers, not %s",
+            setae_vm_raise(vm, "TypeError", "list indices must be integers, not %s",
                            setae_type_name(idx));
             return;
         }
@@ -557,7 +610,7 @@ static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeVa
             i += l->len;
         }
         if (i < 0 || i >= (int64_t)l->len) {
-            setae_vm_failf(vm, "IndexError: list assignment index out of range");
+            setae_vm_raise(vm, "IndexError", "list assignment index out of range");
             return;
         }
         l->items[i] = val;
@@ -565,14 +618,14 @@ static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeVa
     }
     case SETAE_T_DICT: {
         if (!hashable(idx)) {
-            setae_vm_failf(vm, "TypeError: unhashable type: '%s'", setae_type_name(idx));
+            setae_vm_raise(vm, "TypeError", "unhashable type: '%s'", setae_type_name(idx));
             return;
         }
         dict_set(setae_to_ptr(obj), idx, val);
         return;
     }
     default:
-        setae_vm_failf(vm, "TypeError: '%s' object does not support item assignment",
+        setae_vm_raise(vm, "TypeError", "'%s' object does not support item assignment",
                        setae_type_name(obj));
     }
 }
@@ -648,13 +701,22 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         SetaeFunc *f = setae_to_ptr(callee);
         uint32_t nparams = setae_code_nparams(f->code);
         if ((uint32_t)nargs != nparams) {
-            setae_vm_failf(vm, "TypeError: %s() takes %u positional arguments but %d were given",
+            setae_vm_raise(vm, "TypeError", "%s() takes %u positional arguments but %d were given",
                            setae_code_fname(f->code), nparams, nargs);
             return setae_none();
         }
         return run_code(vm, f->code, args, nargs, f->cells);
     }
-    setae_vm_failf(vm, "TypeError: '%s' object is not callable", setae_type_name(callee));
+    if (t == SETAE_T_EXCTYPE) {
+        SetaeExcType *et = setae_to_ptr(callee);
+        if (nargs > 1) {
+            setae_vm_raise(vm, "TypeError", "%s() takes at most 1 argument (%d given)",
+                           et->name, nargs);
+            return setae_none();
+        }
+        return setae_exc_new(vm->heap, et->name, nargs == 1 ? args[0] : setae_none());
+    }
+    setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
 }
 
@@ -665,7 +727,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         SetaeList *l = setae_to_ptr(obj);
         if (strcmp(name, "append") == 0) {
             if (nargs != 1) {
-                setae_vm_failf(vm, "TypeError: append() takes exactly one argument (%d given)",
+                setae_vm_raise(vm, "TypeError", "append() takes exactly one argument (%d given)",
                                nargs);
                 return setae_none();
             }
@@ -674,18 +736,18 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         }
         if (strcmp(name, "pop") == 0) {
             if (nargs > 1) {
-                setae_vm_failf(vm, "TypeError: pop() takes at most 1 argument (%d given)",
+                setae_vm_raise(vm, "TypeError", "pop() takes at most 1 argument (%d given)",
                                nargs);
                 return setae_none();
             }
             if (l->len == 0) {
-                setae_vm_failf(vm, "IndexError: pop from empty list");
+                setae_vm_raise(vm, "IndexError", "pop from empty list");
                 return setae_none();
             }
             int64_t i = l->len - 1;
             if (nargs == 1) {
                 if (!setae_is_int(args[0])) {
-                    setae_vm_failf(vm, "TypeError: '%s' object cannot be interpreted as an integer",
+                    setae_vm_raise(vm, "TypeError", "'%s' object cannot be interpreted as an integer",
                                    setae_type_name(args[0]));
                     return setae_none();
                 }
@@ -694,7 +756,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                     i += l->len;
                 }
                 if (i < 0 || i >= (int64_t)l->len) {
-                    setae_vm_failf(vm, "IndexError: pop index out of range");
+                    setae_vm_raise(vm, "IndexError", "pop index out of range");
                     return setae_none();
                 }
             }
@@ -708,11 +770,11 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         SetaeDict *d = setae_to_ptr(obj);
         if (strcmp(name, "get") == 0) {
             if (nargs < 1 || nargs > 2) {
-                setae_vm_failf(vm, "TypeError: get expected 1 or 2 arguments, got %d", nargs);
+                setae_vm_raise(vm, "TypeError", "get expected 1 or 2 arguments, got %d", nargs);
                 return setae_none();
             }
             if (!hashable(args[0])) {
-                setae_vm_failf(vm, "TypeError: unhashable type: '%s'",
+                setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
                                setae_type_name(args[0]));
                 return setae_none();
             }
@@ -724,7 +786,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         }
         if (strcmp(name, "items") == 0) {
             if (nargs != 0) {
-                setae_vm_failf(vm, "TypeError: items() takes no arguments (%d given)",
+                setae_vm_raise(vm, "TypeError", "items() takes no arguments (%d given)",
                                nargs);
                 return setae_none();
             }
@@ -740,7 +802,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         }
         if (strcmp(name, "keys") == 0 || strcmp(name, "values") == 0) {
             if (nargs != 0) {
-                setae_vm_failf(vm, "TypeError: %s() takes no arguments (%d given)", name,
+                setae_vm_raise(vm, "TypeError", "%s() takes no arguments (%d given)", name,
                                nargs);
                 return setae_none();
             }
@@ -753,7 +815,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
             return rv;
         }
     }
-    setae_vm_failf(vm, "AttributeError: '%s' object has no attribute '%s'",
+    setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
                    setae_type_name(obj), name);
     return setae_none();
 }
@@ -761,7 +823,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured) {
     if (vm->depth >= MAX_DEPTH) {
-        setae_vm_failf(vm, "RecursionError: maximum recursion depth exceeded");
+        setae_vm_raise(vm, "RecursionError", "maximum recursion depth exceeded");
         return setae_none();
     }
     vm->depth++;
@@ -798,6 +860,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t ext = 0;
     while (ip < ncode && !vm->error) {
         fr.sp = sp;
+        uint32_t unit = ip / 2;
         uint8_t op = bytes[ip];
         uint32_t arg = ext | bytes[ip + 1];
         ip += 2;
@@ -807,7 +870,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         }
         ext = 0;
         if (sp >= STACK_MAX - 1) {
-            setae_vm_failf(vm, "RuntimeError: value stack overflow");
+            setae_vm_raise(vm, "RuntimeError", "value stack overflow");
             break;
         }
         switch (op) {
@@ -817,7 +880,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         case OP_LOAD_NAME: {
             SetaeValue v;
             if (!global_lookup(vm, setae_code_name(code, arg), &v)) {
-                setae_vm_failf(vm, "NameError: name '%s' is not defined",
+                setae_vm_raise(vm, "NameError", "name '%s' is not defined",
                                setae_code_name(code, arg));
                 break;
             }
@@ -829,8 +892,8 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             break;
         case OP_LOAD_LOCAL:
             if (locals[arg] == 0) {
-                setae_vm_failf(
-                    vm, "UnboundLocalError: local variable referenced before assignment");
+                setae_vm_raise(
+                    vm, "UnboundLocalError", "local variable referenced before assignment");
                 break;
             }
             stack[sp++] = locals[arg];
@@ -844,7 +907,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         case OP_BINARY_OP: {
             SetaeValue b = stack[--sp];
             SetaeValue a = stack[--sp];
-            stack[sp++] = binary_op(vm, (SetaeBinOp)arg, a, b);
+            stack[sp++] = binary_op(vm, (SetaeBinOp)(arg & 0x7f), (int)(arg >> 7), a, b);
             break;
         }
         case OP_CALL: {
@@ -902,7 +965,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         case OP_MAKE_FUNCTION: {
             const SetaeCode *child = setae_code_child(code, arg);
             if (child == NULL) {
-                setae_vm_failf(vm, "RuntimeError: bad code index %u", arg);
+                setae_vm_raise(vm, "RuntimeError", "bad code index %u", arg);
                 break;
             }
             uint32_t nf = setae_code_nfrees(child);
@@ -917,8 +980,8 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         case OP_LOAD_DEREF: {
             SetaeCell *cell = setae_to_ptr(cellbase[arg]);
             if (cell->value == 0) {
-                setae_vm_failf(
-                    vm, "UnboundLocalError: variable referenced before assignment");
+                setae_vm_raise(
+                    vm, "UnboundLocalError", "variable referenced before assignment");
                 break;
             }
             stack[sp++] = cell->value;
@@ -936,6 +999,21 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             stack[sp++] = tv;
             break;
         }
+        case OP_RAISE:
+            raise_value(vm, stack[--sp]);
+            break;
+        case OP_RERAISE:
+            raise_pending(vm, stack[--sp]);
+            break;
+        case OP_EXC_MATCH: {
+            SetaeValue type = stack[--sp];
+            int r = exc_matches(vm, stack[sp - 1], type);
+            if (vm->error) {
+                break;
+            }
+            stack[sp++] = setae_bool(r);
+            break;
+        }
         case OP_UNPACK_SEQUENCE: {
             SetaeValue seq = stack[--sp];
             const SetaeValue *items;
@@ -950,18 +1028,18 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 items = l->items;
                 len = l->len;
             } else {
-                setae_vm_failf(vm, "TypeError: cannot unpack non-iterable %s object",
+                setae_vm_raise(vm, "TypeError", "cannot unpack non-iterable %s object",
                                setae_type_name(seq));
                 break;
             }
             if (len < arg) {
-                setae_vm_failf(
-                    vm, "ValueError: not enough values to unpack (expected %u, got %u)",
+                setae_vm_raise(
+                    vm, "ValueError", "not enough values to unpack (expected %u, got %u)",
                     arg, len);
                 break;
             }
             if (len > arg) {
-                setae_vm_failf(vm, "ValueError: too many values to unpack (expected %u)",
+                setae_vm_raise(vm, "ValueError", "too many values to unpack (expected %u)",
                                arg);
                 break;
             }
@@ -989,7 +1067,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 SetaeValue key = stack[sp - 2 * n + 2 * i];
                 SetaeValue val = stack[sp - 2 * n + 2 * i + 1];
                 if (!hashable(key)) {
-                    setae_vm_failf(vm, "TypeError: unhashable type: '%s'",
+                    setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
                                    setae_type_name(key));
                     break;
                 }
@@ -1017,7 +1095,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             int t = setae_obj_type(v);
             if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
                 t != SETAE_T_STR && t != SETAE_T_RANGE) {
-                setae_vm_failf(vm, "TypeError: '%s' object is not iterable",
+                setae_vm_raise(vm, "TypeError", "'%s' object is not iterable",
                                setae_type_name(v));
                 break;
             }
@@ -1046,8 +1124,28 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             break;
         }
         default:
-            setae_vm_failf(vm, "RuntimeError: bad opcode %u", op);
+            setae_vm_raise(vm, "RuntimeError", "bad opcode %u", op);
             break;
+        }
+        if (vm->error) {
+            uint32_t nexc;
+            const SetaeExcEntry *entries = setae_code_excs(code, &nexc);
+            for (uint32_t i = 0; i < nexc; i++) {
+                if (unit >= entries[i].start && unit < entries[i].end) {
+                    sp = (int)entries[i].depth;
+                    fr.sp = sp;
+                    SetaeValue exc = vm->exc;
+                    vm->error = 0;
+                    vm->errmsg[0] = '\0';
+                    vm->exc = 0;
+                    if (exc == 0) {
+                        exc = setae_exc_new(vm->heap, "RuntimeError", setae_none());
+                    }
+                    stack[sp++] = exc;
+                    ip = entries[i].target * 2;
+                    break;
+                }
+            }
         }
     }
 

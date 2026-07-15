@@ -251,6 +251,81 @@ mod tests {
     }
 
     #[test]
+    fn exceptions_catch_by_type() {
+        let src = "try:\n    1 / 0\nexcept ZeroDivisionError as e:\n    print(\"caught:\", e)\n";
+        assert_eq!(run_source(src).unwrap(), "caught: division by zero\n");
+    }
+
+    #[test]
+    fn exceptions_pick_the_first_matching_handler() {
+        let src = "try:\n    {}[\"k\"]\nexcept ValueError:\n    print(\"wrong\")\nexcept KeyError:\n    print(\"right\")\nexcept Exception:\n    print(\"late\")\n";
+        assert_eq!(run_source(src).unwrap(), "right\n");
+    }
+
+    #[test]
+    fn raise_and_catch_with_else() {
+        let src = "def risky(n):\n    if n > 2:\n        raise ValueError(\"too big\")\n    return n\ntry:\n    print(risky(1))\nexcept ValueError:\n    print(\"unseen\")\nelse:\n    print(\"else\")\ntry:\n    risky(9)\nexcept ValueError as e:\n    print(e)\nelse:\n    print(\"unseen\")\n";
+        assert_eq!(run_source(src).unwrap(), "1\nelse\ntoo big\n");
+    }
+
+    #[test]
+    fn finally_runs_on_both_paths() {
+        let src = "try:\n    print(\"ok\")\nfinally:\n    print(\"cleanup\")\ntry:\n    try:\n        raise TypeError(\"x\")\n    finally:\n        print(\"inner cleanup\")\nexcept TypeError:\n    print(\"outer\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "ok\ncleanup\ninner cleanup\nouter\n"
+        );
+    }
+
+    #[test]
+    fn exceptions_propagate_through_calls() {
+        let src = "def f():\n    raise IndexError(\"deep\")\ndef g():\n    return f()\ntry:\n    g()\nexcept IndexError as e:\n    print(e)\n";
+        assert_eq!(run_source(src).unwrap(), "deep\n");
+    }
+
+    #[test]
+    fn tuple_of_types_matches_any() {
+        let src = "try:\n    raise RuntimeError(\"boom\")\nexcept (ValueError, RuntimeError) as e:\n    print(e)\n";
+        assert_eq!(run_source(src).unwrap(), "boom\n");
+    }
+
+    #[test]
+    fn uncaught_exceptions_keep_their_message() {
+        let f = run_source("raise ValueError(\"unhandled\")\n").unwrap_err();
+        assert_eq!(f.message, "ValueError: unhandled");
+        let f = run_source("try:\n    1 / 0\nexcept KeyError:\n    pass\n").unwrap_err();
+        assert_eq!(f.message, "ZeroDivisionError: division by zero");
+    }
+
+    #[test]
+    fn raising_a_non_exception_is_a_type_error() {
+        let f = run_source("raise 42\n").unwrap_err();
+        assert!(f.message.contains("must derive from BaseException"));
+    }
+
+    #[test]
+    fn try_inside_a_loop_unwinds_to_the_iterator() {
+        let src = "kept = []\nfor i in range(5):\n    try:\n        if i % 2 == 0:\n            raise ValueError(\"skip\")\n        kept.append(i)\n    except ValueError:\n        pass\nprint(kept)\n";
+        assert_eq!(run_source(src).unwrap(), "[1, 3]\n");
+    }
+
+    #[test]
+    fn exception_reprs_follow_python() {
+        let src = "e = ValueError(\"kept\")\nprint(e, [e], ValueError)\nprint(TypeError())\nprint([TypeError()])\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "kept [ValueError('kept')] <class 'ValueError'>\n\n[TypeError()]\n"
+        );
+    }
+
+    #[test]
+    fn return_through_finally_is_rejected() {
+        let src = "def f():\n    try:\n        return 1\n    finally:\n        print(\"x\")\nf()\n";
+        let f = run_source(src).unwrap_err();
+        assert!(f.message.contains("finally"));
+    }
+
+    #[test]
     fn tuples_pack_unpack_and_compare() {
         let src = "t = (1, \"two\")\na, b = t\nb, a = a, b\nx, (y, z) = 1, (2, 3)\nprint(t, a, b, x, y, z)\nprint(t == (1, \"two\"), (1,) + (2, 3), len(()), 2 in (1, 2))\n";
         assert_eq!(

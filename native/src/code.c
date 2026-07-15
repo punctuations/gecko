@@ -20,6 +20,10 @@ struct SetaeCode {
     uint32_t nchildren;
     uint32_t children_cap;
 
+    SetaeExcEntry *excs;
+    uint32_t nexcs;
+    uint32_t excs_cap;
+
     char *fname;
     uint32_t nlocals;
     uint32_t nparams;
@@ -45,6 +49,7 @@ void setae_code_free(SetaeCode *c) {
     free(c->names);
     free(c->fname);
     free(c->consts);
+    free(c->excs);
     free(c->code);
     free(c);
 }
@@ -87,6 +92,24 @@ void setae_code_emit(SetaeCode *c, uint8_t op, uint8_t arg) {
     }
     c->code[c->ncode++] = op;
     c->code[c->ncode++] = arg;
+}
+
+void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t target,
+                        uint32_t depth) {
+    if (c->nexcs == c->excs_cap) {
+        c->excs_cap = c->excs_cap ? c->excs_cap * 2 : 4;
+        c->excs = realloc(c->excs, c->excs_cap * sizeof(SetaeExcEntry));
+    }
+    c->excs[c->nexcs].start = start;
+    c->excs[c->nexcs].end = end;
+    c->excs[c->nexcs].target = target;
+    c->excs[c->nexcs].depth = depth;
+    c->nexcs++;
+}
+
+const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n) {
+    *n = c->nexcs;
+    return c->excs;
 }
 
 void setae_code_set_nlocals(SetaeCode *c, uint32_t n) {

@@ -53,6 +53,24 @@ typedef struct SetaeTuple {
     SetaeValue items[];
 } SetaeTuple;
 
+typedef struct SetaeExcType {
+    SetaeObject obj;
+    const char *name;
+} SetaeExcType;
+
+typedef struct SetaeExc {
+    SetaeObject obj;
+    const char *kind;
+    SetaeValue message;
+} SetaeExc;
+
+typedef struct SetaeExcEntry {
+    uint32_t start;
+    uint32_t end;
+    uint32_t target;
+    uint32_t depth;
+} SetaeExcEntry;
+
 SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
 SetaeValue setae_dict_new(SetaeHeap *h);
@@ -63,6 +81,8 @@ SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue 
                           uint32_t nfree);
 SetaeValue setae_cell_new(SetaeHeap *h);
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n);
+SetaeValue setae_exctype_new(SetaeHeap *h, const char *name);
+SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message);
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
 void setae_vm_pop_tmp(SetaeVM *vm);
@@ -107,6 +127,8 @@ struct SetaeVM {
 
     SetaeValue tmp_roots[8];
     int ntmp;
+
+    SetaeValue exc;
 };
 
 void setae_heap_bind(SetaeHeap *h, SetaeVM *vm);
@@ -120,11 +142,12 @@ uint32_t setae_code_nlocals(const SetaeCode *c);
 uint32_t setae_code_nparams(const SetaeCode *c);
 uint32_t setae_code_ncells(const SetaeCode *c);
 uint32_t setae_code_nfrees(const SetaeCode *c);
+const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n);
 const char *setae_code_fname(const SetaeCode *c);
 const SetaeCode *setae_code_child(const SetaeCode *c, uint32_t i);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
-void setae_vm_failf(SetaeVM *vm, const char *fmt, ...);
+void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);
 
 #endif /* SETAE_INTERNAL_H */

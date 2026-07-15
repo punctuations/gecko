@@ -40,9 +40,23 @@ pub enum Stmt {
     },
     Expr(Expr),
     Nonlocal(Vec<String>),
+    Try {
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+        orelse: Vec<Stmt>,
+        finalbody: Vec<Stmt>,
+    },
+    Raise(Option<Expr>),
     Pass,
     Break,
     Continue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExceptHandler {
+    pub typ: Option<Expr>,
+    pub name: Option<String>,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

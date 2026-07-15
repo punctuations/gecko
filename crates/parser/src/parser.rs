@@ -1,4 +1,7 @@
-use ast::{BinOp, BoolOp, CmpOp, Comprehension, Expr, Keyword as KwArg, Module, Param, Stmt, UnOp};
+use ast::{
+    BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module, Param,
+    Stmt, UnOp,
+};
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +141,7 @@ impl Parser {
             TokenKind::Keyword(Kw::If) => Ok(vec![self.if_stmt()?]),
             TokenKind::Keyword(Kw::While) => Ok(vec![self.while_stmt()?]),
             TokenKind::Keyword(Kw::For) => Ok(vec![self.for_stmt()?]),
+            TokenKind::Keyword(Kw::Try) => Ok(vec![self.try_stmt()?]),
             _ => self.simple_line(),
         }
     }
@@ -167,6 +171,16 @@ impl Parser {
             TokenKind::Keyword(Kw::Continue) => {
                 self.advance();
                 Ok(Stmt::Continue)
+            }
+            TokenKind::Keyword(Kw::Raise) => {
+                self.advance();
+                if matches!(self.kind(), TokenKind::Newline | TokenKind::Eof)
+                    || self.at_op(Op::Semicolon)
+                {
+                    Ok(Stmt::Raise(None))
+                } else {
+                    Ok(Stmt::Raise(Some(self.test()?)))
+                }
             }
             TokenKind::Keyword(Kw::Nonlocal) => {
                 self.advance();
@@ -305,6 +319,58 @@ impl Parser {
             iter,
             body,
             orelse,
+        })
+    }
+
+    fn try_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_kw(Kw::Try)?;
+        let body = self.suite()?;
+        let mut handlers: Vec<ExceptHandler> = Vec::new();
+        while self.eat_kw(Kw::Except) {
+            if handlers.last().is_some_and(|h| h.typ.is_none()) {
+                return self.error("default except clause must be last");
+            }
+            let typ = if self.at_op(Op::Colon) {
+                None
+            } else {
+                Some(self.test()?)
+            };
+            let name = if self.eat_kw(Kw::As) {
+                Some(self.expect_name()?)
+            } else {
+                None
+            };
+            if typ.is_none() && name.is_some() {
+                return self.error("a bare except cannot bind a name");
+            }
+            let handler_body = self.suite()?;
+            handlers.push(ExceptHandler {
+                typ,
+                name,
+                body: handler_body,
+            });
+        }
+        let orelse = if self.eat_kw(Kw::Else) {
+            if handlers.is_empty() {
+                return self.error("try/else needs at least one except clause");
+            }
+            self.suite()?
+        } else {
+            Vec::new()
+        };
+        let finalbody = if self.eat_kw(Kw::Finally) {
+            self.suite()?
+        } else {
+            Vec::new()
+        };
+        if handlers.is_empty() && finalbody.is_empty() {
+            return self.error("try needs an except or finally clause");
+        }
+        Ok(Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
         })
     }
 

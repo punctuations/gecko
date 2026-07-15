@@ -54,6 +54,7 @@ Implemented:
 - CALL_METHOD (arg packs a name index in the high bits and the argument count
   in the low byte)
 - EXTENDED_ARG
+- RAISE, RERAISE, EXC_MATCH
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.
@@ -64,6 +65,22 @@ returns None via a compiler-emitted LOAD_CONST and RETURN.
 
 Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector.
 Attribute access beyond method calls arrives with classes (v0.0.2).
+
+## Exception table
+
+Each code object carries a table of entries (start, end, target, depth), all in
+instruction units. When an instruction in [start, end) raises, the VM cuts the
+operand stack back to depth, pushes the exception object, and jumps to target.
+Entries are scanned in order and the first match wins. An inner try finishes
+compiling before its enclosing try, so inner entries come first and shadow the
+outer ones. A frame with no matching entry returns to its caller, which repeats
+the search at its CALL instruction. A try block costs nothing when no exception
+is raised.
+
+depth is the number of enclosing for-loop iterators inside the frame, which is
+everything living on the operand stack at a statement boundary. finally blocks
+are compiled twice, once inline for the normal path and once as a handler that
+reraises.
 
 ## Dispatch
 
@@ -80,4 +97,3 @@ v0.0.1 keeps code objects in memory only. An on-disk cache format, compiled
 
 - Superinstructions and inline caches wait for v0.0.5, but leave opcode space
   for them.
-- The exception table format, for zero-cost try/except in v0.0.2.
