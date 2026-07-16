@@ -12,6 +12,7 @@ struct SetaeHeap {
     size_t count;
     size_t cap;
     size_t threshold;
+    size_t limit;
     SetaeVM *vm;
 };
 
@@ -29,9 +30,16 @@ size_t setae_heap_live(const SetaeHeap *h) {
     return h->count;
 }
 
+void setae_heap_set_limit(SetaeHeap *h, size_t max_objects) {
+    h->limit = max_objects;
+}
+
 static void *heap_alloc(SetaeHeap *h, size_t size, SetaeType type) {
     if (h->vm != NULL && h->vm->depth > 0 && h->count >= h->threshold) {
         setae_gc_collect(h->vm);
+    }
+    if (h->limit != 0 && h->count >= h->limit && h->vm != NULL) {
+        setae_vm_oom(h->vm);
     }
     SetaeObject *o = calloc(1, size);
     if (o == NULL) {

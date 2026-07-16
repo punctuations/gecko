@@ -129,6 +129,21 @@ void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...) {
     }
 }
 
+void setae_vm_oom(SetaeVM *vm) {
+    if (vm->error) {
+        return;
+    }
+    vm->error = 1;
+    if (vm->oom != 0) {
+        vm->exc = vm->oom;
+    }
+    snprintf(vm->errmsg, sizeof(vm->errmsg), "MemoryError: heap object limit exceeded");
+}
+
+void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit) {
+    vm->step_limit = limit;
+}
+
 static void raise_pending(SetaeVM *vm, SetaeValue exc) {
     SetaeExc *e = setae_to_ptr(exc);
     vm->exc = exc;
@@ -1068,6 +1083,13 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t ext = 0;
     while (ip < ncode && !vm->error) {
         fr.sp = sp;
+        if (vm->step_limit != 0 && ++vm->steps > vm->step_limit) {
+            vm->interrupted = 1;
+            vm->error = 1;
+            snprintf(vm->errmsg, sizeof(vm->errmsg),
+                     "RuntimeError: step limit exceeded");
+            break;
+        }
         uint32_t unit = ip / 2;
         uint8_t op = bytes[ip];
         uint32_t arg = ext | bytes[ip + 1];
@@ -1428,7 +1450,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             setae_vm_raise(vm, "RuntimeError", "bad opcode %u", op);
             break;
         }
-        if (vm->error) {
+        if (vm->error && !vm->interrupted) {
             uint32_t nexc;
             const SetaeExcEntry *entries = setae_code_excs(code, &nexc);
             for (uint32_t i = 0; i < nexc; i++) {
@@ -1467,5 +1489,10 @@ SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
         vm->module_cache[i] = 0;
     }
     vm->nmodules = nm;
+    vm->steps = 0;
+    vm->interrupted = 0;
+    if (vm->oom == 0) {
+        vm->oom = setae_exc_new(vm->heap, "MemoryError", setae_none());
+    }
     return run_code(vm, code, NULL, 0, NULL, 0);
 }

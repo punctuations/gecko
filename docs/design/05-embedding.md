@@ -44,14 +44,21 @@ the C ABI by unwinding.
 
 Each instance has:
 
-- memory: a heap cap. Allocating past it raises MemoryError.
-- execution: a budget in steps or time. Going over it interrupts the VM.
+- memory: a live-object cap set with setae_heap_set_limit. Allocating past it,
+  after a collection has run, raises a MemoryError the program can catch.
+- execution: a step budget set with setae_vm_set_step_limit. The VM counts
+  instructions and stops when the count passes the limit. The interrupt is not
+  an exception the program can catch, so a runaway loop cannot swallow it.
 - builtins: a policy that turns off or narrows what a script can reach, such as
   the filesystem, the network, and imports.
+
+The memory cap counts live objects rather than bytes, which is a coarse proxy.
+Byte-accurate accounting waits for the allocator rewrite in v0.0.5.
 
 ## Open
 
 - The exact C header surface and its naming.
 - Whether a host can register native functions that Python can call, in v0.0.4
   or later.
-- How fine the interrupt granularity for the execution budget needs to be.
+- Byte-accurate memory accounting and a wall-clock time budget alongside the
+  step budget.

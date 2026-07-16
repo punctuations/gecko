@@ -42,7 +42,9 @@ builtins `print`, `len`, and `range`. Anything outside that subset (defaults,
 keyword arguments, generator expressions, ternary expressions, multiple
 inheritance, `super`, bare `raise`) is rejected at compile time. A precise,
 non-moving mark-sweep collector reclaims garbage when allocation passes a
-threshold that grows with the live size.
+threshold that grows with the live size. An embedding host can run many
+isolated VMs and cap each one's steps and heap, so untrusted code cannot loop
+or allocate without bound.
 
 ```sh
 cargo run -p gecko -- -c 'print("hello world")'

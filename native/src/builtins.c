@@ -344,7 +344,7 @@ static SetaeValue builtin_range(SetaeVM *vm, SetaeValue *args, int nargs) {
 static const char *const EXC_KINDS[] = {
     "Exception",         "TypeError",     "ValueError",        "KeyError",
     "IndexError",        "NameError",     "UnboundLocalError", "ZeroDivisionError",
-    "RuntimeError",      "RecursionError", "AttributeError",
+    "RuntimeError",      "RecursionError", "AttributeError", "MemoryError",
 };
 
 void setae_vm_register_builtins(SetaeVM *vm) {

@@ -86,6 +86,7 @@ typedef struct SetaeHeap SetaeHeap;
 SetaeHeap *setae_heap_new(void);
 void setae_heap_destroy(SetaeHeap *h);
 size_t setae_heap_live(const SetaeHeap *h);
+void setae_heap_set_limit(SetaeHeap *h, size_t max_objects);
 SetaeValue setae_str_new(SetaeHeap *h, const char *bytes, size_t len);
 SetaeValue setae_builtin_new(SetaeHeap *h, SetaeCFunc fn, const char *name);
 
@@ -178,6 +179,7 @@ void setae_vm_destroy(SetaeVM *vm);
 void setae_vm_register_builtins(SetaeVM *vm);
 void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v);
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code);
+void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit);
 void setae_gc_collect(SetaeVM *vm);
 int setae_vm_error(SetaeVM *vm);
 const char *setae_vm_error_msg(SetaeVM *vm);

@@ -66,7 +66,9 @@ unsafe extern "C" {
     pub fn setae_heap_new() -> *mut SetaeHeap;
     pub fn setae_heap_destroy(h: *mut SetaeHeap);
     pub fn setae_heap_live(h: *const SetaeHeap) -> usize;
+    pub fn setae_heap_set_limit(h: *mut SetaeHeap, max_objects: usize);
     pub fn setae_gc_collect(vm: *mut SetaeVm);
+    pub fn setae_vm_set_step_limit(vm: *mut SetaeVm, limit: u64);
     pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
 
     pub fn setae_code_new() -> *mut SetaeCode;
@@ -241,6 +243,14 @@ impl Vm {
 
     pub fn collect(&mut self) {
         unsafe { setae_gc_collect(self.vm) }
+    }
+
+    pub fn set_step_limit(&mut self, limit: u64) {
+        unsafe { setae_vm_set_step_limit(self.vm, limit) }
+    }
+
+    pub fn set_memory_limit(&mut self, max_objects: usize) {
+        unsafe { setae_heap_set_limit(self.heap, max_objects) }
     }
 
     unsafe fn lower(&mut self, gc: *mut SetaeCode, code: &bytecode::Code) {
@@ -539,6 +549,89 @@ mod machine_tests {
         let mut vm = Vm::new();
         let run = vm.run(&root);
         assert_eq!(int_result(&run), 2);
+    }
+
+    #[test]
+    fn a_step_limit_interrupts_an_infinite_loop() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Bool(true)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::PopJumpIfFalse, 3),
+            ins(Op::Jump, 0),
+        ];
+        let mut vm = Vm::new();
+        vm.set_step_limit(1000);
+        let run = vm.run(&m);
+        assert!(run.error);
+        assert!(run.message.contains("step limit"), "{}", run.message);
+    }
+
+    #[test]
+    fn a_step_interrupt_is_not_catchable() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Bool(true), Const::Int(0)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::PopJumpIfFalse, 3),
+            ins(Op::Jump, 0),
+            ins(Op::PopTop, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::Return, 0),
+        ];
+        m.excs = vec![bytecode::ExcEntry {
+            start: 0,
+            end: 3,
+            target: 3,
+            depth: 0,
+        }];
+        let mut vm = Vm::new();
+        vm.set_step_limit(1000);
+        let run = vm.run(&m);
+        assert!(run.error, "an interrupt must not be caught by try/except");
+        assert!(run.message.contains("step limit"));
+    }
+
+    #[test]
+    fn a_memory_limit_stops_runaway_allocation() {
+        let mut m = blank(1, 0, 0, 0);
+        m.consts = vec![Const::Str("x".into()), Const::Str("y".into())];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::StoreLocal, 0),
+            ins(Op::Jump, 0),
+        ];
+        let mut vm = Vm::new();
+        vm.set_memory_limit(vm.heap_live() + 200);
+        vm.set_step_limit(1_000_000);
+        let run = vm.run(&m);
+        assert!(run.error);
+        assert!(run.message.contains("MemoryError"), "{}", run.message);
+    }
+
+    #[test]
+    fn separate_vms_have_isolated_state() {
+        let mut a = blank(0, 0, 0, 0);
+        a.consts = vec![Const::Int(10)];
+        a.names = vec!["x".into()];
+        a.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::StoreName, 0),
+            ins(Op::LoadName, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut b = blank(0, 0, 0, 0);
+        b.names = vec!["x".into()];
+        b.ops = vec![ins(Op::LoadName, 0), ins(Op::Return, 0)];
+
+        let mut vm_a = Vm::new();
+        assert_eq!(int_result(&vm_a.run(&a)), 10);
+        let mut vm_b = Vm::new();
+        let run_b = vm_b.run(&b);
+        assert!(run_b.error, "x set in vm_a must not leak into vm_b");
+        assert!(run_b.message.contains("NameError"));
     }
 
     #[test]

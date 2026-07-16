@@ -168,6 +168,11 @@ struct SetaeVM {
     SetaeValue tmp_roots[8];
     int ntmp;
 
+    uint64_t steps;
+    uint64_t step_limit;
+    int interrupted;
+    SetaeValue oom;
+
     SetaeValue exc;
 };
 
@@ -194,5 +199,6 @@ int32_t setae_code_module_parent(const SetaeCode *c);
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);
+void setae_vm_oom(SetaeVM *vm);
 
 #endif

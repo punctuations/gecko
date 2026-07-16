@@ -119,5 +119,6 @@ void setae_gc_collect(SetaeVM *vm) {
         mark(vm->module_cache[i]);
     }
     mark(vm->exc);
+    mark(vm->oom);
     setae_heap_sweep(vm->heap);
 }
