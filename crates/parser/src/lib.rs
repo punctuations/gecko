@@ -77,7 +77,10 @@ mod tests {
     #[test]
     fn funcdef_with_default() {
         let s = one("def f(a, b=1):\n    return a\n");
-        let Stmt::FunctionDef { name, params, body } = s else {
+        let Stmt::FunctionDef {
+            name, params, body, ..
+        } = s
+        else {
             panic!("{s:?}")
         };
         assert_eq!(name, "f");
@@ -178,7 +181,10 @@ mod tests {
     #[test]
     fn class_with_base_parses() {
         let s = one("class Dog(Animal):\n    def speak(self):\n        return \"woof\"\n");
-        let Stmt::ClassDef { name, bases, body } = s else {
+        let Stmt::ClassDef {
+            name, bases, body, ..
+        } = s
+        else {
             panic!("{s:?}")
         };
         assert_eq!(name, "Dog");
@@ -195,6 +201,31 @@ mod tests {
         };
         assert_eq!(name, "Empty");
         assert!(bases.is_empty());
+    }
+
+    #[test]
+    fn decorators_attach_to_the_def() {
+        let s = one("@a\n@tag(\"x\")\ndef f():\n    pass\n");
+        let Stmt::FunctionDef { decorators, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(decorators.len(), 2);
+        assert_eq!(decorators[0], Expr::Name("a".into()));
+        assert!(matches!(decorators[1], Expr::Call { .. }));
+    }
+
+    #[test]
+    fn class_decorator_parses() {
+        let s = one("@register\nclass W:\n    pass\n");
+        let Stmt::ClassDef { decorators, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(decorators, vec![Expr::Name("register".into())]);
+    }
+
+    #[test]
+    fn decorator_needs_a_def_or_class() {
+        assert!(parse("@a\nx = 1\n").is_err());
     }
 
     #[test]

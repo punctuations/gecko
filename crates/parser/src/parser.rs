@@ -137,12 +137,13 @@ impl Parser {
 
     fn statement(&mut self) -> Result<Vec<Stmt>, ParseError> {
         match self.kind() {
-            TokenKind::Keyword(Kw::Def) => Ok(vec![self.funcdef()?]),
+            TokenKind::Keyword(Kw::Def) => Ok(vec![self.funcdef(Vec::new())?]),
             TokenKind::Keyword(Kw::If) => Ok(vec![self.if_stmt()?]),
             TokenKind::Keyword(Kw::While) => Ok(vec![self.while_stmt()?]),
             TokenKind::Keyword(Kw::For) => Ok(vec![self.for_stmt()?]),
             TokenKind::Keyword(Kw::Try) => Ok(vec![self.try_stmt()?]),
-            TokenKind::Keyword(Kw::Class) => Ok(vec![self.class_stmt()?]),
+            TokenKind::Keyword(Kw::Class) => Ok(vec![self.class_stmt(Vec::new())?]),
+            TokenKind::Op(Op::At) => Ok(vec![self.decorated()?]),
             _ => self.simple_line(),
         }
     }
@@ -252,7 +253,20 @@ impl Parser {
         })
     }
 
-    fn funcdef(&mut self) -> Result<Stmt, ParseError> {
+    fn decorated(&mut self) -> Result<Stmt, ParseError> {
+        let mut decorators = Vec::new();
+        while self.eat_op(Op::At) {
+            decorators.push(self.test()?);
+            self.expect_newline()?;
+        }
+        match self.kind() {
+            TokenKind::Keyword(Kw::Def) => self.funcdef(decorators),
+            TokenKind::Keyword(Kw::Class) => self.class_stmt(decorators),
+            _ => self.error("expected a def or class after a decorator"),
+        }
+    }
+
+    fn funcdef(&mut self, decorators: Vec<Expr>) -> Result<Stmt, ParseError> {
         self.expect_kw(Kw::Def)?;
         let name = self.expect_name()?;
         self.expect_op(Op::LParen)?;
@@ -271,7 +285,12 @@ impl Parser {
         }
         self.expect_op(Op::RParen)?;
         let body = self.suite()?;
-        Ok(Stmt::FunctionDef { name, params, body })
+        Ok(Stmt::FunctionDef {
+            name,
+            params,
+            body,
+            decorators,
+        })
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -323,7 +342,7 @@ impl Parser {
         })
     }
 
-    fn class_stmt(&mut self) -> Result<Stmt, ParseError> {
+    fn class_stmt(&mut self, decorators: Vec<Expr>) -> Result<Stmt, ParseError> {
         self.expect_kw(Kw::Class)?;
         let name = self.expect_name()?;
         let mut bases = Vec::new();
@@ -337,7 +356,12 @@ impl Parser {
             self.expect_op(Op::RParen)?;
         }
         let body = self.suite()?;
-        Ok(Stmt::ClassDef { name, bases, body })
+        Ok(Stmt::ClassDef {
+            name,
+            bases,
+            body,
+            decorators,
+        })
     }
 
     fn try_stmt(&mut self) -> Result<Stmt, ParseError> {

@@ -9,11 +9,13 @@ pub enum Stmt {
         name: String,
         params: Vec<Param>,
         body: Vec<Stmt>,
+        decorators: Vec<Expr>,
     },
     ClassDef {
         name: String,
         bases: Vec<Expr>,
         body: Vec<Stmt>,
+        decorators: Vec<Expr>,
     },
     Return(Option<Expr>),
     If {

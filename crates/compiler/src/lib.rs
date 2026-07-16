@@ -87,9 +87,19 @@ fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
                 }
             }
         }
-        Stmt::ClassDef { bases, .. } => {
+        Stmt::ClassDef {
+            bases, decorators, ..
+        } => {
             for b in bases {
                 desugar_expr(b, hoisted, n);
+            }
+            for d in decorators {
+                desugar_expr(d, hoisted, n);
+            }
+        }
+        Stmt::FunctionDef { decorators, .. } => {
+            for d in decorators {
+                desugar_expr(d, hoisted, n);
             }
         }
         _ => {}
@@ -233,6 +243,7 @@ fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
             default: None,
         }],
         body,
+        decorators: Vec::new(),
     });
     desugar_expr(&mut outer_iter, hoisted, n);
     Expr::Call {
@@ -529,9 +540,19 @@ fn collect_reads(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_reads(orelse, out);
                 collect_reads(finalbody, out);
             }
-            Stmt::ClassDef { bases, .. } => {
+            Stmt::ClassDef {
+                bases, decorators, ..
+            } => {
                 for b in bases {
                     expr_reads(b, out);
+                }
+                for d in decorators {
+                    expr_reads(d, out);
+                }
+            }
+            Stmt::FunctionDef { decorators, .. } => {
+                for d in decorators {
+                    expr_reads(d, out);
                 }
             }
             _ => {}
@@ -716,7 +737,13 @@ impl Compiler {
         }
     }
 
-    fn funcdef(&mut self, name: &str, params: &[Param], body: &[Stmt]) -> Result<(), CompileError> {
+    fn funcdef(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        decorators: &[Expr],
+    ) -> Result<(), CompileError> {
         if params.iter().any(|p| p.default.is_some()) {
             return unsupported("parameter defaults");
         }
@@ -756,8 +783,14 @@ impl Compiler {
         sub.emit(Op::Return, 0);
         let idx = self.code.codes.len() as u32;
         self.code.codes.push(sub.code);
+        for d in decorators {
+            self.expr(d)?;
+        }
         self.emit_captures(&frees)?;
         self.emit(Op::MakeFunction, idx);
+        for _ in decorators {
+            self.emit(Op::Call, 1);
+        }
         self.store(name);
         Ok(())
     }
@@ -776,7 +809,13 @@ impl Compiler {
         Ok(())
     }
 
-    fn classdef(&mut self, name: &str, bases: &[Expr], body: &[Stmt]) -> Result<(), CompileError> {
+    fn classdef(
+        &mut self,
+        name: &str,
+        bases: &[Expr],
+        body: &[Stmt],
+        decorators: &[Expr],
+    ) -> Result<(), CompileError> {
         if bases.len() > 1 {
             return unsupported("multiple inheritance");
         }
@@ -819,6 +858,9 @@ impl Compiler {
         sub.emit(Op::Return, 0);
         let idx = self.code.codes.len() as u32;
         self.code.codes.push(sub.code);
+        for d in decorators {
+            self.expr(d)?;
+        }
         self.emit_captures(&frees)?;
         self.emit(Op::MakeFunction, idx);
         self.emit(Op::Call, 0);
@@ -828,6 +870,9 @@ impl Compiler {
         }
         self.load_const(Const::Str(name.to_string()));
         self.emit(Op::MakeClass, 0);
+        for _ in decorators {
+            self.emit(Op::Call, 1);
+        }
         self.store(name);
         Ok(())
     }
@@ -930,8 +975,18 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Stmt::FunctionDef { name, params, body } => self.funcdef(name, params, body),
-            Stmt::ClassDef { name, bases, body } => self.classdef(name, bases, body),
+            Stmt::FunctionDef {
+                name,
+                params,
+                body,
+                decorators,
+            } => self.funcdef(name, params, body, decorators),
+            Stmt::ClassDef {
+                name,
+                bases,
+                body,
+                decorators,
+            } => self.classdef(name, bases, body, decorators),
             Stmt::Return(value) => {
                 if self.scope.is_none() {
                     return unsupported("return outside a function");
@@ -1549,6 +1604,27 @@ mod tests {
     #[test]
     fn multiple_inheritance_is_rejected() {
         assert!(err("class C(A, B):\n    pass\n").contains("multiple inheritance"));
+    }
+
+    #[test]
+    fn decorator_emits_a_call_after_make_function() {
+        let c = code("@deco\ndef f():\n    pass\n");
+        let make = c.ops.iter().position(|i| i.op == Op::MakeFunction).unwrap();
+        let call = c.ops.iter().position(|i| i.op == Op::Call).unwrap();
+        assert!(call > make);
+        assert_eq!(c.ops[call].arg, 1);
+        assert!(c.ops.iter().any(|i| i.op == Op::StoreName));
+    }
+
+    #[test]
+    fn stacked_decorators_emit_one_call_each() {
+        let c = code("@a\n@b\ndef f():\n    pass\n");
+        let calls = c
+            .ops
+            .iter()
+            .filter(|i| i.op == Op::Call && i.arg == 1)
+            .count();
+        assert_eq!(calls, 2);
     }
 
     #[test]

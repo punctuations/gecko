@@ -329,6 +329,30 @@ mod tests {
     }
 
     #[test]
+    fn decorator_wraps_a_function() {
+        let src = "def twice(f):\n    def w(x):\n        return f(f(x))\n    return w\n@twice\ndef inc(n):\n    return n + 1\nprint(inc(10))\n";
+        assert_eq!(run_source(src).unwrap(), "12\n");
+    }
+
+    #[test]
+    fn decorator_with_arguments() {
+        let src = "def tag(label):\n    def deco(f):\n        def w(x):\n            return label + \":\" + f(x)\n        return w\n    return deco\n@tag(\"r\")\ndef shout(s):\n    return s\nprint(shout(\"hi\"))\n";
+        assert_eq!(run_source(src).unwrap(), "r:hi\n");
+    }
+
+    #[test]
+    fn stacked_decorators_apply_bottom_up() {
+        let src = "def a(f):\n    def w(x):\n        return \"a(\" + f(x) + \")\"\n    return w\ndef b(f):\n    def w(x):\n        return \"b(\" + f(x) + \")\"\n    return w\n@a\n@b\ndef base(x):\n    return x\nprint(base(\"X\"))\n";
+        assert_eq!(run_source(src).unwrap(), "a(b(X))\n");
+    }
+
+    #[test]
+    fn class_decorator_runs() {
+        let src = "seen = []\ndef register(cls):\n    seen.append(cls)\n    return cls\n@register\nclass W:\n    def __init__(self):\n        self.name = \"w\"\nprint(W().name, len(seen))\n";
+        assert_eq!(run_source(src).unwrap(), "w 1\n");
+    }
+
+    #[test]
     fn classes_init_attributes_and_methods() {
         let src = "class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n    def norm2(self):\n        return self.x * self.x + self.y * self.y\np = Point(3, 4)\nprint(p.x, p.y, p.norm2())\n";
         assert_eq!(run_source(src).unwrap(), "3 4 25\n");
