@@ -33,14 +33,15 @@ with positional parameters, recursion, closures with `nonlocal`, lists, dicts,
 tuples with unpacking, list and dict comprehensions, `try`/`except`/`else`/
 `finally` with `raise` and the builtin exception types, classes with single
 inheritance, `__init__`, methods, and attributes, decorators on functions and
-classes, importing sibling modules with `import` and `from ... import`,
-subscripting, iteration over lists, tuples, dicts, strings, and ranges,
+classes, importing modules and packages, including dotted subpackages, with
+`import` and `from ... import` (resolved along the importing directory,
+`GECKO_PATH`, and site-packages), subscripting, iteration over lists, tuples,
+dicts, strings, and ranges,
 the methods `append`, `pop`, `get`, `keys`, `values`, and `items`, and the
 builtins `print`, `len`, and `range`. Anything outside that subset (defaults,
 keyword arguments, generator expressions, ternary expressions, multiple
-inheritance, `super`, bare `raise`, packages and dotted imports) is rejected at
-compile time. A precise, non-moving mark-sweep collector reclaims garbage when
-allocation passes a
+inheritance, `super`, bare `raise`) is rejected at compile time. A precise,
+non-moving mark-sweep collector reclaims garbage when allocation passes a
 threshold that grows with the live size.
 
 ```sh
@@ -68,6 +69,20 @@ gecko looks for the release runner next to itself, then in the cargo target
 layout, so freezing from a debug gecko still embeds the small release runner.
 `gecko build --debug` embeds a debug runtime instead, for debugging the
 runtime itself.
+
+## Installing packages
+
+`gecko install` unpacks a pure-Python wheel into site-packages so any program
+can import it.
+
+```sh
+gecko install some_package-1.0-py3-none-any.whl
+```
+
+site-packages lives under `GECKO_HOME` (default `~/.gecko`), and is searched
+after the importing directory and `GECKO_PATH`. Pass `--to dir` to install
+somewhere else. Wheels with compiled C extensions do not run, since gecko has
+no CPython C ABI.
 
 ## License
 

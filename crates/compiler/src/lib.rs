@@ -10,7 +10,7 @@ pub struct CompileError {
 }
 
 struct Registry {
-    base: Option<PathBuf>,
+    search: Vec<PathBuf>,
     by_path: Vec<(PathBuf, u32)>,
     modules: Vec<Code>,
 }
@@ -20,8 +20,18 @@ pub fn compile(module: &Module) -> Result<Code, CompileError> {
 }
 
 pub fn compile_with_base(module: &Module, base: Option<PathBuf>) -> Result<Code, CompileError> {
+    let mut search = Vec::new();
+    if let Some(base) = base {
+        search.push(base);
+    }
+    if let Some(path) = std::env::var_os("GECKO_PATH") {
+        search.extend(std::env::split_paths(&path));
+    }
+    if let Some(site) = site_packages() {
+        search.push(site);
+    }
     let reg = Rc::new(RefCell::new(Registry {
-        base,
+        search,
         by_path: Vec::new(),
         modules: Vec::new(),
     }));
@@ -29,6 +39,37 @@ pub fn compile_with_base(module: &Module, base: Option<PathBuf>) -> Result<Code,
     code.modules = std::mem::take(&mut reg.borrow_mut().modules);
     assemble(&mut code);
     Ok(code)
+}
+
+pub fn gecko_home() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("GECKO_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".gecko"))
+}
+
+pub fn site_packages() -> Option<PathBuf> {
+    gecko_home().map(|h| h.join("site-packages"))
+}
+
+fn resolve_in_dir(dir: &std::path::Path, seg: &str) -> Option<(PathBuf, bool)> {
+    let package = dir.join(seg).join("__init__.py");
+    if let Ok(key) = package.canonicalize() {
+        if key.is_file() {
+            return Some((key, true));
+        }
+    }
+    let file = dir.join(format!("{seg}.py"));
+    if let Ok(key) = file.canonicalize() {
+        if key.is_file() {
+            return Some((key, false));
+        }
+    }
+    None
+}
+
+fn resolve_on_path(search: &[PathBuf], seg: &str) -> Option<(PathBuf, bool)> {
+    search.iter().find_map(|dir| resolve_in_dir(dir, seg))
 }
 
 fn compile_unit(
@@ -294,6 +335,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         nfrees,
         codes: Vec::new(),
         modules: Vec::new(),
+        parent_module: -1,
     }
 }
 
@@ -364,53 +406,82 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn load_module(&self, name: &str) -> Result<u32, CompileError> {
-        let (base, cached) = {
-            let reg = self.registry.borrow();
-            let cached = reg.by_path.iter().find_map(|(p, id)| {
-                if p.file_stem().is_some_and(|s| s == name) {
-                    Some((p.clone(), *id))
-                } else {
-                    None
-                }
+    fn load_dotted(&self, dotted: &str) -> Result<Vec<u32>, CompileError> {
+        let search = self.registry.borrow().search.clone();
+        if search.is_empty() {
+            return Err(CompileError {
+                message: format!(
+                    "cannot import '{dotted}': imports need a source file, not -c or stdin"
+                ),
             });
-            (reg.base.clone(), cached)
-        };
-        let base = base.ok_or_else(|| CompileError {
-            message: format!("cannot import '{name}': imports need a source file, not -c or stdin"),
-        })?;
-        let path = base.join(format!("{name}.py"));
-        let key = path.canonicalize().map_err(|_| CompileError {
-            message: format!("no module named '{name}'"),
-        })?;
-        if let Some((cpath, id)) = cached {
-            if cpath == key {
-                return Ok(id);
-            }
         }
+        let segments: Vec<&str> = dotted.split('.').collect();
+        let mut ids = Vec::new();
+        let mut parent_id: i32 = -1;
+        let mut parent_dir: Option<PathBuf> = None;
+        let mut qual = String::new();
+        for (i, seg) in segments.iter().enumerate() {
+            let is_leaf = i + 1 == segments.len();
+            if qual.is_empty() {
+                qual.push_str(seg);
+            } else {
+                qual.push('.');
+                qual.push_str(seg);
+            }
+            let (key, is_pkg) = match &parent_dir {
+                Some(dir) => resolve_in_dir(dir, seg),
+                None => resolve_on_path(&search, seg),
+            }
+            .ok_or_else(|| CompileError {
+                message: format!("no module named '{qual}'"),
+            })?;
+            if !is_leaf && !is_pkg {
+                return Err(CompileError {
+                    message: format!("'{qual}' is not a package"),
+                });
+            }
+            let id = self.get_or_compile(&key, &qual, parent_id)?;
+            ids.push(id);
+            parent_id = id as i32;
+            parent_dir = if is_pkg {
+                key.parent().map(|p| p.to_path_buf())
+            } else {
+                None
+            };
+        }
+        Ok(ids)
+    }
+
+    fn get_or_compile(
+        &self,
+        key: &std::path::Path,
+        qual: &str,
+        parent_id: i32,
+    ) -> Result<u32, CompileError> {
         if let Some(id) = self
             .registry
             .borrow()
             .by_path
             .iter()
-            .find_map(|(p, id)| if *p == key { Some(*id) } else { None })
+            .find_map(|(p, id)| if p == key { Some(*id) } else { None })
         {
             return Ok(id);
         }
-        let src = std::fs::read_to_string(&key).map_err(|e| CompileError {
-            message: format!("cannot read module '{name}': {e}"),
+        let src = std::fs::read_to_string(key).map_err(|e| CompileError {
+            message: format!("cannot read module '{qual}': {e}"),
         })?;
         let ast = parser::parse(&src).map_err(|e| CompileError {
-            message: format!("in module '{name}': SyntaxError: {}", e.message),
+            message: format!("in module '{qual}': SyntaxError: {}", e.message),
         })?;
         let id = {
             let mut reg = self.registry.borrow_mut();
             let id = reg.modules.len() as u32;
-            reg.modules.push(new_code(name, 0, 0, 0, 0));
-            reg.by_path.push((key, id));
+            reg.modules.push(new_code(qual, 0, 0, 0, 0));
+            reg.by_path.push((key.to_path_buf(), id));
             id
         };
-        let code = compile_unit(&ast, name, &self.registry)?;
+        let mut code = compile_unit(&ast, qual, &self.registry)?;
+        code.parent_module = parent_id;
         self.registry.borrow_mut().modules[id as usize] = code;
         Ok(id)
     }
@@ -485,7 +556,11 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
             Stmt::FunctionDef { name, .. } | Stmt::ClassDef { name, .. } => add_unique(out, name),
             Stmt::Import(aliases) => {
                 for a in aliases {
-                    add_unique(out, a.asname.as_deref().unwrap_or(&a.name));
+                    let bound = match &a.asname {
+                        Some(x) => x.as_str(),
+                        None => a.name.split('.').next().unwrap_or(&a.name),
+                    };
+                    add_unique(out, bound);
                 }
             }
             Stmt::ImportFrom { names, .. } => {
@@ -1120,17 +1195,40 @@ impl Compiler {
             }
             Stmt::Import(aliases) => {
                 for a in aliases {
-                    let id = self.load_module(&a.name)?;
-                    self.emit(Op::Import, id);
-                    let bound = a.asname.as_deref().unwrap_or(&a.name);
-                    self.store(bound);
+                    let ids = self.load_dotted(&a.name)?;
+                    for id in &ids {
+                        self.emit(Op::Import, *id);
+                        self.emit(Op::PopTop, 0);
+                    }
+                    match &a.asname {
+                        Some(x) => {
+                            self.emit(Op::Import, *ids.last().unwrap());
+                            self.store(x);
+                        }
+                        None => {
+                            let top = a.name.split('.').next().unwrap().to_string();
+                            self.emit(Op::Import, ids[0]);
+                            self.store(&top);
+                        }
+                    }
                 }
                 Ok(())
             }
             Stmt::ImportFrom { module, names } => {
-                let id = self.load_module(module)?;
+                let ids = self.load_dotted(module)?;
+                for id in &ids {
+                    self.emit(Op::Import, *id);
+                    self.emit(Op::PopTop, 0);
+                }
+                let leaf_id = *ids.last().unwrap();
                 for a in names {
-                    self.emit(Op::Import, id);
+                    if let Ok(sub_ids) = self.load_dotted(&format!("{module}.{}", a.name)) {
+                        for id in &sub_ids {
+                            self.emit(Op::Import, *id);
+                            self.emit(Op::PopTop, 0);
+                        }
+                    }
+                    self.emit(Op::Import, leaf_id);
                     let i = self.name_idx(&a.name);
                     self.emit(Op::LoadAttr, i);
                     let bound = a.asname.as_deref().unwrap_or(&a.name);
@@ -1725,9 +1823,9 @@ mod tests {
     }
 
     #[test]
-    fn import_without_a_source_dir_errors() {
-        assert!(err("import foo\n").contains("source file"));
-        assert!(err("from bar import x\n").contains("source file"));
+    fn import_of_a_missing_module_errors() {
+        assert!(err("import no_such_module_xyz\n").contains("no_such_module_xyz"));
+        assert!(err("from no_such_module_xyz import a\n").contains("no_such_module_xyz"));
     }
 
     #[test]
@@ -1741,6 +1839,25 @@ mod tests {
         assert!(c.ops.iter().any(|i| i.op == Op::Import));
         assert_eq!(c.modules.len(), 1);
         assert_eq!(c.modules[0].name, "m");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dotted_import_registers_the_package_chain() {
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!("gecko-comp-dotted-{}", std::process::id()));
+        let sub = dir.join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(dir.join("a").join("__init__.py"), "").unwrap();
+        std::fs::write(sub.join("__init__.py"), "").unwrap();
+        std::fs::write(sub.join("c.py"), "v = 1\n").unwrap();
+        let module = parser::parse("import a.b.c\n").unwrap();
+        let code = super::compile_with_base(&module, Some(PathBuf::from(&dir))).unwrap();
+        let names: Vec<&str> = code.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "a.b", "a.b.c"]);
+        assert_eq!(code.modules[0].parent_module, -1);
+        assert_eq!(code.modules[1].parent_module, 0);
+        assert_eq!(code.modules[2].parent_module, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

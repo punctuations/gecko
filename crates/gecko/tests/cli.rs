@@ -29,6 +29,156 @@ fn imports_run_sibling_modules() {
 }
 
 #[test]
+fn dotted_packages_and_subpackages_resolve() {
+    let dir = std::env::temp_dir().join(format!("gecko-dotted-{}", std::process::id()));
+    let pkg = dir.join("pkg");
+    let sub = pkg.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(pkg.join("__init__.py"), "name = \"pkg\"\n").unwrap();
+    std::fs::write(pkg.join("mod.py"), "def f():\n    return 1\nV = 9\n").unwrap();
+    std::fs::write(sub.join("__init__.py"), "def deep():\n    return 2\n").unwrap();
+    std::fs::write(sub.join("leaf.py"), "def g():\n    return 3\n").unwrap();
+    std::fs::write(
+        dir.join("main.py"),
+        "import pkg.mod\nimport pkg.sub.leaf as L\nfrom pkg.mod import f, V\nfrom pkg.sub import deep\nprint(pkg.name, pkg.mod.f(), pkg.mod.V)\nprint(pkg.sub.leaf.g(), L.g())\nprint(f(), V, deep())\n",
+    )
+    .unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko)
+        .arg(dir.join("main.py"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "pkg 1 9\n3 3\n1 9 2\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gecko_path_and_packages_resolve() {
+    let dir = std::env::temp_dir().join(format!("gecko-path-{}", std::process::id()));
+    let lib = dir.join("lib");
+    let app = dir.join("app");
+    let pkg = app.join("mypkg");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(lib.join("util.py"), "def double(n):\n    return n * 2\n").unwrap();
+    std::fs::write(
+        pkg.join("__init__.py"),
+        "name = \"mypkg\"\ndef greet():\n    return \"hi \" + name\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("main.py"),
+        "import util\nimport mypkg\nfrom mypkg import greet\nprint(util.double(21), mypkg.name, greet())\n",
+    )
+    .unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko)
+        .arg(app.join("main.py"))
+        .env("GECKO_PATH", &lib)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42 mypkg hi mypkg\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn install_a_wheel_then_import_it() {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let dir = std::env::temp_dir().join(format!("gecko-wheel-{}", std::process::id()));
+    let home = dir.join("home");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let wheel_path = dir.join("mathlib-1.0-py3-none-any.whl");
+    let wheel = std::fs::File::create(&wheel_path).unwrap();
+    let mut zw = zip::ZipWriter::new(wheel);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    zw.start_file("mathlib/__init__.py", opts).unwrap();
+    zw.write_all(b"def add(a, b):\n    return a + b\nNAME = \"mathlib\"\n")
+        .unwrap();
+    zw.start_file("mathlib/extra.py", opts).unwrap();
+    zw.write_all(b"def triple(n):\n    return n * 3\n").unwrap();
+    zw.start_file("mathlib-1.0.dist-info/METADATA", opts)
+        .unwrap();
+    zw.write_all(b"Name: mathlib\nVersion: 1.0\n").unwrap();
+    zw.finish().unwrap();
+
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let installed = Command::new(gecko)
+        .args(["install", wheel_path.to_str().unwrap()])
+        .env("GECKO_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    assert!(home.join("site-packages/mathlib/__init__.py").is_file());
+
+    let app = dir.join("app.py");
+    std::fs::write(
+        &app,
+        "import mathlib\nfrom mathlib.extra import triple\nprint(mathlib.NAME, mathlib.add(2, 3), triple(4))\n",
+    )
+    .unwrap();
+    let run = Command::new(gecko)
+        .arg(&app)
+        .env("GECKO_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "mathlib 5 12\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn site_packages_resolve_via_gecko_home() {
+    let dir = std::env::temp_dir().join(format!("gecko-site-{}", std::process::id()));
+    let site = dir.join("home").join("site-packages").join("widget");
+    let app = dir.join("app");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        site.join("__init__.py"),
+        "def make():\n    return \"widget\"\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("main.py"), "import widget\nprint(widget.make())\n").unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko)
+        .arg(app.join("main.py"))
+        .env("GECKO_HOME", dir.join("home"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "widget\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn modules_keep_separate_namespaces() {
     let dir = std::env::temp_dir().join(format!("gecko-import-iso-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

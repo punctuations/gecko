@@ -1,6 +1,7 @@
 use std::process::exit;
 
 mod freeze;
+mod install;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -24,6 +25,8 @@ fn print_help() {
         help_row(&p, "gecko -", "run from stdin"),
         help_row(&p, "gecko build file [-o out] [--debug]", ""),
         "      freeze into a standalone executable".to_string(),
+        help_row(&p, "gecko install wheel.whl [--to dir]", ""),
+        "      unpack a wheel into site-packages".to_string(),
         String::new(),
         p.wrap("1;32", "options"),
         help_row(&p, "-h, --help", "print this help and exit"),
@@ -61,6 +64,7 @@ fn main() {
         None | Some("--help" | "-h") => print_help(),
         Some("--version" | "-V") => println!("gecko {VERSION}"),
         Some("build") => freeze::build(&args[1..]),
+        Some("install") => install::install(&args[1..]),
         Some("-c") => match args.get(1) {
             Some(src) => execute(src),
             None => {

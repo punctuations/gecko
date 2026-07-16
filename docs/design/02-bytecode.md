@@ -74,10 +74,20 @@ to its instance.
 
 ## Modules
 
-Imports resolve at compile time. The compiler reads and compiles each imported
-sibling file into a module code object, registered on the root code object with
-a global index, and lowers an import to IMPORT plus the name bindings. A frozen
-binary therefore carries its imports with no file access at run time.
+Imports resolve at compile time. The compiler searches an ordered path for the
+module: the importing file's directory, then each directory in the GECKO_PATH
+environment variable, then the site-packages directory under GECKO_HOME (or
+~/.gecko when GECKO_HOME is unset). A name resolves to `name.py` or to a package
+directory `name/__init__.py`. The compiler reads and compiles the file into a module code
+object, registered on the root code object with a global index, and lowers an
+import to IMPORT plus the name bindings. A frozen binary therefore carries its
+imports with no file access at run time.
+
+A dotted name like `a.b.c` resolves segment by segment. The first segment
+searches the path; each later segment resolves inside its parent package's
+directory, and every segment but the last must be a package. Each prefix
+becomes its own module code object carrying its parent's index. IMPORT links a
+submodule into its parent's namespace, so `a.b` becomes an attribute of `a`.
 
 Each module runs in its own namespace. A frame carries the module it belongs
 to, and a function carries the module it was defined in, so LOAD_NAME and

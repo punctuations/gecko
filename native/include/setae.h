@@ -159,6 +159,7 @@ SetaeCode *setae_code_new(void);
 void setae_code_free(SetaeCode *c);
 SetaeCode *setae_code_new_child(SetaeCode *parent);
 SetaeCode *setae_code_new_module(SetaeCode *parent);
+void setae_code_set_module_parent(SetaeCode *c, int32_t parent);
 uint32_t setae_code_add_const(SetaeCode *c, SetaeValue v);
 uint32_t setae_code_add_name(SetaeCode *c, const char *name);
 void setae_code_emit(SetaeCode *c, uint8_t op, uint8_t arg);

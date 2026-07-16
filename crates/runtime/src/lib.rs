@@ -73,6 +73,7 @@ unsafe extern "C" {
     pub fn setae_code_free(c: *mut SetaeCode);
     pub fn setae_code_new_child(parent: *mut SetaeCode) -> *mut SetaeCode;
     pub fn setae_code_new_module(parent: *mut SetaeCode) -> *mut SetaeCode;
+    pub fn setae_code_set_module_parent(c: *mut SetaeCode, parent: i32);
     pub fn setae_code_add_const(c: *mut SetaeCode, v: SetaeValue) -> u32;
     pub fn setae_code_add_name(c: *mut SetaeCode, name: *const c_char) -> u32;
     pub fn setae_code_emit(c: *mut SetaeCode, op: u8, arg: u8);
@@ -270,6 +271,7 @@ impl Vm {
             setae_code_set_nparams(gc, code.nparams);
             setae_code_set_ncells(gc, code.ncells);
             setae_code_set_nfrees(gc, code.nfrees);
+            setae_code_set_module_parent(gc, code.parent_module);
             let cs = CString::new(code.name.as_str()).expect("name has no interior NUL");
             setae_code_set_name(gc, cs.as_ptr());
             for child in &code.codes {
@@ -320,6 +322,7 @@ mod machine_tests {
             nfrees,
             codes: Vec::new(),
             modules: Vec::new(),
+            parent_module: -1,
         }
     }
 

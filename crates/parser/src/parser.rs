@@ -257,9 +257,10 @@ impl Parser {
     }
 
     fn module_name(&mut self) -> Result<String, ParseError> {
-        let name = self.expect_name()?;
-        if self.at_op(Op::Dot) {
-            return self.error("dotted module names are not supported yet");
+        let mut name = self.expect_name()?;
+        while self.eat_op(Op::Dot) {
+            name.push('.');
+            name.push_str(&self.expect_name()?);
         }
         Ok(name)
     }

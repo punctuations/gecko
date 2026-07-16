@@ -260,8 +260,25 @@ mod tests {
     }
 
     #[test]
+    fn dotted_module_names_parse() {
+        use ast::Alias;
+        let s = one("import a.b.c\n");
+        assert_eq!(
+            s,
+            Stmt::Import(vec![Alias {
+                name: "a.b.c".into(),
+                asname: None
+            }])
+        );
+        let s = one("from a.b import c\n");
+        let Stmt::ImportFrom { module, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(module, "a.b");
+    }
+
+    #[test]
     fn unsupported_import_forms_error() {
-        assert!(parse("import a.b\n").is_err());
         assert!(parse("from m import *\n").is_err());
     }
 

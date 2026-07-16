@@ -1283,6 +1283,16 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             setae_vm_pop_tmp(vm);
             setae_vm_pop_tmp(vm);
             vm->module_cache[arg] = mod;
+            int32_t parent = setae_code_module_parent(mcode);
+            if (parent >= 0 && (uint32_t)parent < vm->nmodules &&
+                vm->module_cache[parent] != 0) {
+                const char *qual = setae_code_fname(mcode);
+                const char *leaf = strrchr(qual, '.');
+                leaf = leaf ? leaf + 1 : qual;
+                SetaeModule *pm = setae_to_ptr(vm->module_cache[parent]);
+                SetaeValue key = setae_str_new(vm->heap, leaf, strlen(leaf));
+                dict_set(setae_to_ptr(pm->dict), key, mod);
+            }
             run_code(vm, mcode, NULL, 0, NULL, mod);
             if (vm->error) {
                 break;

@@ -33,10 +33,13 @@ struct SetaeCode {
     uint32_t nparams;
     uint32_t ncells;
     uint32_t nfrees;
+    int32_t module_parent;
 };
 
 SetaeCode *setae_code_new(void) {
-    return calloc(1, sizeof(SetaeCode));
+    SetaeCode *c = calloc(1, sizeof(SetaeCode));
+    c->module_parent = -1;
+    return c;
 }
 
 void setae_code_free(SetaeCode *c) {
@@ -201,4 +204,12 @@ const SetaeCode *setae_code_module(const SetaeCode *c, uint32_t i) {
 
 uint32_t setae_code_nmodules(const SetaeCode *c) {
     return c->nmodules;
+}
+
+void setae_code_set_module_parent(SetaeCode *c, int32_t parent) {
+    c->module_parent = parent;
+}
+
+int32_t setae_code_module_parent(const SetaeCode *c) {
+    return c->module_parent;
 }

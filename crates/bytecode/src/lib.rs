@@ -11,6 +11,7 @@ pub struct Code {
     pub nfrees: u32,
     pub codes: Vec<Code>,
     pub modules: Vec<Code>,
+    pub parent_module: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -183,6 +184,7 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     for m in &c.modules {
         write_code(out, m);
     }
+    w32(out, c.parent_module as u32);
 }
 
 pub fn from_bytes(data: &[u8]) -> Result<Code, String> {
@@ -270,6 +272,7 @@ impl Reader<'_> {
         for _ in 0..self.u32()? {
             modules.push(self.code()?);
         }
+        let parent_module = self.u32()? as i32;
         Ok(Code {
             name,
             consts,
@@ -282,6 +285,7 @@ impl Reader<'_> {
             nfrees,
             codes,
             modules,
+            parent_module,
         })
     }
 }
@@ -366,6 +370,7 @@ mod tests {
             nfrees: 1,
             codes: Vec::new(),
             modules: Vec::new(),
+            parent_module: -1,
         };
         let submodule = Code {
             name: "helpers".into(),
@@ -388,6 +393,7 @@ mod tests {
             nfrees: 0,
             codes: Vec::new(),
             modules: Vec::new(),
+            parent_module: 3,
         };
         let outer = Code {
             name: "<module>".into(),
@@ -423,6 +429,7 @@ mod tests {
             nfrees: 0,
             codes: vec![inner],
             modules: vec![submodule],
+            parent_module: -1,
         };
         let bytes = to_bytes(&outer);
         assert_eq!(from_bytes(&bytes).unwrap(), outer);
@@ -444,6 +451,7 @@ mod tests {
             nfrees: 0,
             codes: Vec::new(),
             modules: Vec::new(),
+            parent_module: -1,
         });
         good.push(0);
         assert!(from_bytes(&good).is_err());
