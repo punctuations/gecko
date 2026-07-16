@@ -229,6 +229,43 @@ mod tests {
     }
 
     #[test]
+    fn import_forms_parse() {
+        use ast::Alias;
+        let s = one("import foo\n");
+        assert_eq!(
+            s,
+            Stmt::Import(vec![Alias {
+                name: "foo".into(),
+                asname: None
+            }])
+        );
+        let s = one("import foo as f, bar\n");
+        let Stmt::Import(names) = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(names[0].asname.as_deref(), Some("f"));
+        assert_eq!(names[1].name, "bar");
+    }
+
+    #[test]
+    fn from_import_parses() {
+        let s = one("from mod import a, b as c\n");
+        let Stmt::ImportFrom { module, names } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(module, "mod");
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].name, "a");
+        assert_eq!(names[1].asname.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn unsupported_import_forms_error() {
+        assert!(parse("import a.b\n").is_err());
+        assert!(parse("from m import *\n").is_err());
+    }
+
+    #[test]
     fn try_clause_order_is_enforced() {
         assert!(
             parse("try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n").is_err()

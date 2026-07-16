@@ -40,7 +40,14 @@ typedef struct SetaeFunc {
     const SetaeCode *code;
     SetaeValue *cells;
     uint32_t nfree;
+    SetaeValue module;
 } SetaeFunc;
+
+typedef struct SetaeModule {
+    SetaeObject obj;
+    SetaeValue name;
+    SetaeValue dict;
+} SetaeModule;
 
 typedef struct SetaeCell {
     SetaeObject obj;
@@ -97,7 +104,8 @@ void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
-                          uint32_t nfree);
+                          uint32_t nfree, SetaeValue module);
+SetaeValue setae_module_new(SetaeHeap *h, SetaeValue name, SetaeValue dict);
 SetaeValue setae_cell_new(SetaeHeap *h);
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n);
 SetaeValue setae_exctype_new(SetaeHeap *h, const char *name);
@@ -124,6 +132,7 @@ typedef struct SetaeFrame {
     SetaeValue *slots;
     uint32_t fixed;
     int sp;
+    SetaeValue module;
     struct SetaeFrame *parent;
 } SetaeFrame;
 
@@ -133,6 +142,10 @@ struct SetaeVM {
     SetaeGlobal *globals;
     size_t nglobals;
     size_t globals_cap;
+
+    SetaeGlobal *builtins;
+    size_t nbuiltins;
+    size_t builtins_cap;
 
     char *out;
     size_t out_len;
@@ -148,11 +161,17 @@ struct SetaeVM {
     size_t ncodes;
     size_t codes_cap;
 
+    const SetaeCode *root;
+    SetaeValue *module_cache;
+    uint32_t nmodules;
+
     SetaeValue tmp_roots[8];
     int ntmp;
 
     SetaeValue exc;
 };
+
+void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v);
 
 void setae_heap_bind(SetaeHeap *h, SetaeVM *vm);
 void setae_heap_sweep(SetaeHeap *h);
@@ -168,6 +187,8 @@ uint32_t setae_code_nfrees(const SetaeCode *c);
 const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n);
 const char *setae_code_fname(const SetaeCode *c);
 const SetaeCode *setae_code_child(const SetaeCode *c, uint32_t i);
+const SetaeCode *setae_code_module(const SetaeCode *c, uint32_t i);
+uint32_t setae_code_nmodules(const SetaeCode *c);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);

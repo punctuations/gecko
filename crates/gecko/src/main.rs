@@ -78,7 +78,7 @@ fn main() {
             execute(&src);
         }
         Some(path) if !path.starts_with('-') => match std::fs::read_to_string(path) {
-            Ok(src) => execute(&src),
+            Ok(src) => execute_file(path, &src),
             Err(e) => {
                 eprintln!("gecko: cannot read {path}: {e}");
                 exit(1);
@@ -127,9 +127,25 @@ fn execute(src: &str) {
     finish(run_source(src));
 }
 
+fn execute_file(path: &str, src: &str) {
+    let base = std::path::Path::new(path).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            p.to_path_buf()
+        }
+    });
+    finish(run_source_base(src, base));
+}
+
 fn run_source(src: &str) -> Result<String, Failure> {
+    run_source_base(src, None)
+}
+
+fn run_source_base(src: &str, base: Option<std::path::PathBuf>) -> Result<String, Failure> {
     let module = parser::parse(src).map_err(|e| format!("SyntaxError: {}", e.message))?;
-    let code = compiler::compile(&module).map_err(|e| format!("CompileError: {}", e.message))?;
+    let code = compiler::compile_with_base(&module, base)
+        .map_err(|e| format!("CompileError: {}", e.message))?;
     run_code(&code)
 }
 

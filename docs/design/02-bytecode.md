@@ -57,6 +57,7 @@ Implemented:
 - RAISE, RERAISE, EXC_MATCH
 - LOAD_ATTR, STORE_ATTR (arg is a name index)
 - MAKE_CLASS (pops the namespace dict, base, and name)
+- IMPORT (arg is a module index; pushes the module object)
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.
@@ -70,6 +71,22 @@ produce a namespace dict, which MAKE_CLASS turns into a class object with its
 name and optional single base. Instantiating a class allocates an instance and
 runs __init__ with the instance prepended as self. Looking up a method binds it
 to its instance.
+
+## Modules
+
+Imports resolve at compile time. The compiler reads and compiles each imported
+sibling file into a module code object, registered on the root code object with
+a global index, and lowers an import to IMPORT plus the name bindings. A frozen
+binary therefore carries its imports with no file access at run time.
+
+Each module runs in its own namespace. A frame carries the module it belongs
+to, and a function carries the module it was defined in, so LOAD_NAME and
+STORE_NAME target that module's namespace dict rather than the main script's
+globals. Builtins live in a separate table that every module falls back to. The
+main script has no module and uses a flat global table, so a program with no
+imports resolves names exactly as before. IMPORT runs a module once and caches
+the result, so cyclic imports get the partially built module already in the
+cache.
 
 Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector.
 

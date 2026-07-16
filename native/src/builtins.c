@@ -234,6 +234,13 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
         out_str(vm, ">");
         return;
     }
+    case SETAE_T_MODULE: {
+        SetaeModule *m = setae_to_ptr(v);
+        out_str(vm, "<module '");
+        setae_vm_append_output(vm, setae_str_data(m->name), setae_str_len(m->name));
+        out_str(vm, "'>");
+        return;
+    }
     case SETAE_T_EXCTYPE: {
         SetaeExcType *t = setae_to_ptr(v);
         out_str(vm, "<class '");
@@ -342,10 +349,10 @@ static const char *const EXC_KINDS[] = {
 
 void setae_vm_register_builtins(SetaeVM *vm) {
     SetaeHeap *h = setae_vm_heap(vm);
-    setae_vm_set_global(vm, "print", setae_builtin_new(h, builtin_print, "print"));
-    setae_vm_set_global(vm, "len", setae_builtin_new(h, builtin_len, "len"));
-    setae_vm_set_global(vm, "range", setae_builtin_new(h, builtin_range, "range"));
+    setae_vm_register_builtin(vm, "print", setae_builtin_new(h, builtin_print, "print"));
+    setae_vm_register_builtin(vm, "len", setae_builtin_new(h, builtin_len, "len"));
+    setae_vm_register_builtin(vm, "range", setae_builtin_new(h, builtin_range, "range"));
     for (size_t i = 0; i < sizeof(EXC_KINDS) / sizeof(EXC_KINDS[0]); i++) {
-        setae_vm_set_global(vm, EXC_KINDS[i], setae_exctype_new(h, EXC_KINDS[i]));
+        setae_vm_register_builtin(vm, EXC_KINDS[i], setae_exctype_new(h, EXC_KINDS[i]));
     }
 }

@@ -130,6 +130,7 @@ typedef enum {
     OP_LOAD_ATTR,
     OP_STORE_ATTR,
     OP_MAKE_CLASS,
+    OP_IMPORT,
 } SetaeOp;
 
 typedef enum {
@@ -157,6 +158,7 @@ typedef struct SetaeCode SetaeCode;
 SetaeCode *setae_code_new(void);
 void setae_code_free(SetaeCode *c);
 SetaeCode *setae_code_new_child(SetaeCode *parent);
+SetaeCode *setae_code_new_module(SetaeCode *parent);
 uint32_t setae_code_add_const(SetaeCode *c, SetaeValue v);
 uint32_t setae_code_add_name(SetaeCode *c, const char *name);
 void setae_code_emit(SetaeCode *c, uint8_t op, uint8_t arg);

@@ -44,6 +44,11 @@ pub enum Stmt {
         value: Expr,
     },
     Expr(Expr),
+    Import(Vec<Alias>),
+    ImportFrom {
+        module: String,
+        names: Vec<Alias>,
+    },
     Nonlocal(Vec<String>),
     Try {
         body: Vec<Stmt>,
@@ -68,6 +73,12 @@ pub struct ExceptHandler {
 pub struct Param {
     pub name: String,
     pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Alias {
+    pub name: String,
+    pub asname: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

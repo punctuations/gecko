@@ -17,6 +17,9 @@
 *.dylib
 *.dll
 
+# Python examples
+__pycache__/
+
 # Editor / OS
 .vscode/
 .idea/

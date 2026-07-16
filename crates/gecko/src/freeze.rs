@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 
 pub fn build(args: &[String]) {
@@ -44,7 +44,14 @@ pub fn build(args: &[String]) {
             exit(1);
         }
     };
-    let code = match compiler::compile(&module) {
+    let base = Path::new(&input).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            p.to_path_buf()
+        }
+    });
+    let code = match compiler::compile_with_base(&module, base) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("CompileError: {}", e.message);

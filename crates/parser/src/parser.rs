@@ -1,6 +1,6 @@
 use ast::{
-    BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module, Param,
-    Stmt, UnOp,
+    Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module,
+    Param, Stmt, UnOp,
 };
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
@@ -184,6 +184,8 @@ impl Parser {
                     Ok(Stmt::Raise(Some(self.test()?)))
                 }
             }
+            TokenKind::Keyword(Kw::Import) => self.import_stmt(),
+            TokenKind::Keyword(Kw::From) => self.import_from_stmt(),
             TokenKind::Keyword(Kw::Nonlocal) => {
                 self.advance();
                 let mut names = vec![self.expect_name()?];
@@ -204,6 +206,62 @@ impl Parser {
             }
             _ => self.expr_or_assign(),
         }
+    }
+
+    fn import_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_kw(Kw::Import)?;
+        let mut names = Vec::new();
+        loop {
+            let name = self.module_name()?;
+            let asname = if self.eat_kw(Kw::As) {
+                Some(self.expect_name()?)
+            } else {
+                None
+            };
+            names.push(Alias { name, asname });
+            if !self.eat_op(Op::Comma) {
+                break;
+            }
+        }
+        Ok(Stmt::Import(names))
+    }
+
+    fn import_from_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_kw(Kw::From)?;
+        let module = self.module_name()?;
+        self.expect_kw(Kw::Import)?;
+        if self.at_op(Op::Star) {
+            return self.error("'from module import *' is not supported yet");
+        }
+        let parenthesized = self.eat_op(Op::LParen);
+        let mut names = Vec::new();
+        loop {
+            let name = self.expect_name()?;
+            let asname = if self.eat_kw(Kw::As) {
+                Some(self.expect_name()?)
+            } else {
+                None
+            };
+            names.push(Alias { name, asname });
+            if !self.eat_op(Op::Comma) {
+                break;
+            }
+            if parenthesized && self.at_op(Op::RParen) {
+                break;
+            }
+        }
+        if parenthesized {
+            self.expect_op(Op::RParen)?;
+        }
+        Ok(Stmt::ImportFrom { module, names })
+    }
+
+    fn module_name(&mut self) -> Result<String, ParseError> {
+        let name = self.expect_name()?;
+        if self.at_op(Op::Dot) {
+            return self.error("dotted module names are not supported yet");
+        }
+        Ok(name)
     }
 
     fn expr_or_assign(&mut self) -> Result<Stmt, ParseError> {

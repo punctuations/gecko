@@ -72,6 +72,7 @@ unsafe extern "C" {
     pub fn setae_code_new() -> *mut SetaeCode;
     pub fn setae_code_free(c: *mut SetaeCode);
     pub fn setae_code_new_child(parent: *mut SetaeCode) -> *mut SetaeCode;
+    pub fn setae_code_new_module(parent: *mut SetaeCode) -> *mut SetaeCode;
     pub fn setae_code_add_const(c: *mut SetaeCode, v: SetaeValue) -> u32;
     pub fn setae_code_add_name(c: *mut SetaeCode, name: *const c_char) -> u32;
     pub fn setae_code_emit(c: *mut SetaeCode, op: u8, arg: u8);
@@ -172,7 +173,9 @@ pub struct Run {
 }
 
 fn args_fit(code: &bytecode::Code) -> bool {
-    code.ops.iter().all(|i| i.arg <= u8::MAX as u32) && code.codes.iter().all(args_fit)
+    code.ops.iter().all(|i| i.arg <= u8::MAX as u32)
+        && code.codes.iter().all(args_fit)
+        && code.modules.iter().all(args_fit)
 }
 
 impl Vm {
@@ -273,6 +276,10 @@ impl Vm {
                 let cgc = setae_code_new_child(gc);
                 self.lower(cgc, child);
             }
+            for module in &code.modules {
+                let mgc = setae_code_new_module(gc);
+                self.lower(mgc, module);
+            }
         }
     }
 }
@@ -312,6 +319,7 @@ mod machine_tests {
             ncells,
             nfrees,
             codes: Vec::new(),
+            modules: Vec::new(),
         }
     }
 
@@ -487,6 +495,47 @@ mod machine_tests {
         let mut vm = Vm::new();
         let run = vm.run(&m);
         assert_eq!(int_result(&run), 299);
+    }
+
+    #[test]
+    fn import_runs_a_module_and_reads_its_attribute() {
+        let mut module = blank(0, 0, 0, 0);
+        module.name = "helpers".into();
+        module.consts = vec![Const::Int(42)];
+        module.names = vec!["value".into()];
+        module.ops = vec![ins(Op::LoadConst, 0), ins(Op::StoreName, 0)];
+
+        let mut root = blank(0, 0, 0, 0);
+        root.names = vec!["value".into()];
+        root.modules = vec![module];
+        root.ops = vec![ins(Op::Import, 0), ins(Op::LoadAttr, 0), ins(Op::Return, 0)];
+        let mut vm = Vm::new();
+        let run = vm.run(&root);
+        assert_eq!(int_result(&run), 42);
+    }
+
+    #[test]
+    fn a_module_is_cached_across_imports() {
+        let mut module = blank(1, 0, 0, 0);
+        module.name = "counter".into();
+        module.consts = vec![Const::Int(1)];
+        module.names = vec!["n".into()];
+        module.ops = vec![ins(Op::LoadConst, 0), ins(Op::StoreName, 0)];
+
+        let mut root = blank(0, 0, 0, 0);
+        root.names = vec!["n".into()];
+        root.modules = vec![module];
+        root.ops = vec![
+            ins(Op::Import, 0),
+            ins(Op::LoadAttr, 0),
+            ins(Op::Import, 0),
+            ins(Op::LoadAttr, 0),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&root);
+        assert_eq!(int_result(&run), 2);
     }
 
     #[test]

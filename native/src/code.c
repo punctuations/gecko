@@ -20,6 +20,10 @@ struct SetaeCode {
     uint32_t nchildren;
     uint32_t children_cap;
 
+    struct SetaeCode **modules;
+    uint32_t nmodules;
+    uint32_t modules_cap;
+
     SetaeExcEntry *excs;
     uint32_t nexcs;
     uint32_t excs_cap;
@@ -43,6 +47,10 @@ void setae_code_free(SetaeCode *c) {
         setae_code_free(c->children[i]);
     }
     free(c->children);
+    for (uint32_t i = 0; i < c->nmodules; i++) {
+        setae_code_free(c->modules[i]);
+    }
+    free(c->modules);
     for (uint32_t i = 0; i < c->nnames; i++) {
         free(c->names[i]);
     }
@@ -63,6 +71,17 @@ SetaeCode *setae_code_new_child(SetaeCode *parent) {
     SetaeCode *child = setae_code_new();
     parent->children[parent->nchildren++] = child;
     return child;
+}
+
+SetaeCode *setae_code_new_module(SetaeCode *parent) {
+    if (parent->nmodules == parent->modules_cap) {
+        parent->modules_cap = parent->modules_cap ? parent->modules_cap * 2 : 4;
+        parent->modules =
+            realloc(parent->modules, parent->modules_cap * sizeof(SetaeCode *));
+    }
+    SetaeCode *m = setae_code_new();
+    parent->modules[parent->nmodules++] = m;
+    return m;
 }
 
 uint32_t setae_code_add_const(SetaeCode *c, SetaeValue v) {
@@ -174,4 +193,12 @@ const char *setae_code_fname(const SetaeCode *c) {
 
 const SetaeCode *setae_code_child(const SetaeCode *c, uint32_t i) {
     return i < c->nchildren ? c->children[i] : NULL;
+}
+
+const SetaeCode *setae_code_module(const SetaeCode *c, uint32_t i) {
+    return i < c->nmodules ? c->modules[i] : NULL;
+}
+
+uint32_t setae_code_nmodules(const SetaeCode *c) {
+    return c->nmodules;
 }

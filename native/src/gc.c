@@ -65,6 +65,13 @@ static void mark(SetaeValue v) {
         for (uint32_t i = 0; i < f->nfree; i++) {
             mark(f->cells[i]);
         }
+        mark(f->module);
+        break;
+    }
+    case SETAE_T_MODULE: {
+        SetaeModule *m = (SetaeModule *)o;
+        mark(m->name);
+        mark(m->dict);
         break;
     }
     }
@@ -83,6 +90,10 @@ static void mark_code(const SetaeCode *c) {
         }
         mark_code(child);
     }
+    uint32_t nm = setae_code_nmodules(c);
+    for (uint32_t i = 0; i < nm; i++) {
+        mark_code(setae_code_module(c, i));
+    }
 }
 
 void setae_gc_collect(SetaeVM *vm) {
@@ -100,6 +111,12 @@ void setae_gc_collect(SetaeVM *vm) {
     }
     for (int i = 0; i < vm->ntmp; i++) {
         mark(vm->tmp_roots[i]);
+    }
+    for (size_t i = 0; i < vm->nbuiltins; i++) {
+        mark(vm->builtins[i].value);
+    }
+    for (uint32_t i = 0; i < vm->nmodules; i++) {
+        mark(vm->module_cache[i]);
     }
     mark(vm->exc);
     setae_heap_sweep(vm->heap);

@@ -11,6 +11,4 @@ publish = false
 [dependencies]
 ast = { path = "../ast" }
 bytecode = { path = "../bytecode" }
-
-[dev-dependencies]
 parser = { path = "../parser" }

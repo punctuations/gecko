@@ -10,6 +10,7 @@ pub struct Code {
     pub ncells: u32,
     pub nfrees: u32,
     pub codes: Vec<Code>,
+    pub modules: Vec<Code>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,6 +76,7 @@ pub enum Op {
     LoadAttr = 34,
     StoreAttr = 35,
     MakeClass = 36,
+    Import = 37,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -177,6 +179,10 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     for child in &c.codes {
         write_code(out, child);
     }
+    w32(out, c.modules.len() as u32);
+    for m in &c.modules {
+        write_code(out, m);
+    }
 }
 
 pub fn from_bytes(data: &[u8]) -> Result<Code, String> {
@@ -260,6 +266,10 @@ impl Reader<'_> {
         for _ in 0..self.u32()? {
             codes.push(self.code()?);
         }
+        let mut modules = Vec::new();
+        for _ in 0..self.u32()? {
+            modules.push(self.code()?);
+        }
         Ok(Code {
             name,
             consts,
@@ -271,6 +281,7 @@ impl Reader<'_> {
             ncells,
             nfrees,
             codes,
+            modules,
         })
     }
 }
@@ -314,6 +325,7 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         34 => Op::LoadAttr,
         35 => Op::StoreAttr,
         36 => Op::MakeClass,
+        37 => Op::Import,
         _ => return Err(format!("bad opcode {v}")),
     })
 }
@@ -353,12 +365,39 @@ mod tests {
             ncells: 0,
             nfrees: 1,
             codes: Vec::new(),
+            modules: Vec::new(),
+        };
+        let submodule = Code {
+            name: "helpers".into(),
+            consts: vec![Const::Int(1)],
+            names: vec!["value".into()],
+            ops: vec![
+                Instr {
+                    op: Op::LoadConst,
+                    arg: 0,
+                },
+                Instr {
+                    op: Op::StoreName,
+                    arg: 0,
+                },
+            ],
+            excs: Vec::new(),
+            nlocals: 0,
+            nparams: 0,
+            ncells: 0,
+            nfrees: 0,
+            codes: Vec::new(),
+            modules: Vec::new(),
         };
         let outer = Code {
             name: "<module>".into(),
             consts: vec![Const::Int(-7), Const::Str("hi \u{e9}".into())],
             names: vec!["x".into(), "y".into()],
             ops: vec![
+                Instr {
+                    op: Op::Import,
+                    arg: 0,
+                },
                 Instr {
                     op: Op::MakeFunction,
                     arg: 0,
@@ -383,6 +422,7 @@ mod tests {
             ncells: 2,
             nfrees: 0,
             codes: vec![inner],
+            modules: vec![submodule],
         };
         let bytes = to_bytes(&outer);
         assert_eq!(from_bytes(&bytes).unwrap(), outer);
@@ -403,6 +443,7 @@ mod tests {
             ncells: 0,
             nfrees: 0,
             codes: Vec::new(),
+            modules: Vec::new(),
         });
         good.push(0);
         assert!(from_bytes(&good).is_err());

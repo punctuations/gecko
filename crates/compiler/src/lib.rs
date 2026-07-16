@@ -1,28 +1,56 @@
 use ast::{BinOp, BoolOp, CmpOp, Expr, Module, Param, Stmt, UnOp};
 use bytecode::{Code, Const, Instr, Op};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompileError {
     pub message: String,
 }
 
+struct Registry {
+    base: Option<PathBuf>,
+    by_path: Vec<(PathBuf, u32)>,
+    modules: Vec<Code>,
+}
+
 pub fn compile(module: &Module) -> Result<Code, CompileError> {
+    compile_with_base(module, None)
+}
+
+pub fn compile_with_base(module: &Module, base: Option<PathBuf>) -> Result<Code, CompileError> {
+    let reg = Rc::new(RefCell::new(Registry {
+        base,
+        by_path: Vec::new(),
+        modules: Vec::new(),
+    }));
+    let mut code = compile_unit(module, "<module>", &reg)?;
+    code.modules = std::mem::take(&mut reg.borrow_mut().modules);
+    assemble(&mut code);
+    Ok(code)
+}
+
+fn compile_unit(
+    module: &Module,
+    name: &str,
+    reg: &Rc<RefCell<Registry>>,
+) -> Result<Code, CompileError> {
     let mut module = module.clone();
     let mut comps = 0u32;
     desugar_block(&mut module.body, &mut comps);
     let mut c = Compiler {
-        code: new_code("<module>", 0, 0, 0, 0),
+        code: new_code(name, 0, 0, 0, 0),
         scope: None,
         next_child: 0,
         loops: Vec::new(),
         finally_loops: Vec::new(),
+        registry: reg.clone(),
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
     }
-    let mut code = c.code;
-    assemble(&mut code);
-    Ok(code)
+    Ok(c.code)
 }
 
 fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
@@ -265,6 +293,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         ncells,
         nfrees,
         codes: Vec::new(),
+        modules: Vec::new(),
     }
 }
 
@@ -331,6 +360,60 @@ struct Compiler {
     next_child: usize,
     loops: Vec<Loop>,
     finally_loops: Vec<usize>,
+    registry: Rc<RefCell<Registry>>,
+}
+
+impl Compiler {
+    fn load_module(&self, name: &str) -> Result<u32, CompileError> {
+        let (base, cached) = {
+            let reg = self.registry.borrow();
+            let cached = reg.by_path.iter().find_map(|(p, id)| {
+                if p.file_stem().is_some_and(|s| s == name) {
+                    Some((p.clone(), *id))
+                } else {
+                    None
+                }
+            });
+            (reg.base.clone(), cached)
+        };
+        let base = base.ok_or_else(|| CompileError {
+            message: format!("cannot import '{name}': imports need a source file, not -c or stdin"),
+        })?;
+        let path = base.join(format!("{name}.py"));
+        let key = path.canonicalize().map_err(|_| CompileError {
+            message: format!("no module named '{name}'"),
+        })?;
+        if let Some((cpath, id)) = cached {
+            if cpath == key {
+                return Ok(id);
+            }
+        }
+        if let Some(id) = self
+            .registry
+            .borrow()
+            .by_path
+            .iter()
+            .find_map(|(p, id)| if *p == key { Some(*id) } else { None })
+        {
+            return Ok(id);
+        }
+        let src = std::fs::read_to_string(&key).map_err(|e| CompileError {
+            message: format!("cannot read module '{name}': {e}"),
+        })?;
+        let ast = parser::parse(&src).map_err(|e| CompileError {
+            message: format!("in module '{name}': SyntaxError: {}", e.message),
+        })?;
+        let id = {
+            let mut reg = self.registry.borrow_mut();
+            let id = reg.modules.len() as u32;
+            reg.modules.push(new_code(name, 0, 0, 0, 0));
+            reg.by_path.push((key, id));
+            id
+        };
+        let code = compile_unit(&ast, name, &self.registry)?;
+        self.registry.borrow_mut().modules[id as usize] = code;
+        Ok(id)
+    }
 }
 
 fn unsupported<T>(what: &str) -> Result<T, CompileError> {
@@ -400,6 +483,16 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_assigned(finalbody, out);
             }
             Stmt::FunctionDef { name, .. } | Stmt::ClassDef { name, .. } => add_unique(out, name),
+            Stmt::Import(aliases) => {
+                for a in aliases {
+                    add_unique(out, a.asname.as_deref().unwrap_or(&a.name));
+                }
+            }
+            Stmt::ImportFrom { names, .. } => {
+                for a in names {
+                    add_unique(out, a.asname.as_deref().unwrap_or(&a.name));
+                }
+            }
             _ => {}
         }
     }
@@ -768,6 +861,7 @@ impl Compiler {
             next_child: 0,
             loops: Vec::new(),
             finally_loops: Vec::new(),
+            registry: self.registry.clone(),
         };
         let cells = sub.scope.as_ref().unwrap().cells.clone();
         for (ci, cname) in cells.iter().enumerate() {
@@ -841,6 +935,7 @@ impl Compiler {
             next_child: 0,
             loops: Vec::new(),
             finally_loops: Vec::new(),
+            registry: self.registry.clone(),
         };
         for s in body {
             sub.stmt(s)?;
@@ -1020,6 +1115,26 @@ impl Compiler {
                     return Err(CompileError {
                         message: "nonlocal declaration not allowed at module level".into(),
                     });
+                }
+                Ok(())
+            }
+            Stmt::Import(aliases) => {
+                for a in aliases {
+                    let id = self.load_module(&a.name)?;
+                    self.emit(Op::Import, id);
+                    let bound = a.asname.as_deref().unwrap_or(&a.name);
+                    self.store(bound);
+                }
+                Ok(())
+            }
+            Stmt::ImportFrom { module, names } => {
+                let id = self.load_module(module)?;
+                for a in names {
+                    self.emit(Op::Import, id);
+                    let i = self.name_idx(&a.name);
+                    self.emit(Op::LoadAttr, i);
+                    let bound = a.asname.as_deref().unwrap_or(&a.name);
+                    self.store(bound);
                 }
                 Ok(())
             }
@@ -1343,6 +1458,9 @@ fn assemble(code: &mut Code) {
     for child in &mut code.codes {
         assemble(child);
     }
+    for module in &mut code.modules {
+        assemble(module);
+    }
     let ops = std::mem::take(&mut code.ops);
     let n = ops.len();
     let mut width = vec![1u32; n];
@@ -1604,6 +1722,26 @@ mod tests {
     #[test]
     fn multiple_inheritance_is_rejected() {
         assert!(err("class C(A, B):\n    pass\n").contains("multiple inheritance"));
+    }
+
+    #[test]
+    fn import_without_a_source_dir_errors() {
+        assert!(err("import foo\n").contains("source file"));
+        assert!(err("from bar import x\n").contains("source file"));
+    }
+
+    #[test]
+    fn import_binds_names_as_locals_in_a_function() {
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!("gecko-comp-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("m.py"), "v = 1\n").unwrap();
+        let module = parser::parse("import m\nx = m.v\n").unwrap();
+        let c = super::compile_with_base(&module, Some(PathBuf::from(&dir))).unwrap();
+        assert!(c.ops.iter().any(|i| i.op == Op::Import));
+        assert_eq!(c.modules.len(), 1);
+        assert_eq!(c.modules[0].name, "m");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -147,15 +147,23 @@ SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target) {
 }
 
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
-                          uint32_t nfree) {
+                          uint32_t nfree, SetaeValue module) {
     SetaeFunc *f = heap_alloc(h, sizeof(SetaeFunc), SETAE_T_FUNCTION);
     f->code = code;
     f->nfree = nfree;
+    f->module = module;
     if (nfree > 0) {
         f->cells = malloc(nfree * sizeof(SetaeValue));
         memcpy(f->cells, cells, nfree * sizeof(SetaeValue));
     }
     return setae_from_ptr(f);
+}
+
+SetaeValue setae_module_new(SetaeHeap *h, SetaeValue name, SetaeValue dict) {
+    SetaeModule *m = heap_alloc(h, sizeof(SetaeModule), SETAE_T_MODULE);
+    m->name = name;
+    m->dict = dict;
+    return setae_from_ptr(m);
 }
 
 SetaeValue setae_cell_new(SetaeHeap *h) {
