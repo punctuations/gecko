@@ -2,6 +2,7 @@ use std::process::exit;
 
 mod freeze;
 mod install;
+mod sandbox;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -155,6 +156,7 @@ fn run_source_base(src: &str, base: Option<std::path::PathBuf>) -> Result<String
 
 fn run_code(code: &bytecode::Code) -> Result<String, Failure> {
     let mut vm = runtime::Vm::new();
+    vm.set_sandbox_hook(sandbox::hook);
     let run = vm.run(code);
     if run.error {
         let message = if run.message.is_empty() {
@@ -346,6 +348,85 @@ mod tests {
     fn recursion_limit_is_enforced() {
         let f = run_source("def f(n):\n    return f(n)\nf(1)\n").unwrap_err();
         assert!(f.message.contains("RecursionError"));
+    }
+
+    #[test]
+    fn parameter_defaults_fill_missing_arguments() {
+        let src = "def greet(name, greeting=\"hi\"):\n    return greeting + \" \" + name\nprint(greet(\"a\"))\nprint(greet(\"b\", \"yo\"))\n";
+        assert_eq!(run_source(src).unwrap(), "hi a\nyo b\n");
+    }
+
+    #[test]
+    fn parameter_defaults_are_evaluated_once_at_definition() {
+        let src = "n = 10\ndef f(x=n):\n    return x\nn = 20\nprint(f())\nprint(f(1))\n";
+        assert_eq!(run_source(src).unwrap(), "10\n1\n");
+    }
+
+    #[test]
+    fn too_few_arguments_still_errors_with_defaults() {
+        let f = run_source("def f(a, b=1):\n    return a\nf()\n").unwrap_err();
+        assert!(f.message.contains("positional argument"));
+    }
+
+    #[test]
+    fn non_default_after_default_is_rejected() {
+        let f = run_source("def f(a=1, b):\n    return a\n").unwrap_err();
+        assert!(f.message.contains("non-default argument follows default argument"));
+    }
+
+    #[test]
+    fn is_and_is_not_compare_identity() {
+        let src = "x = None\nprint(x is None)\nprint(x is not None)\ny = 5\nprint(y is not None)\n";
+        assert_eq!(run_source(src).unwrap(), "True\nFalse\nTrue\n");
+    }
+
+    #[test]
+    fn a_missing_import_raises_at_runtime() {
+        let f = run_source("import no_such_module_zzz\n").unwrap_err();
+        assert!(f.message.contains("ImportError"));
+        assert!(f.message.contains("no_such_module_zzz"));
+    }
+
+    #[test]
+    fn a_subclassed_exception_is_catchable() {
+        let src = "class MyError(Exception):\n    pass\ntry:\n    raise MyError(\"boom\")\nexcept MyError:\n    print(\"caught\")\n";
+        assert_eq!(run_source(src).unwrap(), "caught\n");
+    }
+
+    #[test]
+    fn sandbox_runs_code_and_returns_output() {
+        let src = "from gecko import sandbox\nout = sandbox.run(\"print(2 + 3)\\nprint(\\\"hi\\\")\")\nprint(out)\n";
+        assert_eq!(run_source(src).unwrap(), "5\nhi\n\n");
+    }
+
+    #[test]
+    fn sandbox_step_limit_stops_a_loop() {
+        let src = "from gecko import sandbox\ntry:\n    sandbox.run(\"while True:\\n    pass\", 5000)\nexcept SandboxError as e:\n    print(\"stopped\")\n";
+        assert_eq!(run_source(src).unwrap(), "stopped\n");
+    }
+
+    #[test]
+    fn sandbox_time_limit_stops_a_loop() {
+        let src = "from gecko import sandbox\ntry:\n    sandbox.run(\"while True:\\n    pass\", 0, 0, 20)\nexcept SandboxError as e:\n    print(\"stopped\")\n";
+        assert_eq!(run_source(src).unwrap(), "stopped\n");
+    }
+
+    #[test]
+    fn sandbox_error_is_catchable_and_isolated() {
+        let src = "from gecko import sandbox\nx = 1\ntry:\n    sandbox.run(\"1 / 0\")\nexcept SandboxError:\n    print(\"caught\")\nprint(x)\n";
+        assert_eq!(run_source(src).unwrap(), "caught\n1\n");
+    }
+
+    #[test]
+    fn sandboxed_code_cannot_import_files() {
+        let src = "from gecko import sandbox\ntry:\n    sandbox.run(\"import os\")\nexcept SandboxError:\n    print(\"blocked\")\n";
+        assert_eq!(run_source(src).unwrap(), "blocked\n");
+    }
+
+    #[test]
+    fn gecko_module_also_reaches_sandbox() {
+        let src = "import gecko\nprint(gecko.sandbox.run(\"print(1 + 1)\"))\n";
+        assert_eq!(run_source(src).unwrap(), "2\n\n");
     }
 
     #[test]

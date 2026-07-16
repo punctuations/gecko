@@ -48,6 +48,13 @@ jobs:
           done
           exit $fail
 
+      - name: gecko-only examples run
+        run: |
+          for f in examples/gecko/*.py; do
+            ./target/debug/gecko "$f" || exit 1
+            echo "ran $f"
+          done
+
       - name: freeze a binary and run it
         run: |
           cargo build --release -q

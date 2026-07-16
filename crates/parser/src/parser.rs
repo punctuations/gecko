@@ -228,7 +228,24 @@ impl Parser {
 
     fn import_from_stmt(&mut self) -> Result<Stmt, ParseError> {
         self.expect_kw(Kw::From)?;
-        let module = self.module_name()?;
+        let mut level = 0;
+        loop {
+            if self.eat_op(Op::Dot) {
+                level += 1;
+            } else if self.eat_op(Op::Ellipsis) {
+                level += 3;
+            } else {
+                break;
+            }
+        }
+        let module = if self.at_kw(Kw::Import) {
+            if level == 0 {
+                return self.error("expected a module name");
+            }
+            String::new()
+        } else {
+            self.module_name()?
+        };
         self.expect_kw(Kw::Import)?;
         if self.at_op(Op::Star) {
             return self.error("'from module import *' is not supported yet");
@@ -253,7 +270,11 @@ impl Parser {
         if parenthesized {
             self.expect_op(Op::RParen)?;
         }
-        Ok(Stmt::ImportFrom { module, names })
+        Ok(Stmt::ImportFrom {
+            module,
+            names,
+            level,
+        })
     }
 
     fn module_name(&mut self) -> Result<String, ParseError> {

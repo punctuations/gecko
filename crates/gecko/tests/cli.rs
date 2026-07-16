@@ -29,6 +29,44 @@ fn imports_run_sibling_modules() {
 }
 
 #[test]
+fn relative_imports_resolve_within_a_package() {
+    let dir = std::env::temp_dir().join(format!("gecko-relimport-{}", std::process::id()));
+    let pkg = dir.join("pkg");
+    let sub = pkg.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(pkg.join("__init__.py"), "from . import helpers\nfrom .helpers import shout\nfrom .sub import deep\n").unwrap();
+    std::fs::write(pkg.join("helpers.py"), "def shout(s):\n    return s + \"!\"\n").unwrap();
+    std::fs::write(sub.join("__init__.py"), "from ..helpers import shout\ndef deep():\n    return shout(\"deep\")\n").unwrap();
+    std::fs::write(
+        dir.join("main.py"),
+        "import pkg\nprint(pkg.helpers.shout(\"hi\"))\nprint(pkg.shout(\"hey\"))\nprint(pkg.deep())\n",
+    )
+    .unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko).arg(dir.join("main.py")).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi!\nhey!\ndeep!\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_broken_submodule_reports_its_syntax_error() {
+    let dir = std::env::temp_dir().join(format!("gecko-broken-sub-{}", std::process::id()));
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("__init__.py"), "from . import broken\n").unwrap();
+    std::fs::write(pkg.join("broken.py"), "def (:\n").unwrap();
+    std::fs::write(dir.join("main.py"), "import pkg\n").unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko).arg(dir.join("main.py")).output().unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("SyntaxError"), "{err}");
+    assert!(err.contains("broken"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn dotted_packages_and_subpackages_resolve() {
     let dir = std::env::temp_dir().join(format!("gecko-dotted-{}", std::process::id()));
     let pkg = dir.join("pkg");
@@ -175,6 +213,35 @@ fn site_packages_resolve_via_gecko_home() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "widget\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_filesystem_gecko_package_shadows_the_builtin() {
+    let dir = std::env::temp_dir().join(format!("gecko-shadow-{}", std::process::id()));
+    let pkg = dir.join("gecko");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("__init__.py"),
+        "def hello():\n    return \"from package\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.py"),
+        "from gecko import hello\nimport _gecko\nprint(hello())\nprint(_gecko.sandbox.run(\"print(1)\"))\n",
+    )
+    .unwrap();
+    let gecko = env!("CARGO_BIN_EXE_gecko");
+    let out = Command::new(gecko)
+        .arg(dir.join("main.py"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "from package\n1\n\n");
     std::fs::remove_dir_all(&dir).ok();
 }
 

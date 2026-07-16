@@ -40,12 +40,14 @@ Implemented:
 - LOAD_CONST, LOAD_NAME, STORE_NAME, LOAD_LOCAL, STORE_LOCAL
 - POP_TOP
 - BINARY_OP (arg selects +, -, *, /, %, //)
-- COMPARE_OP (arg selects <, <=, ==, !=, >, >=, in, not in)
+- COMPARE_OP (arg selects <, <=, ==, !=, >, >=, in, not in, is, is not; is
+  compares by identity, which for gecko values is bit equality)
 - UNARY_NEG, UNARY_NOT
 - JUMP, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE
 - JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP
 - CALL, RETURN
-- MAKE_FUNCTION (arg is a child code index; pops the child's captured cells)
+- MAKE_FUNCTION (arg is a child code index; pops the child's default values then
+  its captured cells)
 - LOAD_CLOSURE (pushes a cell), LOAD_DEREF, STORE_DEREF (cell contents)
 - BUILD_LIST, BUILD_TUPLE, BUILD_DICT (arg is the element or pair count)
 - UNPACK_SEQUENCE (arg is the target count; pushes elements in reverse)
@@ -56,8 +58,11 @@ Implemented:
 - EXTENDED_ARG
 - RAISE, RERAISE, EXC_MATCH
 - LOAD_ATTR, STORE_ATTR (arg is a name index)
-- MAKE_CLASS (pops the namespace dict, base, and name)
+- MAKE_CLASS (pops the namespace dict, base, and name; a base that is a builtin
+  exception type produces a new exception type of that name)
 - IMPORT (arg is a module index; pushes the module object)
+- IMPORT_MISSING (arg is a name index; raises ImportError for a module the
+  compiler could not resolve)
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.
@@ -65,6 +70,11 @@ without a DUP_TOP.
 A function call runs the callee's code object in a new frame. The VM implements
 frames as C recursion with a depth cap. Falling off the end of a function
 returns None via a compiler-emitted LOAD_CONST and RETURN.
+
+Default arguments are evaluated once where the def appears and stored on the
+function object. A call that passes fewer arguments than parameters fills the
+trailing gap from those stored defaults, so the accepted count runs from
+params minus defaults up to params.
 
 A class body compiles to its own code object. MAKE_FUNCTION and CALL run it to
 produce a namespace dict, which MAKE_CLASS turns into a class object with its
@@ -88,6 +98,16 @@ searches the path; each later segment resolves inside its parent package's
 directory, and every segment but the last must be a package. Each prefix
 becomes its own module code object carrying its parent's index. IMPORT links a
 submodule into its parent's namespace, so `a.b` becomes an attribute of `a`.
+
+A relative import (`from . import x`, `from ..pkg import y`) resolves against
+the importing module's own directory, one level up per leading dot past the
+first. It never touches the search path.
+
+A module the compiler cannot find is not a compile error. The compiler lowers it
+to IMPORT_MISSING, which raises ImportError at run time naming the module. This
+keeps a program that imports a CPython-only module in a branch gecko never takes
+from failing to compile. A module that is found but fails to parse or compile is
+still a hard compile error.
 
 Each module runs in its own namespace. A frame carries the module it belongs
 to, and a function carries the module it was defined in, so LOAD_NAME and

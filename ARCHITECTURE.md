@@ -49,7 +49,8 @@ native/            C runtime, holding Setae (the VM), GC, scheduler, actors
   include/         public C ABI (setae.h)
   src/             value encoding, heap, code objects, interpreter, builtins
 docs/design/       Phase 0 specifications
-examples/          Python programs the runtime can run
+examples/          Python programs the runtime can run, matching CPython
+  gecko/           programs that use gecko-only builtins, so CPython cannot run them
 ```
 
 Meson builds the C runtime as a static library. crates/runtime/build.rs runs

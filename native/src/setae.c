@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define STACK_MAX 1024
 #define MAX_DEPTH 500
@@ -142,6 +143,24 @@ void setae_vm_oom(SetaeVM *vm) {
 
 void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit) {
     vm->step_limit = limit;
+}
+
+static uint64_t monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+void setae_vm_set_time_limit(SetaeVM *vm, uint64_t millis) {
+    vm->time_limit_ns = millis * 1000000ull;
+}
+
+void setae_vm_set_sandbox_hook(SetaeVM *vm, SetaeSandboxHook hook) {
+    vm->sandbox_hook = hook;
+}
+
+void setae_vm_raise_str(SetaeVM *vm, const char *kind, const char *msg) {
+    setae_vm_raise(vm, kind, "%s", msg);
 }
 
 static void raise_pending(SetaeVM *vm, SetaeValue exc) {
@@ -564,6 +583,10 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
 }
 
 static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b) {
+    if (op == CMP_IS || op == CMP_IS_NOT) {
+        int same = a == b;
+        return setae_bool(op == CMP_IS ? same : !same);
+    }
     if (op == CMP_IN || op == CMP_NOT_IN) {
         int r = contains(vm, b, a);
         if (vm->error) {
@@ -812,7 +835,9 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
 }
 
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
-                           int nargs, const SetaeValue *captured, SetaeValue module);
+                           int nargs, const SetaeValue *captured,
+                           const SetaeValue *defaults, uint32_t ndefaults,
+                           SetaeValue module);
 
 static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                              int nargs) {
@@ -824,12 +849,14 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
     if (t == SETAE_T_FUNCTION) {
         SetaeFunc *f = setae_to_ptr(callee);
         uint32_t nparams = setae_code_nparams(f->code);
-        if ((uint32_t)nargs != nparams) {
+        uint32_t required = nparams - f->ndefaults;
+        if ((uint32_t)nargs < required || (uint32_t)nargs > nparams) {
             setae_vm_raise(vm, "TypeError", "%s() takes %u positional arguments but %d were given",
                            setae_code_fname(f->code), nparams, nargs);
             return setae_none();
         }
-        return run_code(vm, f->code, args, nargs, f->cells, f->module);
+        return run_code(vm, f->code, args, nargs, f->cells, f->defaults, f->ndefaults,
+                        f->module);
     }
     if (t == SETAE_T_EXCTYPE) {
         SetaeExcType *et = setae_to_ptr(callee);
@@ -854,7 +881,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
             }
             SetaeFunc *f = setae_to_ptr(init);
             uint32_t nparams = setae_code_nparams(f->code);
-            if ((uint32_t)nargs + 1 != nparams) {
+            uint32_t required = nparams - f->ndefaults;
+            if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
                 setae_vm_raise(
                     vm, "TypeError",
                     "%.*s.__init__() takes %u positional arguments but %u were given",
@@ -867,7 +895,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
             for (int i = 0; i < nargs; i++) {
                 argv[i + 1] = args[i];
             }
-            run_code(vm, f->code, argv, nargs + 1, f->cells, f->module);
+            run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
+                     f->module);
             if (vm->error) {
                 return setae_none();
             }
@@ -882,7 +911,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         SetaeBound *b = setae_to_ptr(callee);
         SetaeFunc *f = setae_to_ptr(b->func);
         uint32_t nparams = setae_code_nparams(f->code);
-        if ((uint32_t)nargs + 1 != nparams) {
+        uint32_t required = nparams - f->ndefaults;
+        if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
             setae_vm_raise(vm, "TypeError",
                            "%s() takes %u positional arguments but %u were given",
                            setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
@@ -893,7 +923,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         for (int i = 0; i < nargs; i++) {
             argv[i + 1] = args[i];
         }
-        return run_code(vm, f->code, argv, nargs + 1, f->cells, f->module);
+        return run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
+                        f->module);
     }
     setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
@@ -914,14 +945,16 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
             if (setae_obj_type(v) == SETAE_T_FUNCTION) {
                 SetaeFunc *f = setae_to_ptr(v);
                 uint32_t nparams = setae_code_nparams(f->code);
-                if ((uint32_t)nargs + 1 != nparams) {
+                uint32_t required = nparams - f->ndefaults;
+                if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
                     setae_vm_raise(
                         vm, "TypeError",
                         "%s() takes %u positional arguments but %u were given",
                         setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
                     return setae_none();
                 }
-                return run_code(vm, f->code, args - 1, nargs + 1, f->cells, f->module);
+                return run_code(vm, f->code, args - 1, nargs + 1, f->cells, f->defaults,
+                                f->ndefaults, f->module);
             }
             return call_value(vm, v, args, nargs);
         }
@@ -1044,7 +1077,9 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
 }
 
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
-                           int nargs, const SetaeValue *captured, SetaeValue module) {
+                           int nargs, const SetaeValue *captured,
+                           const SetaeValue *defaults, uint32_t ndefaults,
+                           SetaeValue module) {
     if (vm->depth >= MAX_DEPTH) {
         setae_vm_raise(vm, "RecursionError", "maximum recursion depth exceeded");
         return setae_none();
@@ -1055,6 +1090,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t ncode;
     const uint8_t *bytes = setae_code_bytes(code, &ncode);
     uint32_t nlocals = setae_code_nlocals(code);
+    uint32_t nparams = setae_code_nparams(code);
     uint32_t ncells = setae_code_ncells(code);
     uint32_t nfrees = setae_code_nfrees(code);
     uint32_t fixed = nlocals + ncells + nfrees;
@@ -1065,6 +1101,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     SetaeValue *stack = frame + fixed;
     for (int i = 0; i < nargs; i++) {
         locals[i] = args[i];
+    }
+    for (uint32_t i = (uint32_t)nargs; i < nparams; i++) {
+        locals[i] = defaults[i - (nparams - ndefaults)];
     }
     int sp = 0;
 
@@ -1083,11 +1122,20 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t ext = 0;
     while (ip < ncode && !vm->error) {
         fr.sp = sp;
-        if (vm->step_limit != 0 && ++vm->steps > vm->step_limit) {
+        vm->steps++;
+        if (vm->step_limit != 0 && vm->steps > vm->step_limit) {
             vm->interrupted = 1;
             vm->error = 1;
             snprintf(vm->errmsg, sizeof(vm->errmsg),
                      "RuntimeError: step limit exceeded");
+            break;
+        }
+        if (vm->deadline_ns != 0 && (vm->steps & 0xfff) == 0 &&
+            monotonic_ns() > vm->deadline_ns) {
+            vm->interrupted = 1;
+            vm->error = 1;
+            snprintf(vm->errmsg, sizeof(vm->errmsg),
+                     "RuntimeError: time limit exceeded");
             break;
         }
         uint32_t unit = ip / 2;
@@ -1222,8 +1270,10 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 break;
             }
             uint32_t nf = setae_code_nfrees(child);
-            SetaeValue f = setae_func_new(vm->heap, child, &stack[sp - nf], nf, module);
-            sp -= (int)nf;
+            uint32_t nd = setae_code_ndefaults(child);
+            SetaeValue f = setae_func_new(vm->heap, child, &stack[sp - nf], nf,
+                                          &stack[sp - nf - nd], nd, module);
+            sp -= (int)(nf + nd);
             stack[sp++] = f;
             break;
         }
@@ -1277,6 +1327,17 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             SetaeValue cname = stack[--sp];
             SetaeValue base = stack[--sp];
             SetaeValue dict = stack[--sp];
+            if (!setae_is_none(base) && setae_obj_type(base) == SETAE_T_EXCTYPE) {
+                char name[128];
+                size_t len = setae_str_len(cname);
+                if (len >= sizeof(name)) {
+                    len = sizeof(name) - 1;
+                }
+                memcpy(name, setae_str_data(cname), len);
+                name[len] = '\0';
+                stack[sp++] = setae_exctype_new(vm->heap, name);
+                break;
+            }
             if (!setae_is_none(base) && setae_obj_type(base) != SETAE_T_CLASS) {
                 setae_vm_raise(vm, "TypeError", "base must be a class, not '%s'",
                                setae_type_name(base));
@@ -1315,13 +1376,17 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 SetaeValue key = setae_str_new(vm->heap, leaf, strlen(leaf));
                 dict_set(setae_to_ptr(pm->dict), key, mod);
             }
-            run_code(vm, mcode, NULL, 0, NULL, mod);
+            run_code(vm, mcode, NULL, 0, NULL, NULL, 0, mod);
             if (vm->error) {
                 break;
             }
             stack[sp++] = mod;
             break;
         }
+        case OP_IMPORT_MISSING:
+            setae_vm_raise(vm, "ImportError", "No module named '%s'",
+                           setae_code_name(code, arg));
+            break;
         case OP_RAISE:
             raise_value(vm, stack[--sp]);
             break;
@@ -1491,8 +1556,9 @@ SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
     vm->nmodules = nm;
     vm->steps = 0;
     vm->interrupted = 0;
+    vm->deadline_ns = vm->time_limit_ns != 0 ? monotonic_ns() + vm->time_limit_ns : 0;
     if (vm->oom == 0) {
         vm->oom = setae_exc_new(vm->heap, "MemoryError", setae_none());
     }
-    return run_code(vm, code, NULL, 0, NULL, 0);
+    return run_code(vm, code, NULL, 0, NULL, NULL, 0, 0);
 }

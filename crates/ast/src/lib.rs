@@ -48,6 +48,7 @@ pub enum Stmt {
     ImportFrom {
         module: String,
         names: Vec<Alias>,
+        level: u32,
     },
     Nonlocal(Vec<String>),
     Try {

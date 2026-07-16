@@ -65,6 +65,9 @@ static void mark(SetaeValue v) {
         for (uint32_t i = 0; i < f->nfree; i++) {
             mark(f->cells[i]);
         }
+        for (uint32_t i = 0; i < f->ndefaults; i++) {
+            mark(f->defaults[i]);
+        }
         mark(f->module);
         break;
     }

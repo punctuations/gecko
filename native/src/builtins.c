@@ -345,7 +345,60 @@ static const char *const EXC_KINDS[] = {
     "Exception",         "TypeError",     "ValueError",        "KeyError",
     "IndexError",        "NameError",     "UnboundLocalError", "ZeroDivisionError",
     "RuntimeError",      "RecursionError", "AttributeError", "MemoryError",
+    "SandboxError",      "ImportError",
 };
+
+static SetaeValue builtin_sandbox_run(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (vm->sandbox_hook == NULL) {
+        setae_vm_raise(vm, "RuntimeError", "sandbox is not available in this runtime");
+        return setae_none();
+    }
+    if (nargs < 1 || nargs > 4 || !setae_is_str(args[0])) {
+        setae_vm_raise(vm, "TypeError",
+                       "sandbox.run(source, steps, memory, millis) needs a source string");
+        return setae_none();
+    }
+    uint64_t steps = 0;
+    size_t mem = 0;
+    uint64_t millis = 0;
+    if (nargs >= 2) {
+        if (!setae_is_int(args[1])) {
+            setae_vm_raise(vm, "TypeError", "sandbox.run steps must be an int");
+            return setae_none();
+        }
+        steps = (uint64_t)(uint32_t)setae_to_int(args[1]);
+    }
+    if (nargs >= 3) {
+        if (!setae_is_int(args[2])) {
+            setae_vm_raise(vm, "TypeError", "sandbox.run memory must be an int");
+            return setae_none();
+        }
+        mem = (size_t)(uint32_t)setae_to_int(args[2]);
+    }
+    if (nargs >= 4) {
+        if (!setae_is_int(args[3])) {
+            setae_vm_raise(vm, "TypeError", "sandbox.run millis must be an int");
+            return setae_none();
+        }
+        millis = (uint64_t)(uint32_t)setae_to_int(args[3]);
+    }
+    return vm->sandbox_hook(vm, setae_str_data(args[0]), setae_str_len(args[0]), steps,
+                            mem, millis);
+}
+
+static void register_gecko(SetaeVM *vm) {
+    SetaeHeap *h = setae_vm_heap(vm);
+    SetaeValue sdict = setae_dict_new(h);
+    SetaeValue run = setae_builtin_new(h, builtin_sandbox_run, "run");
+    setae_dict_push(setae_to_ptr(sdict), setae_str_new(h, "run", 3), run);
+    SetaeValue sandbox =
+        setae_module_new(h, setae_str_new(h, "_gecko.sandbox", 14), sdict);
+
+    SetaeValue gdict = setae_dict_new(h);
+    setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "sandbox", 7), sandbox);
+    SetaeValue gecko = setae_module_new(h, setae_str_new(h, "_gecko", 6), gdict);
+    setae_vm_register_builtin(vm, "_gecko", gecko);
+}
 
 void setae_vm_register_builtins(SetaeVM *vm) {
     SetaeHeap *h = setae_vm_heap(vm);
@@ -355,4 +408,5 @@ void setae_vm_register_builtins(SetaeVM *vm) {
     for (size_t i = 0; i < sizeof(EXC_KINDS) / sizeof(EXC_KINDS[0]); i++) {
         setae_vm_register_builtin(vm, EXC_KINDS[i], setae_exctype_new(h, EXC_KINDS[i]));
     }
+    register_gecko(vm);
 }

@@ -43,8 +43,12 @@ keyword arguments, generator expressions, ternary expressions, multiple
 inheritance, `super`, bare `raise`) is rejected at compile time. A precise,
 non-moving mark-sweep collector reclaims garbage when allocation passes a
 threshold that grows with the live size. An embedding host can run many
-isolated VMs and cap each one's steps and heap, so untrusted code cannot loop
-or allocate without bound.
+isolated VMs and cap each one's steps, wall-clock time, and heap, so untrusted
+code cannot loop or allocate without bound, and can register native host
+functions that scripts call like builtins. A program can also run other code
+under those limits through the builtin `sandbox` module (`from gecko import
+sandbox`): `sandbox.run(source, steps, memory, millis)` runs the source in a
+fresh isolated VM and returns its output.
 
 ```sh
 cargo run -p gecko -- -c 'print("hello world")'

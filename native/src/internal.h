@@ -40,6 +40,8 @@ typedef struct SetaeFunc {
     const SetaeCode *code;
     SetaeValue *cells;
     uint32_t nfree;
+    SetaeValue *defaults;
+    uint32_t ndefaults;
     SetaeValue module;
 } SetaeFunc;
 
@@ -62,12 +64,12 @@ typedef struct SetaeTuple {
 
 typedef struct SetaeExcType {
     SetaeObject obj;
-    const char *name;
+    char *name;
 } SetaeExcType;
 
 typedef struct SetaeExc {
     SetaeObject obj;
-    const char *kind;
+    char *kind;
     SetaeValue message;
 } SetaeExc;
 
@@ -104,7 +106,8 @@ void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
-                          uint32_t nfree, SetaeValue module);
+                          uint32_t nfree, const SetaeValue *defaults, uint32_t ndefaults,
+                          SetaeValue module);
 SetaeValue setae_module_new(SetaeHeap *h, SetaeValue name, SetaeValue dict);
 SetaeValue setae_cell_new(SetaeHeap *h);
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n);
@@ -170,8 +173,11 @@ struct SetaeVM {
 
     uint64_t steps;
     uint64_t step_limit;
+    uint64_t time_limit_ns;
+    uint64_t deadline_ns;
     int interrupted;
     SetaeValue oom;
+    SetaeSandboxHook sandbox_hook;
 
     SetaeValue exc;
 };
@@ -187,6 +193,7 @@ const char *setae_code_name(const SetaeCode *c, uint32_t i);
 const uint8_t *setae_code_bytes(const SetaeCode *c, uint32_t *n);
 uint32_t setae_code_nlocals(const SetaeCode *c);
 uint32_t setae_code_nparams(const SetaeCode *c);
+uint32_t setae_code_ndefaults(const SetaeCode *c);
 uint32_t setae_code_ncells(const SetaeCode *c);
 uint32_t setae_code_nfrees(const SetaeCode *c);
 const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n);

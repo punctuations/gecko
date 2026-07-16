@@ -7,6 +7,7 @@ pub struct Code {
     pub excs: Vec<ExcEntry>,
     pub nlocals: u32,
     pub nparams: u32,
+    pub ndefaults: u32,
     pub ncells: u32,
     pub nfrees: u32,
     pub codes: Vec<Code>,
@@ -78,6 +79,7 @@ pub enum Op {
     StoreAttr = 35,
     MakeClass = 36,
     Import = 37,
+    ImportMissing = 38,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -174,6 +176,7 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     }
     w32(out, c.nlocals);
     w32(out, c.nparams);
+    w32(out, c.ndefaults);
     w32(out, c.ncells);
     w32(out, c.nfrees);
     w32(out, c.codes.len() as u32);
@@ -262,6 +265,7 @@ impl Reader<'_> {
         }
         let nlocals = self.u32()?;
         let nparams = self.u32()?;
+        let ndefaults = self.u32()?;
         let ncells = self.u32()?;
         let nfrees = self.u32()?;
         let mut codes = Vec::new();
@@ -281,6 +285,7 @@ impl Reader<'_> {
             excs,
             nlocals,
             nparams,
+            ndefaults,
             ncells,
             nfrees,
             codes,
@@ -330,6 +335,7 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         35 => Op::StoreAttr,
         36 => Op::MakeClass,
         37 => Op::Import,
+        38 => Op::ImportMissing,
         _ => return Err(format!("bad opcode {v}")),
     })
 }
@@ -342,6 +348,8 @@ pub const CMP_GT: u32 = 4;
 pub const CMP_GE: u32 = 5;
 pub const CMP_IN: u32 = 6;
 pub const CMP_NOT_IN: u32 = 7;
+pub const CMP_IS: u32 = 8;
+pub const CMP_IS_NOT: u32 = 9;
 
 #[cfg(test)]
 mod tests {
@@ -366,6 +374,7 @@ mod tests {
             excs: Vec::new(),
             nlocals: 0,
             nparams: 0,
+            ndefaults: 0,
             ncells: 0,
             nfrees: 1,
             codes: Vec::new(),
@@ -389,6 +398,7 @@ mod tests {
             excs: Vec::new(),
             nlocals: 0,
             nparams: 0,
+            ndefaults: 0,
             ncells: 0,
             nfrees: 0,
             codes: Vec::new(),
@@ -425,6 +435,7 @@ mod tests {
             }],
             nlocals: 3,
             nparams: 1,
+            ndefaults: 0,
             ncells: 2,
             nfrees: 0,
             codes: vec![inner],
@@ -447,6 +458,7 @@ mod tests {
             excs: Vec::new(),
             nlocals: 0,
             nparams: 0,
+            ndefaults: 0,
             ncells: 0,
             nfrees: 0,
             codes: Vec::new(),

@@ -132,6 +132,7 @@ typedef enum {
     OP_STORE_ATTR,
     OP_MAKE_CLASS,
     OP_IMPORT,
+    OP_IMPORT_MISSING,
 } SetaeOp;
 
 typedef enum {
@@ -152,6 +153,8 @@ typedef enum {
     CMP_GE,
     CMP_IN,
     CMP_NOT_IN,
+    CMP_IS,
+    CMP_IS_NOT,
 } SetaeCmpOp;
 
 typedef struct SetaeCode SetaeCode;
@@ -166,6 +169,7 @@ uint32_t setae_code_add_name(SetaeCode *c, const char *name);
 void setae_code_emit(SetaeCode *c, uint8_t op, uint8_t arg);
 void setae_code_set_nlocals(SetaeCode *c, uint32_t n);
 void setae_code_set_nparams(SetaeCode *c, uint32_t n);
+void setae_code_set_ndefaults(SetaeCode *c, uint32_t n);
 void setae_code_set_ncells(SetaeCode *c, uint32_t n);
 void setae_code_set_nfrees(SetaeCode *c, uint32_t n);
 void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t target,
@@ -177,9 +181,17 @@ typedef struct SetaeVM SetaeVM;
 SetaeVM *setae_vm_new(SetaeHeap *h);
 void setae_vm_destroy(SetaeVM *vm);
 void setae_vm_register_builtins(SetaeVM *vm);
+void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v);
 void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v);
+typedef SetaeValue (*SetaeSandboxHook)(SetaeVM *vm, const char *src, size_t len,
+                                       uint64_t steps, size_t mem, uint64_t millis);
+
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code);
 void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit);
+void setae_vm_set_time_limit(SetaeVM *vm, uint64_t millis);
+void setae_vm_set_sandbox_hook(SetaeVM *vm, SetaeSandboxHook hook);
+SetaeHeap *setae_vm_heap(SetaeVM *vm);
+void setae_vm_raise_str(SetaeVM *vm, const char *kind, const char *msg);
 void setae_gc_collect(SetaeVM *vm);
 int setae_vm_error(SetaeVM *vm);
 const char *setae_vm_error_msg(SetaeVM *vm);

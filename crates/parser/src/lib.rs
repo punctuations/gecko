@@ -250,9 +250,15 @@ mod tests {
     #[test]
     fn from_import_parses() {
         let s = one("from mod import a, b as c\n");
-        let Stmt::ImportFrom { module, names } = s else {
+        let Stmt::ImportFrom {
+            module,
+            names,
+            level,
+        } = s
+        else {
             panic!("{s:?}")
         };
+        assert_eq!(level, 0);
         assert_eq!(module, "mod");
         assert_eq!(names.len(), 2);
         assert_eq!(names[0].name, "a");
@@ -275,6 +281,53 @@ mod tests {
             panic!("{s:?}")
         };
         assert_eq!(module, "a.b");
+    }
+
+    #[test]
+    fn relative_from_imports_parse() {
+        let s = one("from . import sandbox\n");
+        let Stmt::ImportFrom {
+            module,
+            names,
+            level,
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert_eq!(level, 1);
+        assert_eq!(module, "");
+        assert_eq!(names[0].name, "sandbox");
+
+        let s = one("from ._native import native\n");
+        let Stmt::ImportFrom { module, level, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(level, 1);
+        assert_eq!(module, "_native");
+
+        let s = one("from ..pkg.sub import thing as t\n");
+        let Stmt::ImportFrom {
+            module,
+            names,
+            level,
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert_eq!(level, 2);
+        assert_eq!(module, "pkg.sub");
+        assert_eq!(names[0].asname.as_deref(), Some("t"));
+
+        let s = one("from ... import top\n");
+        let Stmt::ImportFrom { level, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(level, 3);
+    }
+
+    #[test]
+    fn bare_relative_marker_needs_names() {
+        assert!(parse("from import x\n").is_err());
     }
 
     #[test]

@@ -78,6 +78,13 @@ static void obj_free(SetaeObject *o) {
         break;
     case SETAE_T_FUNCTION:
         free(((SetaeFunc *)o)->cells);
+        free(((SetaeFunc *)o)->defaults);
+        break;
+    case SETAE_T_EXC:
+        free(((SetaeExc *)o)->kind);
+        break;
+    case SETAE_T_EXCTYPE:
+        free(((SetaeExcType *)o)->name);
         break;
     }
     free(o);
@@ -155,14 +162,20 @@ SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target) {
 }
 
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
-                          uint32_t nfree, SetaeValue module) {
+                          uint32_t nfree, const SetaeValue *defaults, uint32_t ndefaults,
+                          SetaeValue module) {
     SetaeFunc *f = heap_alloc(h, sizeof(SetaeFunc), SETAE_T_FUNCTION);
     f->code = code;
     f->nfree = nfree;
+    f->ndefaults = ndefaults;
     f->module = module;
     if (nfree > 0) {
         f->cells = malloc(nfree * sizeof(SetaeValue));
         memcpy(f->cells, cells, nfree * sizeof(SetaeValue));
+    }
+    if (ndefaults > 0) {
+        f->defaults = malloc(ndefaults * sizeof(SetaeValue));
+        memcpy(f->defaults, defaults, ndefaults * sizeof(SetaeValue));
     }
     return setae_from_ptr(f);
 }
@@ -181,13 +194,17 @@ SetaeValue setae_cell_new(SetaeHeap *h) {
 
 SetaeValue setae_exctype_new(SetaeHeap *h, const char *name) {
     SetaeExcType *t = heap_alloc(h, sizeof(SetaeExcType), SETAE_T_EXCTYPE);
-    t->name = name;
+    size_t n = strlen(name) + 1;
+    t->name = malloc(n);
+    memcpy(t->name, name, n);
     return setae_from_ptr(t);
 }
 
 SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message) {
     SetaeExc *e = heap_alloc(h, sizeof(SetaeExc), SETAE_T_EXC);
-    e->kind = kind;
+    size_t n = strlen(kind) + 1;
+    e->kind = malloc(n);
+    memcpy(e->kind, kind, n);
     e->message = message;
     return setae_from_ptr(e);
 }

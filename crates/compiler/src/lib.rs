@@ -9,6 +9,11 @@ pub struct CompileError {
     pub message: String,
 }
 
+enum LoadError {
+    NotFound,
+    Hard(CompileError),
+}
+
 struct Registry {
     search: Vec<PathBuf>,
     by_path: Vec<(PathBuf, u32)>,
@@ -21,6 +26,7 @@ pub fn compile(module: &Module) -> Result<Code, CompileError> {
 
 pub fn compile_with_base(module: &Module, base: Option<PathBuf>) -> Result<Code, CompileError> {
     let mut search = Vec::new();
+    let dir = base.clone();
     if let Some(base) = base {
         search.push(base);
     }
@@ -35,7 +41,7 @@ pub fn compile_with_base(module: &Module, base: Option<PathBuf>) -> Result<Code,
         by_path: Vec::new(),
         modules: Vec::new(),
     }));
-    let mut code = compile_unit(module, "<module>", &reg)?;
+    let mut code = compile_unit(module, "<module>", dir, &reg)?;
     code.modules = std::mem::take(&mut reg.borrow_mut().modules);
     assemble(&mut code);
     Ok(code)
@@ -75,6 +81,7 @@ fn resolve_on_path(search: &[PathBuf], seg: &str) -> Option<(PathBuf, bool)> {
 fn compile_unit(
     module: &Module,
     name: &str,
+    dir: Option<PathBuf>,
     reg: &Rc<RefCell<Registry>>,
 ) -> Result<Code, CompileError> {
     let mut module = module.clone();
@@ -87,6 +94,7 @@ fn compile_unit(
         loops: Vec::new(),
         finally_loops: Vec::new(),
         registry: reg.clone(),
+        dir,
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
@@ -331,6 +339,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         excs: Vec::new(),
         nlocals,
         nparams,
+        ndefaults: 0,
         ncells,
         nfrees,
         codes: Vec::new(),
@@ -403,22 +412,47 @@ struct Compiler {
     loops: Vec<Loop>,
     finally_loops: Vec<usize>,
     registry: Rc<RefCell<Registry>>,
+    dir: Option<PathBuf>,
 }
 
 impl Compiler {
-    fn load_dotted(&self, dotted: &str) -> Result<Vec<u32>, CompileError> {
+    fn resolves_on_path(&self, top: &str) -> bool {
         let search = self.registry.borrow().search.clone();
-        if search.is_empty() {
+        resolve_on_path(&search, top).is_some()
+    }
+
+    fn relative_base(&self, level: u32) -> Result<PathBuf, CompileError> {
+        let Some(dir) = &self.dir else {
             return Err(CompileError {
-                message: format!(
-                    "cannot import '{dotted}': imports need a source file, not -c or stdin"
-                ),
+                message: "attempted relative import with no known source directory".into(),
             });
+        };
+        let mut d = dir.clone();
+        for _ in 1..level {
+            d = d.parent().map(|p| p.to_path_buf()).ok_or_else(|| CompileError {
+                message: "attempted relative import beyond top-level package".into(),
+            })?;
+        }
+        Ok(d)
+    }
+
+    fn load_dotted(&self, dotted: &str) -> Result<Vec<u32>, LoadError> {
+        self.load_dotted_from(None, dotted)
+    }
+
+    fn load_dotted_from(
+        &self,
+        start: Option<&std::path::Path>,
+        dotted: &str,
+    ) -> Result<Vec<u32>, LoadError> {
+        let search = self.registry.borrow().search.clone();
+        if start.is_none() && search.is_empty() {
+            return Err(LoadError::NotFound);
         }
         let segments: Vec<&str> = dotted.split('.').collect();
         let mut ids = Vec::new();
         let mut parent_id: i32 = -1;
-        let mut parent_dir: Option<PathBuf> = None;
+        let mut parent_dir: Option<PathBuf> = start.map(|p| p.to_path_buf());
         let mut qual = String::new();
         for (i, seg) in segments.iter().enumerate() {
             let is_leaf = i + 1 == segments.len();
@@ -428,19 +462,17 @@ impl Compiler {
                 qual.push('.');
                 qual.push_str(seg);
             }
-            let (key, is_pkg) = match &parent_dir {
+            let resolved = match &parent_dir {
                 Some(dir) => resolve_in_dir(dir, seg),
                 None => resolve_on_path(&search, seg),
-            }
-            .ok_or_else(|| CompileError {
-                message: format!("no module named '{qual}'"),
-            })?;
+            };
+            let Some((key, is_pkg)) = resolved else {
+                return Err(LoadError::NotFound);
+            };
             if !is_leaf && !is_pkg {
-                return Err(CompileError {
-                    message: format!("'{qual}' is not a package"),
-                });
+                return Err(LoadError::NotFound);
             }
-            let id = self.get_or_compile(&key, &qual, parent_id)?;
+            let id = self.get_or_compile(&key, &qual, parent_id).map_err(LoadError::Hard)?;
             ids.push(id);
             parent_id = id as i32;
             parent_dir = if is_pkg {
@@ -480,10 +512,81 @@ impl Compiler {
             reg.by_path.push((key.to_path_buf(), id));
             id
         };
-        let mut code = compile_unit(&ast, qual, &self.registry)?;
+        let dir = key.parent().map(|p| p.to_path_buf());
+        let mut code = compile_unit(&ast, qual, dir, &self.registry)?;
         code.parent_module = parent_id;
         self.registry.borrow_mut().modules[id as usize] = code;
         Ok(id)
+    }
+
+    fn emit_import_missing(&mut self, name: &str) {
+        let i = self.name_idx(name);
+        self.emit(Op::ImportMissing, i);
+    }
+
+    fn import_from_relative(
+        &mut self,
+        level: u32,
+        module: &str,
+        names: &[ast::Alias],
+    ) -> Result<(), CompileError> {
+        let base = self.relative_base(level)?;
+        if module.is_empty() {
+            for a in names {
+                match self.load_dotted_from(Some(&base), &a.name) {
+                    Ok(sub_ids) => {
+                        for id in &sub_ids {
+                            self.emit(Op::Import, *id);
+                            self.emit(Op::PopTop, 0);
+                        }
+                        self.emit(Op::Import, *sub_ids.last().unwrap());
+                        let bound = a.asname.as_deref().unwrap_or(&a.name);
+                        self.store(bound);
+                    }
+                    Err(LoadError::NotFound) => self.emit_import_missing(&a.name),
+                    Err(LoadError::Hard(e)) => return Err(e),
+                }
+            }
+            return Ok(());
+        }
+        let ids = match self.load_dotted_from(Some(&base), module) {
+            Ok(ids) => ids,
+            Err(LoadError::NotFound) => {
+                self.emit_import_missing(module);
+                return Ok(());
+            }
+            Err(LoadError::Hard(e)) => return Err(e),
+        };
+        for id in &ids {
+            self.emit(Op::Import, *id);
+            self.emit(Op::PopTop, 0);
+        }
+        let leaf_id = *ids.last().unwrap();
+        for a in names {
+            match self.load_dotted_from(Some(&base), &format!("{module}.{}", a.name)) {
+                Ok(sub_ids) => {
+                    for id in &sub_ids {
+                        self.emit(Op::Import, *id);
+                        self.emit(Op::PopTop, 0);
+                    }
+                }
+                Err(LoadError::Hard(e)) => return Err(e),
+                Err(LoadError::NotFound) => {}
+            }
+            self.emit(Op::Import, leaf_id);
+            let i = self.name_idx(&a.name);
+            self.emit(Op::LoadAttr, i);
+            let bound = a.asname.as_deref().unwrap_or(&a.name);
+            self.store(bound);
+        }
+        Ok(())
+    }
+}
+
+fn builtin_module(name: &str) -> Option<&'static str> {
+    match name {
+        "gecko" | "_gecko" => Some("_gecko"),
+        _ => None,
     }
 }
 
@@ -912,9 +1015,18 @@ impl Compiler {
         body: &[Stmt],
         decorators: &[Expr],
     ) -> Result<(), CompileError> {
-        if params.iter().any(|p| p.default.is_some()) {
-            return unsupported("parameter defaults");
-        }
+        let first_default = params.iter().position(|p| p.default.is_some());
+        let ndefaults = match first_default {
+            Some(start) => {
+                if params[start..].iter().any(|p| p.default.is_none()) {
+                    return Err(CompileError {
+                        message: "non-default argument follows default argument".into(),
+                    });
+                }
+                (params.len() - start) as u32
+            }
+            None => 0,
+        };
         let info = match &self.scope {
             Some(s) => {
                 let ci = s.children[self.next_child].clone();
@@ -924,19 +1036,22 @@ impl Compiler {
             None => analyze_function(params, body, &[], false)?,
         };
         let frees = info.frees.clone();
+        let mut child = new_code(
+            name,
+            info.locals.len() as u32,
+            params.len() as u32,
+            info.cells.len() as u32,
+            info.frees.len() as u32,
+        );
+        child.ndefaults = ndefaults;
         let mut sub = Compiler {
-            code: new_code(
-                name,
-                info.locals.len() as u32,
-                params.len() as u32,
-                info.cells.len() as u32,
-                info.frees.len() as u32,
-            ),
+            code: child,
             scope: Some(info),
             next_child: 0,
             loops: Vec::new(),
             finally_loops: Vec::new(),
             registry: self.registry.clone(),
+            dir: self.dir.clone(),
         };
         let cells = sub.scope.as_ref().unwrap().cells.clone();
         for (ci, cname) in cells.iter().enumerate() {
@@ -954,6 +1069,11 @@ impl Compiler {
         self.code.codes.push(sub.code);
         for d in decorators {
             self.expr(d)?;
+        }
+        if let Some(start) = first_default {
+            for p in &params[start..] {
+                self.expr(p.default.as_ref().unwrap())?;
+            }
         }
         self.emit_captures(&frees)?;
         self.emit(Op::MakeFunction, idx);
@@ -1011,6 +1131,7 @@ impl Compiler {
             loops: Vec::new(),
             finally_loops: Vec::new(),
             registry: self.registry.clone(),
+            dir: self.dir.clone(),
         };
         for s in body {
             sub.stmt(s)?;
@@ -1195,7 +1316,24 @@ impl Compiler {
             }
             Stmt::Import(aliases) => {
                 for a in aliases {
-                    let ids = self.load_dotted(&a.name)?;
+                    let top = a.name.split('.').next().unwrap();
+                    if !self.resolves_on_path(top) {
+                        if let Some(builtin) = builtin_module(&a.name) {
+                            let name = self.name_idx(builtin);
+                            self.emit(Op::LoadName, name);
+                            let bound = a.asname.as_deref().unwrap_or(top);
+                            self.store(bound);
+                            continue;
+                        }
+                    }
+                    let ids = match self.load_dotted(&a.name) {
+                        Ok(ids) => ids,
+                        Err(LoadError::NotFound) => {
+                            self.emit_import_missing(&a.name);
+                            continue;
+                        }
+                        Err(LoadError::Hard(e)) => return Err(e),
+                    };
                     for id in &ids {
                         self.emit(Op::Import, *id);
                         self.emit(Op::PopTop, 0);
@@ -1214,19 +1352,51 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Stmt::ImportFrom { module, names } => {
-                let ids = self.load_dotted(module)?;
+            Stmt::ImportFrom {
+                module,
+                names,
+                level,
+            } => {
+                if *level > 0 {
+                    return self.import_from_relative(*level, module, names);
+                }
+                let top = module.split('.').next().unwrap();
+                if !self.resolves_on_path(top) {
+                    if let Some(builtin) = builtin_module(module) {
+                        for a in names {
+                            let m = self.name_idx(builtin);
+                            self.emit(Op::LoadName, m);
+                            let i = self.name_idx(&a.name);
+                            self.emit(Op::LoadAttr, i);
+                            let bound = a.asname.as_deref().unwrap_or(&a.name);
+                            self.store(bound);
+                        }
+                        return Ok(());
+                    }
+                }
+                let ids = match self.load_dotted(module) {
+                    Ok(ids) => ids,
+                    Err(LoadError::NotFound) => {
+                        self.emit_import_missing(module);
+                        return Ok(());
+                    }
+                    Err(LoadError::Hard(e)) => return Err(e),
+                };
                 for id in &ids {
                     self.emit(Op::Import, *id);
                     self.emit(Op::PopTop, 0);
                 }
                 let leaf_id = *ids.last().unwrap();
                 for a in names {
-                    if let Ok(sub_ids) = self.load_dotted(&format!("{module}.{}", a.name)) {
-                        for id in &sub_ids {
-                            self.emit(Op::Import, *id);
-                            self.emit(Op::PopTop, 0);
+                    match self.load_dotted(&format!("{module}.{}", a.name)) {
+                        Ok(sub_ids) => {
+                            for id in &sub_ids {
+                                self.emit(Op::Import, *id);
+                                self.emit(Op::PopTop, 0);
+                            }
                         }
+                        Err(LoadError::Hard(e)) => return Err(e),
+                        Err(LoadError::NotFound) => {}
                     }
                     self.emit(Op::Import, leaf_id);
                     let i = self.name_idx(&a.name);
@@ -1473,7 +1643,8 @@ impl Compiler {
                     CmpOp::GtE => bytecode::CMP_GE,
                     CmpOp::In => bytecode::CMP_IN,
                     CmpOp::NotIn => bytecode::CMP_NOT_IN,
-                    _ => return unsupported("this comparison"),
+                    CmpOp::Is => bytecode::CMP_IS,
+                    CmpOp::IsNot => bytecode::CMP_IS_NOT,
                 };
                 self.expr(left)?;
                 self.expr(&comparators[0])?;
@@ -1823,9 +1994,17 @@ mod tests {
     }
 
     #[test]
-    fn import_of_a_missing_module_errors() {
-        assert!(err("import no_such_module_xyz\n").contains("no_such_module_xyz"));
-        assert!(err("from no_such_module_xyz import a\n").contains("no_such_module_xyz"));
+    fn import_of_a_missing_module_defers_to_runtime() {
+        let c = code("import no_such_module_xyz\n");
+        assert!(c.ops.iter().any(|i| i.op == Op::ImportMissing));
+        assert!(c.names.iter().any(|n| n == "no_such_module_xyz"));
+        let c = code("from no_such_module_xyz import a\n");
+        assert!(c.ops.iter().any(|i| i.op == Op::ImportMissing));
+    }
+
+    #[test]
+    fn relative_import_without_a_source_dir_errors() {
+        assert!(err("from . import x\n").contains("relative import"));
     }
 
     #[test]

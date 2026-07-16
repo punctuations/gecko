@@ -7,6 +7,11 @@ pub enum SetaeHeap {}
 pub enum SetaeVm {}
 pub enum SetaeCode {}
 
+pub type SandboxHook =
+    extern "C" fn(*mut SetaeVm, *const c_char, usize, u64, usize, u64) -> SetaeValue;
+
+pub type HostFn = extern "C" fn(*mut SetaeVm, *mut SetaeValue, c_int) -> SetaeValue;
+
 pub const OP_LOAD_CONST: u8 = 0;
 pub const OP_LOAD_NAME: u8 = 1;
 pub const OP_STORE_NAME: u8 = 2;
@@ -69,6 +74,10 @@ unsafe extern "C" {
     pub fn setae_heap_set_limit(h: *mut SetaeHeap, max_objects: usize);
     pub fn setae_gc_collect(vm: *mut SetaeVm);
     pub fn setae_vm_set_step_limit(vm: *mut SetaeVm, limit: u64);
+    pub fn setae_vm_set_time_limit(vm: *mut SetaeVm, millis: u64);
+    pub fn setae_vm_set_sandbox_hook(vm: *mut SetaeVm, hook: SandboxHook);
+    pub fn setae_vm_heap(vm: *mut SetaeVm) -> *mut SetaeHeap;
+    pub fn setae_vm_raise_str(vm: *mut SetaeVm, kind: *const c_char, msg: *const c_char);
     pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
 
     pub fn setae_code_new() -> *mut SetaeCode;
@@ -81,6 +90,7 @@ unsafe extern "C" {
     pub fn setae_code_emit(c: *mut SetaeCode, op: u8, arg: u8);
     pub fn setae_code_set_nlocals(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_nparams(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_set_ndefaults(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_ncells(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_nfrees(c: *mut SetaeCode, n: u32);
     pub fn setae_code_add_exc(c: *mut SetaeCode, start: u32, end: u32, target: u32, depth: u32);
@@ -89,6 +99,8 @@ unsafe extern "C" {
     pub fn setae_vm_new(h: *mut SetaeHeap) -> *mut SetaeVm;
     pub fn setae_vm_destroy(vm: *mut SetaeVm);
     pub fn setae_vm_register_builtins(vm: *mut SetaeVm);
+    pub fn setae_vm_register_builtin(vm: *mut SetaeVm, name: *const c_char, v: SetaeValue);
+    pub fn setae_builtin_new(h: *mut SetaeHeap, f: HostFn, name: *const c_char) -> SetaeValue;
     pub fn setae_vm_set_global(vm: *mut SetaeVm, name: *const c_char, v: SetaeValue);
     pub fn setae_vm_run(vm: *mut SetaeVm, code: *mut SetaeCode) -> SetaeValue;
     pub fn setae_vm_error(vm: *mut SetaeVm) -> c_int;
@@ -249,8 +261,25 @@ impl Vm {
         unsafe { setae_vm_set_step_limit(self.vm, limit) }
     }
 
+    pub fn set_time_limit(&mut self, millis: u64) {
+        unsafe { setae_vm_set_time_limit(self.vm, millis) }
+    }
+
     pub fn set_memory_limit(&mut self, max_objects: usize) {
         unsafe { setae_heap_set_limit(self.heap, max_objects) }
+    }
+
+    pub fn set_sandbox_hook(&mut self, hook: SandboxHook) {
+        unsafe { setae_vm_set_sandbox_hook(self.vm, hook) }
+    }
+
+    pub fn register_fn(&mut self, name: &str, f: HostFn) {
+        let cname = CString::new(name).expect("name has no interior NUL");
+        unsafe {
+            let b = setae_builtin_new(self.heap, f, cname.as_ptr());
+            setae_vm_register_builtin(self.vm, cname.as_ptr(), b);
+        }
+        std::mem::forget(cname);
     }
 
     unsafe fn lower(&mut self, gc: *mut SetaeCode, code: &bytecode::Code) {
@@ -279,6 +308,7 @@ impl Vm {
             }
             setae_code_set_nlocals(gc, code.nlocals);
             setae_code_set_nparams(gc, code.nparams);
+            setae_code_set_ndefaults(gc, code.ndefaults);
             setae_code_set_ncells(gc, code.ncells);
             setae_code_set_nfrees(gc, code.nfrees);
             setae_code_set_module_parent(gc, code.parent_module);
@@ -328,6 +358,7 @@ mod machine_tests {
             excs: Vec::new(),
             nlocals,
             nparams,
+            ndefaults: 0,
             ncells,
             nfrees,
             codes: Vec::new(),
@@ -568,6 +599,24 @@ mod machine_tests {
     }
 
     #[test]
+    fn a_time_limit_interrupts_an_infinite_loop() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Bool(true)];
+        m.ops = vec![
+            ins(Op::LoadConst, 0),
+            ins(Op::PopJumpIfFalse, 3),
+            ins(Op::Jump, 0),
+        ];
+        let mut vm = Vm::new();
+        vm.set_time_limit(20);
+        let start = std::time::Instant::now();
+        let run = vm.run(&m);
+        assert!(run.error);
+        assert!(run.message.contains("time limit"), "{}", run.message);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
     fn a_step_interrupt_is_not_catchable() {
         let mut m = blank(0, 0, 0, 0);
         m.consts = vec![Const::Bool(true), Const::Int(0)];
@@ -609,6 +658,36 @@ mod machine_tests {
         let run = vm.run(&m);
         assert!(run.error);
         assert!(run.message.contains("MemoryError"), "{}", run.message);
+    }
+
+    extern "C" fn host_double(
+        _vm: *mut SetaeVm,
+        args: *mut SetaeValue,
+        nargs: c_int,
+    ) -> SetaeValue {
+        unsafe {
+            if nargs != 1 || setae_is_int(*args) == 0 {
+                return setae_none();
+            }
+            setae_from_int(setae_to_int(*args) * 2)
+        }
+    }
+
+    #[test]
+    fn a_host_function_is_callable_from_bytecode() {
+        let mut m = blank(0, 0, 0, 0);
+        m.consts = vec![Const::Int(21)];
+        m.names = vec!["double".into()];
+        m.ops = vec![
+            ins(Op::LoadName, 0),
+            ins(Op::LoadConst, 0),
+            ins(Op::Call, 1),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        vm.register_fn("double", host_double);
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 42);
     }
 
     #[test]
