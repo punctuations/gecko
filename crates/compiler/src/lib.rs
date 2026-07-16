@@ -29,7 +29,7 @@ fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
     let mut i = 0;
     while i < stmts.len() {
         match &mut stmts[i] {
-            Stmt::FunctionDef { body, .. } => desugar_block(body, n),
+            Stmt::FunctionDef { body, .. } | Stmt::ClassDef { body, .. } => desugar_block(body, n),
             Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
                 desugar_block(body, n);
                 desugar_block(orelse, n);
@@ -85,6 +85,11 @@ fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
                 if let Some(t) = &mut h.typ {
                     desugar_expr(t, hoisted, n);
                 }
+            }
+        }
+        Stmt::ClassDef { bases, .. } => {
+            for b in bases {
+                desugar_expr(b, hoisted, n);
             }
         }
         _ => {}
@@ -258,6 +263,7 @@ struct ScopeInfo {
     cells: Vec<String>,
     frees: Vec<String>,
     children: Vec<ScopeInfo>,
+    is_class: bool,
 }
 
 enum Slot {
@@ -271,6 +277,15 @@ fn resolve(scope: Option<&ScopeInfo>, name: &str) -> Slot {
     let Some(s) = scope else {
         return Slot::Global;
     };
+    if s.is_class {
+        if let Some(i) = s.locals.iter().position(|n| n == name) {
+            return Slot::Local(i as u32);
+        }
+        if let Some(i) = s.frees.iter().position(|n| n == name) {
+            return Slot::Free(s.cells.len() as u32 + i as u32);
+        }
+        return Slot::Global;
+    }
     if let Some(i) = s.cells.iter().position(|n| n == name) {
         return Slot::Cell(i as u32);
     }
@@ -281,6 +296,16 @@ fn resolve(scope: Option<&ScopeInfo>, name: &str) -> Slot {
         return Slot::Local(i as u32);
     }
     Slot::Global
+}
+
+fn capture_slot(s: &ScopeInfo, name: &str) -> Option<u32> {
+    if let Some(i) = s.cells.iter().position(|n| n == name) {
+        return Some(i as u32);
+    }
+    if let Some(i) = s.frees.iter().position(|n| n == name) {
+        return Some(s.cells.len() as u32 + i as u32);
+    }
+    None
 }
 
 struct Loop {
@@ -363,7 +388,7 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_assigned(orelse, out);
                 collect_assigned(finalbody, out);
             }
-            Stmt::FunctionDef { name, .. } => add_unique(out, name),
+            Stmt::FunctionDef { name, .. } | Stmt::ClassDef { name, .. } => add_unique(out, name),
             _ => {}
         }
     }
@@ -504,15 +529,26 @@ fn collect_reads(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_reads(orelse, out);
                 collect_reads(finalbody, out);
             }
+            Stmt::ClassDef { bases, .. } => {
+                for b in bases {
+                    expr_reads(b, out);
+                }
+            }
             _ => {}
         }
     }
 }
 
-fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<(&'a [Param], &'a [Stmt])>) {
+enum ScopeChild<'a> {
+    Func(&'a [Param], &'a [Stmt]),
+    Class(&'a [Stmt]),
+}
+
+fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<ScopeChild<'a>>) {
     for s in stmts {
         match s {
-            Stmt::FunctionDef { params, body, .. } => out.push((params, body)),
+            Stmt::FunctionDef { params, body, .. } => out.push(ScopeChild::Func(params, body)),
+            Stmt::ClassDef { body, .. } => out.push(ScopeChild::Class(body)),
             Stmt::If { body, orelse, .. } | Stmt::While { body, orelse, .. } => {
                 for_each_def(body, out);
                 for_each_def(orelse, out);
@@ -543,6 +579,7 @@ fn analyze_function(
     params: &[Param],
     body: &[Stmt],
     enclosing: &[Vec<String>],
+    is_class: bool,
 ) -> Result<ScopeInfo, CompileError> {
     let mut nonlocals = Vec::new();
     collect_nonlocals(body, &mut nonlocals);
@@ -584,18 +621,23 @@ fn analyze_function(
     }
 
     let mut chain: Vec<Vec<String>> = enclosing.to_vec();
-    let mut bindings = locals.clone();
-    bindings.extend(frees.iter().cloned());
-    chain.push(bindings);
+    if !is_class {
+        let mut bindings = locals.clone();
+        bindings.extend(frees.iter().cloned());
+        chain.push(bindings);
+    }
 
     let mut cells: Vec<String> = Vec::new();
     let mut children = Vec::new();
     let mut defs = Vec::new();
     for_each_def(body, &mut defs);
-    for (cparams, cbody) in defs {
-        let ci = analyze_function(cparams, cbody, &chain)?;
+    for child in defs {
+        let ci = match child {
+            ScopeChild::Func(cparams, cbody) => analyze_function(cparams, cbody, &chain, false)?,
+            ScopeChild::Class(cbody) => analyze_function(&[], cbody, &chain, true)?,
+        };
         for f in &ci.frees {
-            if locals.iter().any(|l| l == f) {
+            if !is_class && locals.iter().any(|l| l == f) {
                 add_unique(&mut cells, f);
             } else {
                 add_unique(&mut frees, f);
@@ -608,6 +650,7 @@ fn analyze_function(
         cells,
         frees,
         children,
+        is_class,
     })
 }
 
@@ -683,7 +726,7 @@ impl Compiler {
                 self.next_child += 1;
                 ci
             }
-            None => analyze_function(params, body, &[])?,
+            None => analyze_function(params, body, &[], false)?,
         };
         let frees = info.frees.clone();
         let mut sub = Compiler {
@@ -713,17 +756,78 @@ impl Compiler {
         sub.emit(Op::Return, 0);
         let idx = self.code.codes.len() as u32;
         self.code.codes.push(sub.code);
-        for f in &frees {
-            match resolve(self.scope.as_ref(), f) {
-                Slot::Cell(i) | Slot::Free(i) => self.emit(Op::LoadClosure, i),
-                _ => {
+        self.emit_captures(&frees)?;
+        self.emit(Op::MakeFunction, idx);
+        self.store(name);
+        Ok(())
+    }
+
+    fn emit_captures(&mut self, frees: &[String]) -> Result<(), CompileError> {
+        for f in frees {
+            match self.scope.as_ref().and_then(|s| capture_slot(s, f)) {
+                Some(i) => self.emit(Op::LoadClosure, i),
+                None => {
                     return Err(CompileError {
                         message: format!("cannot capture '{f}'"),
                     });
                 }
             }
         }
+        Ok(())
+    }
+
+    fn classdef(&mut self, name: &str, bases: &[Expr], body: &[Stmt]) -> Result<(), CompileError> {
+        if bases.len() > 1 {
+            return unsupported("multiple inheritance");
+        }
+        let info = match &self.scope {
+            Some(s) => {
+                let ci = s.children[self.next_child].clone();
+                self.next_child += 1;
+                ci
+            }
+            None => analyze_function(&[], body, &[], true)?,
+        };
+        let frees = info.frees.clone();
+        let locals = info.locals.clone();
+        let mut sub = Compiler {
+            code: new_code(
+                name,
+                info.locals.len() as u32,
+                0,
+                info.cells.len() as u32,
+                info.frees.len() as u32,
+            ),
+            scope: Some(info),
+            next_child: 0,
+            loops: Vec::new(),
+            finally_loops: Vec::new(),
+        };
+        for s in body {
+            sub.stmt(s)?;
+        }
+        let mut pairs = 0;
+        for (slot, l) in locals.iter().enumerate() {
+            if l.starts_with('<') || l.starts_with('.') {
+                continue;
+            }
+            sub.load_const(Const::Str(l.clone()));
+            sub.emit(Op::LoadLocal, slot as u32);
+            pairs += 1;
+        }
+        sub.emit(Op::BuildDict, pairs);
+        sub.emit(Op::Return, 0);
+        let idx = self.code.codes.len() as u32;
+        self.code.codes.push(sub.code);
+        self.emit_captures(&frees)?;
         self.emit(Op::MakeFunction, idx);
+        self.emit(Op::Call, 0);
+        match bases.first() {
+            Some(b) => self.expr(b)?,
+            None => self.load_const(Const::None),
+        }
+        self.load_const(Const::Str(name.to_string()));
+        self.emit(Op::MakeClass, 0);
         self.store(name);
         Ok(())
     }
@@ -744,14 +848,15 @@ impl Compiler {
                 Ok(())
             }
             Stmt::AugAssign { target, op, value } => {
-                let Expr::Name(name) = target else {
-                    return unsupported("this augmented assignment target");
-                };
-                self.load(name)?;
+                match target {
+                    Expr::Name(_) | Expr::Attribute { .. } | Expr::Subscript { .. } => {}
+                    _ => return unsupported("this augmented assignment target"),
+                }
+                self.expr(target)?;
                 self.expr(value)?;
                 let sel = bin_selector(*op)?;
                 self.emit(Op::BinaryOp, sel | bytecode::BIN_AUG_FLAG);
-                self.store(name);
+                self.store_target(target)?;
                 Ok(())
             }
             Stmt::If { test, body, orelse } => {
@@ -826,6 +931,7 @@ impl Compiler {
                 Ok(())
             }
             Stmt::FunctionDef { name, params, body } => self.funcdef(name, params, body),
+            Stmt::ClassDef { name, bases, body } => self.classdef(name, bases, body),
             Stmt::Return(value) => {
                 if self.scope.is_none() {
                     return unsupported("return outside a function");
@@ -993,6 +1099,12 @@ impl Compiler {
                 self.emit(Op::StoreSubscr, 0);
                 Ok(())
             }
+            Expr::Attribute { value, attr } => {
+                self.expr(value)?;
+                let i = self.name_idx(attr);
+                self.emit(Op::StoreAttr, i);
+                Ok(())
+            }
             Expr::Tuple(elts) | Expr::List(elts) => {
                 self.emit(Op::UnpackSequence, elts.len() as u32);
                 for t in elts {
@@ -1123,7 +1235,11 @@ impl Compiler {
                     UnOp::Invert => return unsupported("the ~ operator"),
                 }
             }
-            Expr::Attribute { .. } => return unsupported("attribute access"),
+            Expr::Attribute { value, attr } => {
+                self.expr(value)?;
+                let i = self.name_idx(attr);
+                self.emit(Op::LoadAttr, i);
+            }
             Expr::GeneratorExp { .. } => return unsupported("generator expressions"),
             Expr::ListComp { .. } | Expr::DictComp { .. } => {
                 return Err(CompileError {
@@ -1407,6 +1523,32 @@ mod tests {
         assert!(comp.ops.iter().any(|i| i.op == Op::ForIter));
         assert!(comp.ops.iter().any(|i| i.op == Op::CallMethod));
         assert!(c.names.iter().any(|n| n == "<listcomp1>"));
+    }
+
+    #[test]
+    fn class_lowers_to_a_namespace_function_and_make_class() {
+        let c = code("class Point:\n    def norm(self):\n        return self.x\n");
+        assert!(c.ops.iter().any(|i| i.op == Op::MakeClass));
+        assert!(c.ops.iter().any(|i| i.op == Op::MakeFunction));
+        let body = &c.codes[0];
+        assert_eq!(body.name, "Point");
+        let method = &body.codes[0];
+        assert_eq!(method.name, "norm");
+        assert_eq!(method.nparams, 1);
+        assert!(method.ops.iter().any(|i| i.op == Op::LoadAttr));
+        assert!(body.ops.iter().any(|i| i.op == Op::BuildDict));
+    }
+
+    #[test]
+    fn attribute_load_and_store_emit_opcodes() {
+        let c = code("p.x = 1\ny = p.x\n");
+        assert!(c.ops.iter().any(|i| i.op == Op::StoreAttr));
+        assert!(c.ops.iter().any(|i| i.op == Op::LoadAttr));
+    }
+
+    #[test]
+    fn multiple_inheritance_is_rejected() {
+        assert!(err("class C(A, B):\n    pass\n").contains("multiple inheritance"));
     }
 
     #[test]

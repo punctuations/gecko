@@ -176,6 +176,29 @@ SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message) {
     return setae_from_ptr(e);
 }
 
+SetaeValue setae_class_new(SetaeHeap *h, SetaeValue name, SetaeValue base,
+                           SetaeValue dict) {
+    SetaeClass *c = heap_alloc(h, sizeof(SetaeClass), SETAE_T_CLASS);
+    c->name = name;
+    c->base = base;
+    c->dict = dict;
+    return setae_from_ptr(c);
+}
+
+SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls, SetaeValue attrs) {
+    SetaeInstance *i = heap_alloc(h, sizeof(SetaeInstance), SETAE_T_INSTANCE);
+    i->cls = cls;
+    i->attrs = attrs;
+    return setae_from_ptr(i);
+}
+
+SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self) {
+    SetaeBound *b = heap_alloc(h, sizeof(SetaeBound), SETAE_T_BOUND);
+    b->func = func;
+    b->self = self;
+    return setae_from_ptr(b);
+}
+
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {
     SetaeTuple *t =
         heap_alloc(h, sizeof(SetaeTuple) + n * sizeof(SetaeValue), SETAE_T_TUPLE);

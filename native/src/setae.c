@@ -227,6 +227,77 @@ static void dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
     }
 }
 
+static int64_t dict_find_cstr(const SetaeDict *d, const char *name) {
+    size_t n = strlen(name);
+    for (uint32_t i = 0; i < d->len; i++) {
+        SetaeValue k = d->entries[i].key;
+        if (setae_is_str(k) && setae_str_len(k) == n &&
+            memcmp(setae_str_data(k), name, n) == 0) {
+            return (int64_t)i;
+        }
+    }
+    return -1;
+}
+
+static int class_lookup(SetaeValue cls, const char *name, SetaeValue *out) {
+    while (setae_obj_type(cls) == SETAE_T_CLASS) {
+        SetaeClass *c = setae_to_ptr(cls);
+        SetaeDict *d = setae_to_ptr(c->dict);
+        int64_t i = dict_find_cstr(d, name);
+        if (i >= 0) {
+            *out = d->entries[i].value;
+            return 1;
+        }
+        cls = c->base;
+    }
+    return 0;
+}
+
+static void attr_error(SetaeVM *vm, SetaeValue obj, const char *name) {
+    if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
+        SetaeInstance *inst = setae_to_ptr(obj);
+        SetaeClass *c = setae_to_ptr(inst->cls);
+        setae_vm_raise(vm, "AttributeError", "'%.*s' object has no attribute '%s'",
+                       (int)setae_str_len(c->name), setae_str_data(c->name), name);
+    } else {
+        setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
+                       setae_type_name(obj), name);
+    }
+}
+
+static SetaeValue load_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
+    int t = setae_obj_type(obj);
+    if (t == SETAE_T_INSTANCE) {
+        SetaeInstance *inst = setae_to_ptr(obj);
+        SetaeDict *attrs = setae_to_ptr(inst->attrs);
+        int64_t i = dict_find_cstr(attrs, name);
+        if (i >= 0) {
+            return attrs->entries[i].value;
+        }
+        SetaeValue v;
+        if (class_lookup(inst->cls, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_FUNCTION) {
+                return setae_bound_new(vm->heap, v, obj);
+            }
+            return v;
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
+    if (t == SETAE_T_CLASS) {
+        SetaeValue v;
+        if (class_lookup(obj, name, &v)) {
+            return v;
+        }
+        SetaeClass *c = setae_to_ptr(obj);
+        setae_vm_raise(vm, "AttributeError", "type object '%.*s' has no attribute '%s'",
+                       (int)setae_str_len(c->name), setae_str_data(c->name), name);
+        return setae_none();
+    }
+    attr_error(vm, obj, name);
+    return setae_none();
+}
+
 static const char *bin_symbol(SetaeBinOp op, int aug) {
     static const char *const plain[] = {"+", "-", "*", "/", "%", "//"};
     static const char *const augmented[] = {"+=", "-=", "*=", "/=", "%=", "//="};
@@ -716,6 +787,61 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         }
         return setae_exc_new(vm->heap, et->name, nargs == 1 ? args[0] : setae_none());
     }
+    if (t == SETAE_T_CLASS) {
+        SetaeClass *c = setae_to_ptr(callee);
+        SetaeValue attrs = setae_dict_new(vm->heap);
+        setae_vm_push_tmp(vm, attrs);
+        SetaeValue inst = setae_instance_new(vm->heap, callee, attrs);
+        setae_vm_pop_tmp(vm);
+        SetaeValue init;
+        if (class_lookup(callee, "__init__", &init)) {
+            if (setae_obj_type(init) != SETAE_T_FUNCTION) {
+                setae_vm_raise(vm, "TypeError", "__init__ must be a function");
+                return setae_none();
+            }
+            SetaeFunc *f = setae_to_ptr(init);
+            uint32_t nparams = setae_code_nparams(f->code);
+            if ((uint32_t)nargs + 1 != nparams) {
+                setae_vm_raise(
+                    vm, "TypeError",
+                    "%.*s.__init__() takes %u positional arguments but %u were given",
+                    (int)setae_str_len(c->name), setae_str_data(c->name), nparams,
+                    (uint32_t)nargs + 1);
+                return setae_none();
+            }
+            SetaeValue argv[256];
+            argv[0] = inst;
+            for (int i = 0; i < nargs; i++) {
+                argv[i + 1] = args[i];
+            }
+            run_code(vm, f->code, argv, nargs + 1, f->cells);
+            if (vm->error) {
+                return setae_none();
+            }
+        } else if (nargs != 0) {
+            setae_vm_raise(vm, "TypeError", "%.*s() takes no arguments (%d given)",
+                           (int)setae_str_len(c->name), setae_str_data(c->name), nargs);
+            return setae_none();
+        }
+        return inst;
+    }
+    if (t == SETAE_T_BOUND) {
+        SetaeBound *b = setae_to_ptr(callee);
+        SetaeFunc *f = setae_to_ptr(b->func);
+        uint32_t nparams = setae_code_nparams(f->code);
+        if ((uint32_t)nargs + 1 != nparams) {
+            setae_vm_raise(vm, "TypeError",
+                           "%s() takes %u positional arguments but %u were given",
+                           setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
+            return setae_none();
+        }
+        SetaeValue argv[256];
+        argv[0] = b->self;
+        for (int i = 0; i < nargs; i++) {
+            argv[i + 1] = args[i];
+        }
+        return run_code(vm, f->code, argv, nargs + 1, f->cells);
+    }
     setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
 }
@@ -723,6 +849,40 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
 static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                               SetaeValue *args, int nargs) {
     int t = setae_obj_type(obj);
+    if (t == SETAE_T_INSTANCE) {
+        SetaeInstance *inst = setae_to_ptr(obj);
+        SetaeDict *attrs = setae_to_ptr(inst->attrs);
+        int64_t i = dict_find_cstr(attrs, name);
+        if (i >= 0) {
+            return call_value(vm, attrs->entries[i].value, args, nargs);
+        }
+        SetaeValue v;
+        if (class_lookup(inst->cls, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_FUNCTION) {
+                SetaeFunc *f = setae_to_ptr(v);
+                uint32_t nparams = setae_code_nparams(f->code);
+                if ((uint32_t)nargs + 1 != nparams) {
+                    setae_vm_raise(
+                        vm, "TypeError",
+                        "%s() takes %u positional arguments but %u were given",
+                        setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
+                    return setae_none();
+                }
+                return run_code(vm, f->code, args - 1, nargs + 1, f->cells);
+            }
+            return call_value(vm, v, args, nargs);
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
+    if (t == SETAE_T_CLASS) {
+        SetaeValue v;
+        if (class_lookup(obj, name, &v)) {
+            return call_value(vm, v, args, nargs);
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
     if (t == SETAE_T_LIST) {
         SetaeList *l = setae_to_ptr(obj);
         if (strcmp(name, "append") == 0) {
@@ -997,6 +1157,39 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             SetaeValue tv = setae_tuple_new(vm->heap, &stack[sp - n], (uint32_t)n);
             sp -= n;
             stack[sp++] = tv;
+            break;
+        }
+        case OP_LOAD_ATTR:
+            stack[sp - 1] = load_attr(vm, stack[sp - 1], setae_code_name(code, arg));
+            break;
+        case OP_STORE_ATTR: {
+            SetaeValue obj = stack[sp - 1];
+            SetaeValue val = stack[sp - 2];
+            const char *name = setae_code_name(code, arg);
+            int t = setae_obj_type(obj);
+            if (t == SETAE_T_INSTANCE || t == SETAE_T_CLASS) {
+                SetaeValue dv = t == SETAE_T_INSTANCE
+                                    ? ((SetaeInstance *)setae_to_ptr(obj))->attrs
+                                    : ((SetaeClass *)setae_to_ptr(obj))->dict;
+                SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
+                dict_set(setae_to_ptr(dv), key, val);
+                sp -= 2;
+            } else {
+                setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
+                               setae_type_name(obj), name);
+            }
+            break;
+        }
+        case OP_MAKE_CLASS: {
+            SetaeValue cname = stack[--sp];
+            SetaeValue base = stack[--sp];
+            SetaeValue dict = stack[--sp];
+            if (!setae_is_none(base) && setae_obj_type(base) != SETAE_T_CLASS) {
+                setae_vm_raise(vm, "TypeError", "base must be a class, not '%s'",
+                               setae_type_name(base));
+                break;
+            }
+            stack[sp++] = setae_class_new(vm->heap, cname, base, dict);
             break;
         }
         case OP_RAISE:

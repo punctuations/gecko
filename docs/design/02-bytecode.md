@@ -55,6 +55,8 @@ Implemented:
   in the low byte)
 - EXTENDED_ARG
 - RAISE, RERAISE, EXC_MATCH
+- LOAD_ATTR, STORE_ATTR (arg is a name index)
+- MAKE_CLASS (pops the namespace dict, base, and name)
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.
@@ -63,8 +65,13 @@ A function call runs the callee's code object in a new frame. The VM implements
 frames as C recursion with a depth cap. Falling off the end of a function
 returns None via a compiler-emitted LOAD_CONST and RETURN.
 
+A class body compiles to its own code object. MAKE_FUNCTION and CALL run it to
+produce a namespace dict, which MAKE_CLASS turns into a class object with its
+name and optional single base. Instantiating a class allocates an instance and
+runs __init__ with the instance prepended as self. Looking up a method binds it
+to its instance.
+
 Planned: LOAD_GLOBAL, STORE_GLOBAL, DUP_TOP, the ** BINARY_OP selector.
-Attribute access beyond method calls arrives with classes (v0.0.2).
 
 ## Exception table
 

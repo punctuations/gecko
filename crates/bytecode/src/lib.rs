@@ -72,6 +72,9 @@ pub enum Op {
     Raise = 31,
     ExcMatch = 32,
     Reraise = 33,
+    LoadAttr = 34,
+    StoreAttr = 35,
+    MakeClass = 36,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -308,6 +311,9 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         31 => Op::Raise,
         32 => Op::ExcMatch,
         33 => Op::Reraise,
+        34 => Op::LoadAttr,
+        35 => Op::StoreAttr,
+        36 => Op::MakeClass,
         _ => return Err(format!("bad opcode {v}")),
     })
 }

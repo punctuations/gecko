@@ -514,6 +514,30 @@ mod machine_tests {
     }
 
     #[test]
+    fn make_class_instance_and_attributes_round_trip() {
+        let mut m = blank(1, 0, 0, 0);
+        m.consts = vec![Const::None, Const::Str("C".into()), Const::Int(42)];
+        m.names = vec!["v".into()];
+        m.ops = vec![
+            ins(Op::BuildDict, 0),
+            ins(Op::LoadConst, 0),
+            ins(Op::LoadConst, 1),
+            ins(Op::MakeClass, 0),
+            ins(Op::Call, 0),
+            ins(Op::StoreLocal, 0),
+            ins(Op::LoadConst, 2),
+            ins(Op::LoadLocal, 0),
+            ins(Op::StoreAttr, 0),
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadAttr, 0),
+            ins(Op::Return, 0),
+        ];
+        let mut vm = Vm::new();
+        let run = vm.run(&m);
+        assert_eq!(int_result(&run), 42);
+    }
+
+    #[test]
     fn calling_an_int_reports_a_type_error() {
         let mut m = blank(0, 0, 0, 0);
         m.consts = vec![Const::Int(1)];

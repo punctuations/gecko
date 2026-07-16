@@ -142,6 +142,7 @@ impl Parser {
             TokenKind::Keyword(Kw::While) => Ok(vec![self.while_stmt()?]),
             TokenKind::Keyword(Kw::For) => Ok(vec![self.for_stmt()?]),
             TokenKind::Keyword(Kw::Try) => Ok(vec![self.try_stmt()?]),
+            TokenKind::Keyword(Kw::Class) => Ok(vec![self.class_stmt()?]),
             _ => self.simple_line(),
         }
     }
@@ -320,6 +321,23 @@ impl Parser {
             body,
             orelse,
         })
+    }
+
+    fn class_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_kw(Kw::Class)?;
+        let name = self.expect_name()?;
+        let mut bases = Vec::new();
+        if self.eat_op(Op::LParen) {
+            while !self.at_op(Op::RParen) {
+                bases.push(self.test()?);
+                if !self.eat_op(Op::Comma) {
+                    break;
+                }
+            }
+            self.expect_op(Op::RParen)?;
+        }
+        let body = self.suite()?;
+        Ok(Stmt::ClassDef { name, bases, body })
     }
 
     fn try_stmt(&mut self) -> Result<Stmt, ParseError> {

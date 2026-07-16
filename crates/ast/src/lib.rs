@@ -10,6 +10,11 @@ pub enum Stmt {
         params: Vec<Param>,
         body: Vec<Stmt>,
     },
+    ClassDef {
+        name: String,
+        bases: Vec<Expr>,
+        body: Vec<Stmt>,
+    },
     Return(Option<Expr>),
     If {
         test: Expr,

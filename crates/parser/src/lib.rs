@@ -176,6 +176,28 @@ mod tests {
     }
 
     #[test]
+    fn class_with_base_parses() {
+        let s = one("class Dog(Animal):\n    def speak(self):\n        return \"woof\"\n");
+        let Stmt::ClassDef { name, bases, body } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(name, "Dog");
+        assert_eq!(bases, vec![Expr::Name("Animal".into())]);
+        assert_eq!(body.len(), 1);
+        assert!(matches!(body[0], Stmt::FunctionDef { .. }));
+    }
+
+    #[test]
+    fn class_without_base_has_no_bases() {
+        let s = one("class Empty:\n    pass\n");
+        let Stmt::ClassDef { name, bases, .. } = s else {
+            panic!("{s:?}")
+        };
+        assert_eq!(name, "Empty");
+        assert!(bases.is_empty());
+    }
+
+    #[test]
     fn try_clause_order_is_enforced() {
         assert!(
             parse("try:\n    pass\nexcept:\n    pass\nexcept ValueError:\n    pass\n").is_err()

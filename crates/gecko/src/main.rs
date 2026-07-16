@@ -16,7 +16,7 @@ fn print_help() {
     let width = art.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 2;
     let text = vec![
         format!("{} {}", p.wrap("1;32", "gecko"), p.wrap("1", VERSION)),
-        "a Python runtime for scripts and tools".to_string(),
+        "a fast, embeddable Python runtime".to_string(),
         String::new(),
         p.wrap("1;32", "usage: gecko [option] [file]"),
         help_row(&p, "gecko file.py", "run a program"),
@@ -326,6 +326,56 @@ mod tests {
     fn recursion_limit_is_enforced() {
         let f = run_source("def f(n):\n    return f(n)\nf(1)\n").unwrap_err();
         assert!(f.message.contains("RecursionError"));
+    }
+
+    #[test]
+    fn classes_init_attributes_and_methods() {
+        let src = "class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n    def norm2(self):\n        return self.x * self.x + self.y * self.y\np = Point(3, 4)\nprint(p.x, p.y, p.norm2())\n";
+        assert_eq!(run_source(src).unwrap(), "3 4 25\n");
+    }
+
+    #[test]
+    fn classes_inherit_and_override() {
+        let src = "class Animal:\n    def __init__(self, name):\n        self.name = name\n    def speak(self):\n        return \"...\"\n    def describe(self):\n        return self.name + \": \" + self.speak()\nclass Dog(Animal):\n    def speak(self):\n        return \"woof\"\nprint(Dog(\"Rex\").describe())\nprint(Animal(\"Thing\").describe())\n";
+        assert_eq!(run_source(src).unwrap(), "Rex: woof\nThing: ...\n");
+    }
+
+    #[test]
+    fn class_attributes_and_instance_shadowing() {
+        let src = "class Box:\n    kind = \"box\"\n    def set(self, v):\n        self.kind = v\nb = Box()\nprint(b.kind, Box.kind)\nb.set(\"crate\")\nprint(b.kind, Box.kind)\n";
+        assert_eq!(run_source(src).unwrap(), "box box\ncrate box\n");
+    }
+
+    #[test]
+    fn class_body_names_are_invisible_to_methods() {
+        let src = "FACTOR = 100\nclass W:\n    FACTOR = 3\n    def get(self):\n        return FACTOR\nprint(W().get(), W.FACTOR)\n";
+        assert_eq!(run_source(src).unwrap(), "100 3\n");
+    }
+
+    #[test]
+    fn bound_methods_are_values() {
+        let src = "class Counter:\n    def __init__(self):\n        self.n = 0\n    def inc(self):\n        self.n += 1\n        return self.n\nc = Counter()\nm = c.inc\nprint(m(), m(), c.n)\n";
+        assert_eq!(run_source(src).unwrap(), "1 2 2\n");
+    }
+
+    #[test]
+    fn methods_can_return_closures_over_self() {
+        let src = "class Adder:\n    def __init__(self, base):\n        self.base = base\n    def make(self):\n        b = self.base\n        def add(x):\n            return b + x\n        return add\nf = Adder(10).make()\nprint(f(5), f(7))\n";
+        assert_eq!(run_source(src).unwrap(), "15 17\n");
+    }
+
+    #[test]
+    fn missing_attribute_raises() {
+        let src = "class E:\n    pass\nE().nope\n";
+        let f = run_source(src).unwrap_err();
+        assert!(f.message.contains("AttributeError"), "{}", f.message);
+        assert!(f.message.contains("nope"), "{}", f.message);
+    }
+
+    #[test]
+    fn instances_survive_collection() {
+        let src = "class Node:\n    def __init__(self, v):\n        self.v = v\nkeep = Node(7)\ni = 0\nwhile i < 20000:\n    tmp = Node(i)\n    i += 1\nprint(keep.v)\n";
+        assert_eq!(run_source(src).unwrap(), "7\n");
     }
 
     #[test]

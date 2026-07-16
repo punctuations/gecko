@@ -12,8 +12,6 @@ static void zeros(char *z, int k) {
     z[k] = '\0';
 }
 
-/* Shortest digit string that reads back as d, laid out like CPython's repr:
-   fixed notation for decimal exponents in [-4, 16), scientific outside. */
 static void fmt_float(char *out, size_t cap, double d) {
     if (isnan(d)) {
         snprintf(out, cap, "nan");
@@ -210,6 +208,29 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
         SetaeBuiltin *b = setae_to_ptr(v);
         out_str(vm, "<built-in function ");
         out_str(vm, b->name);
+        out_str(vm, ">");
+        return;
+    }
+    case SETAE_T_CLASS: {
+        SetaeClass *c = setae_to_ptr(v);
+        out_str(vm, "<class '");
+        setae_vm_append_output(vm, setae_str_data(c->name), setae_str_len(c->name));
+        out_str(vm, "'>");
+        return;
+    }
+    case SETAE_T_INSTANCE: {
+        SetaeInstance *i = setae_to_ptr(v);
+        SetaeClass *c = setae_to_ptr(i->cls);
+        out_str(vm, "<");
+        setae_vm_append_output(vm, setae_str_data(c->name), setae_str_len(c->name));
+        out_str(vm, " object>");
+        return;
+    }
+    case SETAE_T_BOUND: {
+        SetaeBound *b = setae_to_ptr(v);
+        SetaeFunc *f = setae_to_ptr(b->func);
+        out_str(vm, "<bound method ");
+        out_str(vm, setae_code_fname(f->code));
         out_str(vm, ">");
         return;
     }

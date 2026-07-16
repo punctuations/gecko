@@ -41,6 +41,25 @@ static void mark(SetaeValue v) {
     case SETAE_T_EXC:
         mark(((SetaeExc *)o)->message);
         break;
+    case SETAE_T_CLASS: {
+        SetaeClass *c = (SetaeClass *)o;
+        mark(c->name);
+        mark(c->base);
+        mark(c->dict);
+        break;
+    }
+    case SETAE_T_INSTANCE: {
+        SetaeInstance *i = (SetaeInstance *)o;
+        mark(i->cls);
+        mark(i->attrs);
+        break;
+    }
+    case SETAE_T_BOUND: {
+        SetaeBound *b = (SetaeBound *)o;
+        mark(b->func);
+        mark(b->self);
+        break;
+    }
     case SETAE_T_FUNCTION: {
         SetaeFunc *f = (SetaeFunc *)o;
         for (uint32_t i = 0; i < f->nfree; i++) {

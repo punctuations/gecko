@@ -33,7 +33,6 @@ int setae_is_bool(SetaeValue v) {
 }
 
 SetaeValue setae_from_float(double d) {
-    /* Canonicalize NaN so no double maps onto a tag pattern. */
     SetaeValue bits = (d != d) ? 0x7ff8000000000000ULL : f64_bits(d);
     return bits + SETAE_DOUBLE_OFFSET;
 }
@@ -131,6 +130,12 @@ const char *setae_type_name(SetaeValue v) {
         return "type";
     case SETAE_T_EXC:
         return ((SetaeExc *)setae_to_ptr(v))->kind;
+    case SETAE_T_CLASS:
+        return "type";
+    case SETAE_T_INSTANCE:
+        return "instance";
+    case SETAE_T_BOUND:
+        return "method";
     default:
         return "object";
     }

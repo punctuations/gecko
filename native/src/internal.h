@@ -64,6 +64,25 @@ typedef struct SetaeExc {
     SetaeValue message;
 } SetaeExc;
 
+typedef struct SetaeClass {
+    SetaeObject obj;
+    SetaeValue name;
+    SetaeValue base;
+    SetaeValue dict;
+} SetaeClass;
+
+typedef struct SetaeInstance {
+    SetaeObject obj;
+    SetaeValue cls;
+    SetaeValue attrs;
+} SetaeInstance;
+
+typedef struct SetaeBound {
+    SetaeObject obj;
+    SetaeValue func;
+    SetaeValue self;
+} SetaeBound;
+
 typedef struct SetaeExcEntry {
     uint32_t start;
     uint32_t end;
@@ -83,6 +102,10 @@ SetaeValue setae_cell_new(SetaeHeap *h);
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n);
 SetaeValue setae_exctype_new(SetaeHeap *h, const char *name);
 SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message);
+SetaeValue setae_class_new(SetaeHeap *h, SetaeValue name, SetaeValue base,
+                           SetaeValue dict);
+SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls, SetaeValue attrs);
+SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
 void setae_vm_pop_tmp(SetaeVM *vm);
@@ -150,4 +173,4 @@ void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);
 
-#endif /* SETAE_INTERNAL_H */
+#endif

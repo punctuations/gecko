@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* NaN-boxed value word. The encoding is in docs/design/01-object-model.md. */
+/* NaN-boxed. Encoding in docs/design/01-object-model.md. */
 typedef uint64_t SetaeValue;
 
 #define SETAE_NUMBER_TAG    0xffff000000000000ULL
@@ -47,18 +47,21 @@ typedef enum {
     SETAE_T_CELL,
     SETAE_T_EXCTYPE,
     SETAE_T_EXC,
+    SETAE_T_CLASS,
+    SETAE_T_INSTANCE,
+    SETAE_T_BOUND,
 } SetaeType;
 
-/* Header of every heap object. The payload follows it in memory. */
+/* One-word header; the payload follows it in memory. */
 typedef struct SetaeObject {
-    uint32_t type; /* a SetaeType */
-    uint32_t gc;   /* mark, color, and flags */
+    uint32_t type;
+    uint32_t gc;
 } SetaeObject;
 
 typedef struct SetaeStr {
     SetaeObject obj;
     uint32_t len;
-    char data[]; /* UTF-8 bytes, not NUL-terminated */
+    char data[]; /* UTF-8, not NUL-terminated */
 } SetaeStr;
 
 struct SetaeVM;
@@ -71,15 +74,13 @@ typedef struct SetaeBuiltin {
     const char *name;
 } SetaeBuiltin;
 
-/* The type of a value, or -1 if it is immediate, so an int, float, bool, or
-   None. */
+/* The value's type, or -1 when it is immediate (int, float, bool, None). */
 int setae_obj_type(SetaeValue v);
 int setae_is_str(SetaeValue v);
 size_t setae_str_len(SetaeValue v);
 const char *setae_str_data(SetaeValue v);
 
-/* Owns every object it allocates and frees them all on destroy. Mark-sweep
-   tracing comes later, see docs/design/03-gc.md. */
+/* Owns every object it allocates and frees them all on destroy. */
 typedef struct SetaeHeap SetaeHeap;
 
 SetaeHeap *setae_heap_new(void);
@@ -88,24 +89,25 @@ size_t setae_heap_live(const SetaeHeap *h);
 SetaeValue setae_str_new(SetaeHeap *h, const char *bytes, size_t len);
 SetaeValue setae_builtin_new(SetaeHeap *h, SetaeCFunc fn, const char *name);
 
-/* Bytecode. Opcodes are 1 byte plus a 1-byte argument, with OP_EXTENDED_ARG
-   shifting in high bits for wider arguments. */
+/* Wordcode: one opcode byte plus one arg byte. OP_EXTENDED_ARG prefixes shift
+   in the high bits of a wider arg. Jump args are instruction indices, not byte
+   offsets. */
 typedef enum {
-    OP_LOAD_CONST,  /* arg: const index */
-    OP_LOAD_NAME,   /* arg: name index, resolved against globals */
-    OP_STORE_NAME,  /* arg: name index */
-    OP_LOAD_LOCAL,  /* arg: local slot */
-    OP_STORE_LOCAL, /* arg: local slot */
+    OP_LOAD_CONST,
+    OP_LOAD_NAME,
+    OP_STORE_NAME,
+    OP_LOAD_LOCAL,
+    OP_STORE_LOCAL,
     OP_POP_TOP,
-    OP_BINARY_OP, /* arg: SetaeBinOp */
-    OP_CALL,      /* arg: argument count */
+    OP_BINARY_OP,
+    OP_CALL,
     OP_RETURN,
-    OP_JUMP,                 /* arg: target instruction index */
-    OP_POP_JUMP_IF_FALSE,    /* arg: target, pops the tested value */
-    OP_POP_JUMP_IF_TRUE,     /* arg: target, pops the tested value */
-    OP_JUMP_IF_FALSE_OR_POP, /* arg: target, keeps the value if it jumps */
-    OP_JUMP_IF_TRUE_OR_POP,  /* arg: target, keeps the value if it jumps */
-    OP_COMPARE_OP,           /* arg: SetaeCmpOp */
+    OP_JUMP,
+    OP_POP_JUMP_IF_FALSE,
+    OP_POP_JUMP_IF_TRUE,
+    OP_JUMP_IF_FALSE_OR_POP,
+    OP_JUMP_IF_TRUE_OR_POP,
+    OP_COMPARE_OP,
     OP_UNARY_NEG,
     OP_UNARY_NOT,
     OP_MAKE_FUNCTION,
@@ -115,7 +117,7 @@ typedef enum {
     OP_STORE_SUBSCR,
     OP_GET_ITER,
     OP_FOR_ITER,
-    OP_CALL_METHOD,
+    OP_CALL_METHOD, /* arg: name index << 8 | argument count */
     OP_EXTENDED_ARG,
     OP_LOAD_CLOSURE,
     OP_LOAD_DEREF,
@@ -125,6 +127,9 @@ typedef enum {
     OP_RAISE,
     OP_EXC_MATCH,
     OP_RERAISE,
+    OP_LOAD_ATTR,
+    OP_STORE_ATTR,
+    OP_MAKE_CLASS,
 } SetaeOp;
 
 typedef enum {
@@ -163,7 +168,6 @@ void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t tar
                         uint32_t depth);
 void setae_code_set_name(SetaeCode *c, const char *name);
 
-/* Setae: the bytecode VM. See docs/design/02-bytecode.md. */
 typedef struct SetaeVM SetaeVM;
 
 SetaeVM *setae_vm_new(SetaeHeap *h);
@@ -176,4 +180,4 @@ int setae_vm_error(SetaeVM *vm);
 const char *setae_vm_error_msg(SetaeVM *vm);
 const char *setae_vm_output(SetaeVM *vm, size_t *len);
 
-#endif /* SETAE_H */
+#endif
