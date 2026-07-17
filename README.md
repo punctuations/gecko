@@ -63,12 +63,25 @@ cargo run -p gecko -- examples/fib.py
 `gecko build` freezes a program into a standalone executable. The compiled
 bytecode is appended to a copy of `gecko-runner`, a stub holding only the VM
 and the bytecode reader, so the result starts without parsing or compiling
-anything and weighs about 320 KB plus its bytecode.
+anything.
 
 ```sh
 cargo build --release
 ./target/release/gecko build examples/fib.py -o fib
 ./fib
+```
+
+A plain `cargo build --release` runner links the full Rust standard library and
+weighs about 330 KB. `scripts/build-runner.sh` rebuilds it against a
+size-optimized std, using nightly `build-std` with the immediate-abort panic
+strategy, and drops the result at `target/release/gecko-runner`. That runner is
+about 100 KB, so a frozen program lands near 100 KB plus its bytecode. It needs
+a nightly toolchain with `rust-src`:
+
+```sh
+rustup toolchain install nightly --component rust-src
+./scripts/build-runner.sh
+./target/release/gecko build examples/fib.py -o fib
 ```
 
 gecko looks for the release runner next to itself, then in the cargo target

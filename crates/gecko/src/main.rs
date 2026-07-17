@@ -378,6 +378,42 @@ mod tests {
     }
 
     #[test]
+    fn constant_folding_matches_runtime_evaluation() {
+        let cases = [
+            ("1 + 2 * 3", "7"),
+            ("7 // 2", "3"),
+            ("-7 // 2", "-4"),
+            ("7 % 3", "1"),
+            ("-7 % 3", "2"),
+            ("6 / 2", "3.0"),
+            ("2000000000 + 2000000000", "4000000000.0"),
+            ("1000000 * 1000000", "1000000000000.0"),
+            ("2.5 * 4", "10.0"),
+            ("- -5", "5"),
+            ("not 0", "True"),
+            ("not \"x\"", "False"),
+        ];
+        for (expr, want) in cases {
+            let got = run_source(&format!("print({expr})\n")).unwrap();
+            assert_eq!(got, format!("{want}\n"), "folding {expr}");
+        }
+    }
+
+    #[test]
+    fn string_constants_fold() {
+        assert_eq!(
+            run_source("print(\"a\" + \"b\" + \"c\")\n").unwrap(),
+            "abc\n"
+        );
+    }
+
+    #[test]
+    fn constant_division_by_zero_stays_a_runtime_error() {
+        let f = run_source("print(1 // 0)\n").unwrap_err();
+        assert!(f.message.contains("ZeroDivisionError"), "{}", f.message);
+    }
+
+    #[test]
     fn is_and_is_not_compare_identity() {
         let src = "x = None\nprint(x is None)\nprint(x is not None)\ny = 5\nprint(y is not None)\n";
         assert_eq!(run_source(src).unwrap(), "True\nFalse\nTrue\n");

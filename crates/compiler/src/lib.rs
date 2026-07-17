@@ -1560,6 +1560,10 @@ impl Compiler {
     }
 
     fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
+        if let Some(c) = fold_expr(e) {
+            self.load_const(c);
+            return Ok(());
+        }
         match e {
             Expr::Str(s) => self.load_const(Const::Str(s.clone())),
             Expr::Float(f) => self.load_const(Const::Float(*f)),
@@ -1707,6 +1711,133 @@ fn bin_selector(op: BinOp) -> Result<u32, CompileError> {
     })
 }
 
+fn int_const(i: i64) -> Const {
+    if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+        Const::Int(i as i32)
+    } else {
+        Const::Float(i as f64)
+    }
+}
+
+fn const_as_f64(c: &Const) -> Option<f64> {
+    match c {
+        Const::Int(i) => Some(*i as f64),
+        Const::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+fn const_truthy(c: &Const) -> bool {
+    match c {
+        Const::None => false,
+        Const::Bool(b) => *b,
+        Const::Int(i) => *i != 0,
+        Const::Float(f) => *f != 0.0,
+        Const::Str(s) => !s.is_empty(),
+    }
+}
+
+fn fold_bin(op: BinOp, a: &Const, b: &Const) -> Option<Const> {
+    if op == BinOp::Add {
+        if let (Const::Str(x), Const::Str(y)) = (a, b) {
+            return Some(Const::Str(format!("{x}{y}")));
+        }
+    }
+    if let (Const::Int(x), Const::Int(y)) = (a, b) {
+        let x = *x as i64;
+        let y = *y as i64;
+        match op {
+            BinOp::Add => return Some(int_const(x + y)),
+            BinOp::Sub => return Some(int_const(x - y)),
+            BinOp::Mul => return Some(int_const(x * y)),
+            BinOp::FloorDiv => {
+                if y == 0 {
+                    return None;
+                }
+                let mut q = x / y;
+                if x % y != 0 && (x < 0) != (y < 0) {
+                    q -= 1;
+                }
+                return Some(int_const(q));
+            }
+            BinOp::Mod => {
+                if y == 0 {
+                    return None;
+                }
+                let mut r = x % y;
+                if r != 0 && (r < 0) != (y < 0) {
+                    r += y;
+                }
+                return Some(int_const(r));
+            }
+            BinOp::Div => {}
+            _ => return None,
+        }
+    }
+    let (x, y) = (const_as_f64(a)?, const_as_f64(b)?);
+    match op {
+        BinOp::Add => Some(Const::Float(x + y)),
+        BinOp::Sub => Some(Const::Float(x - y)),
+        BinOp::Mul => Some(Const::Float(x * y)),
+        BinOp::Div => {
+            if y == 0.0 {
+                return None;
+            }
+            Some(Const::Float(x / y))
+        }
+        BinOp::Mod => {
+            if y == 0.0 {
+                return None;
+            }
+            let mut r = x % y;
+            if r != 0.0 && (r < 0.0) != (y < 0.0) {
+                r += y;
+            }
+            Some(Const::Float(r))
+        }
+        BinOp::FloorDiv => {
+            if y == 0.0 {
+                return None;
+            }
+            Some(Const::Float((x / y).floor()))
+        }
+        _ => None,
+    }
+}
+
+fn fold_unary(op: UnOp, v: &Const) -> Option<Const> {
+    match op {
+        UnOp::Neg => match v {
+            Const::Int(i) => Some(int_const(-(*i as i64))),
+            Const::Float(f) => Some(Const::Float(-*f)),
+            _ => None,
+        },
+        UnOp::Pos => Some(v.clone()),
+        UnOp::Not => Some(Const::Bool(!const_truthy(v))),
+        UnOp::Invert => None,
+    }
+}
+
+fn fold_expr(e: &Expr) -> Option<Const> {
+    match e {
+        Expr::Int { digits, radix } => {
+            let n = i128::from_str_radix(digits, *radix).ok()?;
+            if n < i32::MIN as i128 || n > i32::MAX as i128 {
+                None
+            } else {
+                Some(Const::Int(n as i32))
+            }
+        }
+        Expr::Float(f) => Some(Const::Float(*f)),
+        Expr::Str(s) => Some(Const::Str(s.clone())),
+        Expr::Bool(b) => Some(Const::Bool(*b)),
+        Expr::None => Some(Const::None),
+        Expr::Unary { op, operand } => fold_unary(*op, &fold_expr(operand)?),
+        Expr::Bin { op, left, right } => fold_bin(*op, &fold_expr(left)?, &fold_expr(right)?),
+        _ => None,
+    }
+}
+
 fn is_jump(op: Op) -> bool {
     matches!(
         op,
@@ -1815,8 +1946,8 @@ mod tests {
     }
 
     #[test]
-    fn folds_precedence_into_bytecode() {
-        let c = code("1 + 2 * 3\n");
+    fn lowers_precedence_into_bytecode() {
+        let c = code("a + b * c\n");
         let bins: Vec<u32> = c
             .ops
             .iter()
@@ -1824,6 +1955,14 @@ mod tests {
             .map(|i| i.arg)
             .collect();
         assert_eq!(bins, vec![bytecode::BIN_MUL, bytecode::BIN_ADD]);
+    }
+
+    #[test]
+    fn constant_arithmetic_folds_to_one_load() {
+        let c = code("1 + 2 * 3\n");
+        assert!(!c.ops.iter().any(|i| i.op == Op::BinaryOp));
+        assert_eq!(c.ops.iter().filter(|i| i.op == Op::LoadConst).count(), 1);
+        assert_eq!(c.consts, vec![Const::Int(7)]);
     }
 
     #[test]

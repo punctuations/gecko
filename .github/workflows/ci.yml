@@ -19,7 +19,9 @@ jobs:
         run: pip3 install --break-system-packages meson ninja || pip3 install meson ninja
 
       - name: rust toolchain
-        run: rustup update stable && rustup default stable
+        run: |
+          rustup update stable && rustup default stable
+          rustup toolchain install nightly --component rust-src
 
       - name: format
         run: cargo fmt --check
@@ -61,3 +63,12 @@ jobs:
           ./target/release/gecko build examples/wordstats.py -o wordstats
           ./wordstats
           test "$(./wordstats)" = "$(python3 examples/wordstats.py)"
+
+      - name: shrink the release runner below 300 KiB
+        run: |
+          ./scripts/build-runner.sh
+          size=$(wc -c < target/release/gecko-runner | tr -d ' ')
+          echo "runner is $size bytes"
+          test "$size" -lt 307200
+          ./target/release/gecko build examples/wordstats.py -o wordstats-small
+          test "$(./wordstats-small)" = "$(python3 examples/wordstats.py)"
