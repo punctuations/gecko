@@ -429,9 +429,12 @@ impl Compiler {
         };
         let mut d = dir.clone();
         for _ in 1..level {
-            d = d.parent().map(|p| p.to_path_buf()).ok_or_else(|| CompileError {
-                message: "attempted relative import beyond top-level package".into(),
-            })?;
+            d = d
+                .parent()
+                .map(|p| p.to_path_buf())
+                .ok_or_else(|| CompileError {
+                    message: "attempted relative import beyond top-level package".into(),
+                })?;
         }
         Ok(d)
     }
@@ -472,7 +475,9 @@ impl Compiler {
             if !is_leaf && !is_pkg {
                 return Err(LoadError::NotFound);
             }
-            let id = self.get_or_compile(&key, &qual, parent_id).map_err(LoadError::Hard)?;
+            let id = self
+                .get_or_compile(&key, &qual, parent_id)
+                .map_err(LoadError::Hard)?;
             ids.push(id);
             parent_id = id as i32;
             parent_dir = if is_pkg {

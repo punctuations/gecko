@@ -371,7 +371,10 @@ mod tests {
     #[test]
     fn non_default_after_default_is_rejected() {
         let f = run_source("def f(a=1, b):\n    return a\n").unwrap_err();
-        assert!(f.message.contains("non-default argument follows default argument"));
+        assert!(
+            f.message
+                .contains("non-default argument follows default argument")
+        );
     }
 
     #[test]
