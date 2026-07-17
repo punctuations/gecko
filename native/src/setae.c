@@ -27,10 +27,12 @@ void setae_vm_destroy(SetaeVM *vm) {
         free(vm->globals[i].name);
     }
     free(vm->globals);
+    free(vm->globals_index);
     for (size_t i = 0; i < vm->nbuiltins; i++) {
         free(vm->builtins[i].name);
     }
     free(vm->builtins);
+    free(vm->builtins_index);
     free(vm->module_cache);
     free(vm->codes);
     free(vm->out);
@@ -50,12 +52,72 @@ static void attach_code(SetaeVM *vm, const SetaeCode *code) {
     vm->codes[vm->ncodes++] = code;
 }
 
-void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
-    for (size_t i = 0; i < vm->nglobals; i++) {
-        if (strcmp(vm->globals[i].name, name) == 0) {
-            vm->globals[i].value = v;
+#define TAB_EMPTY 0xFFFFFFFFu
+
+static int64_t tab_find(const SetaeGlobal *arr, size_t n, const uint32_t *index,
+                        uint32_t cap, const char *name) {
+    if (index == NULL) {
+        for (size_t i = 0; i < n; i++) {
+            if (strcmp(arr[i].name, name) == 0) {
+                return (int64_t)i;
+            }
+        }
+        return -1;
+    }
+    uint64_t mask = cap - 1;
+    uint64_t slot = setae_hash_bytes(name, strlen(name)) & mask;
+    while (index[slot] != TAB_EMPTY) {
+        uint32_t e = index[slot];
+        if (strcmp(arr[e].name, name) == 0) {
+            return (int64_t)e;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return -1;
+}
+
+static void tab_index_add(const SetaeGlobal *arr, size_t n, uint32_t **pindex,
+                          uint32_t *pcap, uint32_t entry) {
+    if (*pindex == NULL) {
+        if (n <= 8) {
             return;
         }
+        *pcap = 16;
+        while (*pcap < n * 2) {
+            *pcap <<= 1;
+        }
+    } else if ((uint64_t)n * 3 >= (uint64_t)*pcap * 2) {
+        *pcap <<= 1;
+    } else {
+        uint64_t mask = *pcap - 1;
+        uint64_t slot = setae_hash_bytes(arr[entry].name, strlen(arr[entry].name)) & mask;
+        while ((*pindex)[slot] != TAB_EMPTY) {
+            slot = (slot + 1) & mask;
+        }
+        (*pindex)[slot] = entry;
+        return;
+    }
+    free(*pindex);
+    *pindex = malloc(*pcap * sizeof(uint32_t));
+    for (uint32_t i = 0; i < *pcap; i++) {
+        (*pindex)[i] = TAB_EMPTY;
+    }
+    uint64_t mask = *pcap - 1;
+    for (size_t e = 0; e < n; e++) {
+        uint64_t slot = setae_hash_bytes(arr[e].name, strlen(arr[e].name)) & mask;
+        while ((*pindex)[slot] != TAB_EMPTY) {
+            slot = (slot + 1) & mask;
+        }
+        (*pindex)[slot] = (uint32_t)e;
+    }
+}
+
+void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
+    int64_t found = tab_find(vm->globals, vm->nglobals, vm->globals_index,
+                             vm->globals_index_cap, name);
+    if (found >= 0) {
+        vm->globals[found].value = v;
+        return;
     }
     if (vm->nglobals == vm->globals_cap) {
         vm->globals_cap = vm->globals_cap ? vm->globals_cap * 2 : 8;
@@ -66,16 +128,18 @@ void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
     memcpy(vm->globals[vm->nglobals].name, name, n);
     vm->globals[vm->nglobals].value = v;
     vm->nglobals++;
+    tab_index_add(vm->globals, vm->nglobals, &vm->globals_index, &vm->globals_index_cap,
+                  (uint32_t)(vm->nglobals - 1));
 }
 
 static int global_lookup(SetaeVM *vm, const char *name, SetaeValue *out) {
-    for (size_t i = 0; i < vm->nglobals; i++) {
-        if (strcmp(vm->globals[i].name, name) == 0) {
-            *out = vm->globals[i].value;
-            return 1;
-        }
+    int64_t i = tab_find(vm->globals, vm->nglobals, vm->globals_index,
+                         vm->globals_index_cap, name);
+    if (i < 0) {
+        return 0;
     }
-    return 0;
+    *out = vm->globals[i].value;
+    return 1;
 }
 
 void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v) {
@@ -88,14 +152,16 @@ void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v) {
     memcpy(vm->builtins[vm->nbuiltins].name, name, n);
     vm->builtins[vm->nbuiltins].value = v;
     vm->nbuiltins++;
+    tab_index_add(vm->builtins, vm->nbuiltins, &vm->builtins_index, &vm->builtins_index_cap,
+                  (uint32_t)(vm->nbuiltins - 1));
 }
 
 static int builtin_lookup(SetaeVM *vm, const char *name, SetaeValue *out) {
-    for (size_t i = 0; i < vm->nbuiltins; i++) {
-        if (strcmp(vm->builtins[i].name, name) == 0) {
-            *out = vm->builtins[i].value;
-            return 1;
-        }
+    int64_t i = tab_find(vm->builtins, vm->nbuiltins, vm->builtins_index,
+                         vm->builtins_index_cap, name);
+    if (i >= 0) {
+        *out = vm->builtins[i].value;
+        return 1;
     }
     return 0;
 }

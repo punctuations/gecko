@@ -152,10 +152,14 @@ struct SetaeVM {
     SetaeGlobal *globals;
     size_t nglobals;
     size_t globals_cap;
+    uint32_t *globals_index;
+    uint32_t globals_index_cap;
 
     SetaeGlobal *builtins;
     size_t nbuiltins;
     size_t builtins_cap;
+    uint32_t *builtins_index;
+    uint32_t builtins_index_cap;
 
     char *out;
     size_t out_len;

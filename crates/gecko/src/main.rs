@@ -378,6 +378,22 @@ mod tests {
     }
 
     #[test]
+    fn many_globals_resolve_after_indexing() {
+        let mut src = String::new();
+        for i in 0..20 {
+            src.push_str(&format!("g{i} = {i}\n"));
+        }
+        src.push_str("print(g0, g11, g19)\ng11 = 100\nprint(g11)\n");
+        assert_eq!(run_source(&src).unwrap(), "0 11 19\n100\n");
+    }
+
+    #[test]
+    fn a_global_shadows_a_builtin() {
+        let src = "print(len([1, 2]))\nlen = 42\nprint(len)\n";
+        assert_eq!(run_source(src).unwrap(), "2\n42\n");
+    }
+
+    #[test]
     fn large_dict_lookups_stay_correct() {
         let src = "d = {}\nfor i in range(50):\n    d[i] = i * i\nprint(d[0], d[25], d[49], len(d))\nprint(25 in d, 999 in d)\n";
         assert_eq!(run_source(src).unwrap(), "0 625 2401 50\nTrue False\n");
