@@ -20,6 +20,8 @@ typedef struct SetaeDict {
     uint32_t len;
     uint32_t cap;
     SetaeDictEntry *entries;
+    uint32_t *index;
+    uint32_t index_cap;
 } SetaeDict;
 
 typedef struct SetaeRange {
@@ -103,6 +105,11 @@ SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
 SetaeValue setae_dict_new(SetaeHeap *h);
 void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value);
+uint64_t setae_value_hash(SetaeValue v);
+uint64_t setae_hash_bytes(const char *data, size_t len);
+void setae_dict_index_add(SetaeDict *d, uint32_t entry);
+int64_t setae_dict_index_get(const SetaeDict *d, SetaeValue key);
+int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t len);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,

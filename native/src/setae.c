@@ -273,6 +273,9 @@ static int hashable(SetaeValue v) {
 }
 
 static int64_t dict_find(const SetaeDict *d, SetaeValue key) {
+    if (d->index != NULL) {
+        return setae_dict_index_get(d, key);
+    }
     for (uint32_t i = 0; i < d->len; i++) {
         if (setae_value_eq(d->entries[i].key, key)) {
             return (int64_t)i;
@@ -292,6 +295,9 @@ static void dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
 
 static int64_t dict_find_cstr(const SetaeDict *d, const char *name) {
     size_t n = strlen(name);
+    if (d->index != NULL) {
+        return setae_dict_index_get_cstr(d, name, n);
+    }
     for (uint32_t i = 0; i < d->len; i++) {
         SetaeValue k = d->entries[i].key;
         if (setae_is_str(k) && setae_str_len(k) == n &&

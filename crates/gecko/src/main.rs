@@ -378,6 +378,40 @@ mod tests {
     }
 
     #[test]
+    fn large_dict_lookups_stay_correct() {
+        let src = "d = {}\nfor i in range(50):\n    d[i] = i * i\nprint(d[0], d[25], d[49], len(d))\nprint(25 in d, 999 in d)\n";
+        assert_eq!(run_source(src).unwrap(), "0 625 2401 50\nTrue False\n");
+    }
+
+    #[test]
+    fn dict_int_and_float_keys_collide_like_python() {
+        let src = "d = {}\nfor i in range(12):\n    d[i] = i\nprint(d[5.0])\nd[5.0] = 100\nprint(d[5], len(d))\n";
+        assert_eq!(run_source(src).unwrap(), "5\n100 12\n");
+    }
+
+    #[test]
+    fn large_dict_preserves_insertion_order() {
+        let src = "d = {}\nfor i in range(15):\n    d[i * 3] = i\nout = []\nfor k in d:\n    out.append(k)\nprint(out[0], out[7], out[14])\n";
+        assert_eq!(run_source(src).unwrap(), "0 21 42\n");
+    }
+
+    #[test]
+    fn tuple_keys_work_through_the_index() {
+        let src = "d = {}\nfor i in range(10):\n    d[(i, i + 1)] = i\nprint(d[(3, 4)], (7, 8) in d, (7, 9) in d)\n";
+        assert_eq!(run_source(src).unwrap(), "3 True False\n");
+    }
+
+    #[test]
+    fn class_with_many_methods_resolves() {
+        let mut src = String::from("class C:\n");
+        for i in 0..12 {
+            src.push_str(&format!("    def m{i}(self):\n        return {i}\n"));
+        }
+        src.push_str("c = C()\nprint(c.m0(), c.m6(), c.m11())\n");
+        assert_eq!(run_source(&src).unwrap(), "0 6 11\n");
+    }
+
+    #[test]
     fn constant_folding_matches_runtime_evaluation() {
         let cases = [
             ("1 + 2 * 3", "7"),

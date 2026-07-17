@@ -1,5 +1,9 @@
 #include "internal.h"
 
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
 static SetaeValue f64_bits(double d) {
     union { double d; uint64_t u; } x;
     x.d = d;
@@ -238,4 +242,123 @@ size_t setae_str_count(SetaeValue v) {
         }
     }
     return count;
+}
+
+uint64_t setae_hash_bytes(const char *data, size_t len) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (unsigned char)data[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t hash_u64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+uint64_t setae_value_hash(SetaeValue v) {
+    if (setae_is_int(v)) {
+        return hash_u64((uint64_t)(int64_t)setae_to_int(v));
+    }
+    if (setae_is_float(v)) {
+        double f = setae_to_float(v);
+        if (f == floor(f) && f >= -9223372036854775808.0 && f < 9223372036854775808.0) {
+            return hash_u64((uint64_t)(int64_t)f);
+        }
+        return hash_u64(f64_bits(f));
+    }
+    int t = setae_obj_type(v);
+    if (t == SETAE_T_STR) {
+        return setae_hash_bytes(setae_str_data(v), setae_str_len(v));
+    }
+    if (t == SETAE_T_TUPLE) {
+        SetaeTuple *tup = setae_to_ptr(v);
+        uint64_t h = 2870177450012600261ULL;
+        for (uint32_t i = 0; i < tup->len; i++) {
+            h = (h ^ setae_value_hash(tup->items[i])) * 1099511628211ULL;
+        }
+        return h;
+    }
+    return hash_u64(v);
+}
+
+#define DICT_EMPTY 0xFFFFFFFFu
+#define DICT_INDEX_THRESHOLD 8
+
+static uint32_t pow2_ceil(uint32_t n) {
+    uint32_t c = 16;
+    while (c < n) {
+        c <<= 1;
+    }
+    return c;
+}
+
+static void index_put(SetaeDict *d, SetaeValue key, uint32_t entry) {
+    uint64_t mask = d->index_cap - 1;
+    uint64_t slot = setae_value_hash(key) & mask;
+    while (d->index[slot] != DICT_EMPTY) {
+        slot = (slot + 1) & mask;
+    }
+    d->index[slot] = entry;
+}
+
+static void index_build(SetaeDict *d, uint32_t cap) {
+    free(d->index);
+    d->index = malloc(cap * sizeof(uint32_t));
+    d->index_cap = cap;
+    for (uint32_t i = 0; i < cap; i++) {
+        d->index[i] = DICT_EMPTY;
+    }
+    for (uint32_t i = 0; i < d->len; i++) {
+        index_put(d, d->entries[i].key, i);
+    }
+}
+
+void setae_dict_index_add(SetaeDict *d, uint32_t entry) {
+    if (d->index == NULL) {
+        if (d->len <= DICT_INDEX_THRESHOLD) {
+            return;
+        }
+        index_build(d, pow2_ceil(d->len * 2));
+        return;
+    }
+    if ((uint64_t)d->len * 3 >= (uint64_t)d->index_cap * 2) {
+        index_build(d, d->index_cap * 2);
+        return;
+    }
+    index_put(d, d->entries[entry].key, entry);
+}
+
+int64_t setae_dict_index_get(const SetaeDict *d, SetaeValue key) {
+    uint64_t mask = d->index_cap - 1;
+    uint64_t slot = setae_value_hash(key) & mask;
+    while (d->index[slot] != DICT_EMPTY) {
+        uint32_t e = d->index[slot];
+        if (setae_value_eq(d->entries[e].key, key)) {
+            return (int64_t)e;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return -1;
+}
+
+int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t len) {
+    uint64_t mask = d->index_cap - 1;
+    uint64_t slot = setae_hash_bytes(name, len) & mask;
+    while (d->index[slot] != DICT_EMPTY) {
+        uint32_t e = d->index[slot];
+        SetaeValue k = d->entries[e].key;
+        if (setae_is_str(k) && setae_str_len(k) == len &&
+            memcmp(setae_str_data(k), name, len) == 0) {
+            return (int64_t)e;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return -1;
 }

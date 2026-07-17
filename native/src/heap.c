@@ -75,6 +75,7 @@ static void obj_free(SetaeObject *o) {
         break;
     case SETAE_T_DICT:
         free(((SetaeDict *)o)->entries);
+        free(((SetaeDict *)o)->index);
         break;
     case SETAE_T_FUNCTION:
         free(((SetaeFunc *)o)->cells);
@@ -145,6 +146,7 @@ void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value) {
     d->entries[d->len].key = key;
     d->entries[d->len].value = value;
     d->len++;
+    setae_dict_index_add(d, d->len - 1);
 }
 
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step) {
