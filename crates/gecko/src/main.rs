@@ -378,6 +378,30 @@ mod tests {
     }
 
     #[test]
+    fn instance_attributes_get_and_set() {
+        let src = "class P:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\np = P(3, 4)\nprint(p.x, p.y)\np.x = 100\nprint(p.x, p.y)\np.z = 9\nprint(p.z)\n";
+        assert_eq!(run_source(src).unwrap(), "3 4\n100 4\n9\n");
+    }
+
+    #[test]
+    fn instances_with_different_attribute_orders_stay_correct() {
+        let src = "class Bag:\n    pass\na = Bag()\na.p = 1\na.q = 2\nb = Bag()\nb.q = 20\nb.p = 10\nprint(a.p, a.q, b.p, b.q)\n";
+        assert_eq!(run_source(src).unwrap(), "1 2 10 20\n");
+    }
+
+    #[test]
+    fn instance_slots_survive_gc() {
+        let src = "class N:\n    def __init__(self, v):\n        self.v = v\n        self.next = None\nhead = None\nfor i in range(20000):\n    n = N(i)\n    n.next = head\n    head = n\ns = 0\ncur = head\nwhile cur is not None:\n    s = s + cur.v\n    cur = cur.next\nprint(s)\n";
+        assert_eq!(run_source(src).unwrap(), "199990000\n");
+    }
+
+    #[test]
+    fn subclass_init_sets_attributes() {
+        let src = "class A:\n    def __init__(self, name):\n        self.name = name\nclass B(A):\n    def greet(self):\n        return self.name\nb = B(\"x\")\nprint(b.name, b.greet())\n";
+        assert_eq!(run_source(src).unwrap(), "x x\n");
+    }
+
+    #[test]
     fn many_globals_resolve_after_indexing() {
         let mut src = String::new();
         for i in 0..20 {

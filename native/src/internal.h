@@ -82,10 +82,21 @@ typedef struct SetaeClass {
     SetaeValue dict;
 } SetaeClass;
 
+typedef struct SetaeShape {
+    struct SetaeShape *parent;
+    char *name;
+    uint32_t nslots;
+    struct SetaeShape **kids;
+    uint32_t nkids;
+    uint32_t kids_cap;
+} SetaeShape;
+
 typedef struct SetaeInstance {
     SetaeObject obj;
     SetaeValue cls;
-    SetaeValue attrs;
+    SetaeShape *shape;
+    SetaeValue *slots;
+    uint32_t slots_cap;
 } SetaeInstance;
 
 typedef struct SetaeBound {
@@ -122,7 +133,9 @@ SetaeValue setae_exctype_new(SetaeHeap *h, const char *name);
 SetaeValue setae_exc_new(SetaeHeap *h, const char *kind, SetaeValue message);
 SetaeValue setae_class_new(SetaeHeap *h, SetaeValue name, SetaeValue base,
                            SetaeValue dict);
-SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls, SetaeValue attrs);
+SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls);
+int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *out);
+void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v);
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);

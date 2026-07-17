@@ -51,7 +51,9 @@ static void mark(SetaeValue v) {
     case SETAE_T_INSTANCE: {
         SetaeInstance *i = (SetaeInstance *)o;
         mark(i->cls);
-        mark(i->attrs);
+        for (uint32_t k = 0; k < i->shape->nslots; k++) {
+            mark(i->slots[k]);
+        }
         break;
     }
     case SETAE_T_BOUND: {

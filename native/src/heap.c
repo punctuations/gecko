@@ -14,6 +14,10 @@ struct SetaeHeap {
     size_t threshold;
     size_t limit;
     SetaeVM *vm;
+    SetaeShape *root_shape;
+    SetaeShape **shapes;
+    size_t nshapes;
+    size_t shapes_cap;
 };
 
 SetaeHeap *setae_heap_new(void) {
@@ -87,6 +91,9 @@ static void obj_free(SetaeObject *o) {
     case SETAE_T_EXCTYPE:
         free(((SetaeExcType *)o)->name);
         break;
+    case SETAE_T_INSTANCE:
+        free(((SetaeInstance *)o)->slots);
+        break;
     }
     free(o);
 }
@@ -99,6 +106,12 @@ void setae_heap_destroy(SetaeHeap *h) {
         obj_free(h->objs[i]);
     }
     free(h->objs);
+    for (size_t i = 0; i < h->nshapes; i++) {
+        free(h->shapes[i]->name);
+        free(h->shapes[i]->kids);
+        free(h->shapes[i]);
+    }
+    free(h->shapes);
     free(h);
 }
 
@@ -220,11 +233,83 @@ SetaeValue setae_class_new(SetaeHeap *h, SetaeValue name, SetaeValue base,
     return setae_from_ptr(c);
 }
 
-SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls, SetaeValue attrs) {
+static SetaeShape *shape_new(SetaeHeap *h, SetaeShape *parent, const char *name) {
+    SetaeShape *s = calloc(1, sizeof(SetaeShape));
+    s->parent = parent;
+    if (name != NULL) {
+        size_t n = strlen(name) + 1;
+        s->name = malloc(n);
+        memcpy(s->name, name, n);
+    }
+    s->nslots = parent != NULL ? parent->nslots + 1 : 0;
+    if (h->nshapes == h->shapes_cap) {
+        h->shapes_cap = h->shapes_cap ? h->shapes_cap * 2 : 16;
+        h->shapes = realloc(h->shapes, h->shapes_cap * sizeof(SetaeShape *));
+    }
+    h->shapes[h->nshapes++] = s;
+    return s;
+}
+
+static SetaeShape *shape_transition(SetaeHeap *h, SetaeShape *shape, const char *name) {
+    for (uint32_t i = 0; i < shape->nkids; i++) {
+        if (strcmp(shape->kids[i]->name, name) == 0) {
+            return shape->kids[i];
+        }
+    }
+    SetaeShape *kid = shape_new(h, shape, name);
+    if (shape->nkids == shape->kids_cap) {
+        shape->kids_cap = shape->kids_cap ? shape->kids_cap * 2 : 4;
+        shape->kids = realloc(shape->kids, shape->kids_cap * sizeof(SetaeShape *));
+    }
+    shape->kids[shape->nkids++] = kid;
+    return kid;
+}
+
+static int64_t shape_slot(const SetaeShape *shape, const char *name) {
+    for (const SetaeShape *s = shape; s->name != NULL; s = s->parent) {
+        if (strcmp(s->name, name) == 0) {
+            return (int64_t)(s->nslots - 1);
+        }
+    }
+    return -1;
+}
+
+SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls) {
+    if (h->root_shape == NULL) {
+        h->root_shape = shape_new(h, NULL, NULL);
+    }
     SetaeInstance *i = heap_alloc(h, sizeof(SetaeInstance), SETAE_T_INSTANCE);
     i->cls = cls;
-    i->attrs = attrs;
+    i->shape = h->root_shape;
     return setae_from_ptr(i);
+}
+
+int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *out) {
+    int64_t slot = shape_slot(inst->shape, name);
+    if (slot < 0) {
+        return 0;
+    }
+    *out = inst->slots[slot];
+    return 1;
+}
+
+void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v) {
+    int64_t slot = shape_slot(inst->shape, name);
+    if (slot >= 0) {
+        inst->slots[slot] = v;
+        return;
+    }
+    SetaeShape *ns = shape_transition(h, inst->shape, name);
+    if (ns->nslots > inst->slots_cap) {
+        uint32_t cap = inst->slots_cap ? inst->slots_cap * 2 : 4;
+        if (cap < ns->nslots) {
+            cap = ns->nslots;
+        }
+        inst->slots = realloc(inst->slots, cap * sizeof(SetaeValue));
+        inst->slots_cap = cap;
+    }
+    inst->slots[ns->nslots - 1] = v;
+    inst->shape = ns;
 }
 
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self) {

@@ -69,6 +69,26 @@ key and an equal float key land in the same slot.
 The index holds positions, not values, so the collector ignores it and a resize
 of the entry array leaves it valid.
 
+## Instances and shapes
+
+An instance does not carry a dict. It holds its class, a pointer to a shape, and
+a flat array of attribute values. A shape is a hidden class: it records the
+attribute names an instance has and the slot each one occupies. Instances that
+add the same attributes in the same order share one shape, so the per-instance
+cost is just the value array.
+
+Shapes form a tree. The empty shape is the root. Adding an attribute follows a
+transition edge to a child shape, one slot deeper, and the edge is cached on the
+parent, so the second instance to add that attribute reuses the same child.
+Reading an attribute walks the shape chain to find its slot, then indexes the
+value array; writing an existing attribute overwrites its slot, and writing a
+new one takes a transition and appends a slot. Shapes are shared and immortal
+for the run, freed when the heap is destroyed, and hold no heap values, so the
+collector walks only an instance's own slots.
+
+This is the layout an inline cache keys on: a bytecode site that has seen one
+shape can record the shape and the slot and skip the walk next time.
+
 ## Open
 
 - The exact fixnum width, whether 30, 32, or wider, and the pointer tag layout.

@@ -404,10 +404,9 @@ static SetaeValue load_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
     int t = setae_obj_type(obj);
     if (t == SETAE_T_INSTANCE) {
         SetaeInstance *inst = setae_to_ptr(obj);
-        SetaeDict *attrs = setae_to_ptr(inst->attrs);
-        int64_t i = dict_find_cstr(attrs, name);
-        if (i >= 0) {
-            return attrs->entries[i].value;
+        SetaeValue found;
+        if (setae_instance_get(inst, name, &found)) {
+            return found;
         }
         SetaeValue v;
         if (class_lookup(inst->cls, name, &v)) {
@@ -943,10 +942,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
     }
     if (t == SETAE_T_CLASS) {
         SetaeClass *c = setae_to_ptr(callee);
-        SetaeValue attrs = setae_dict_new(vm->heap);
-        setae_vm_push_tmp(vm, attrs);
-        SetaeValue inst = setae_instance_new(vm->heap, callee, attrs);
-        setae_vm_pop_tmp(vm);
+        SetaeValue inst = setae_instance_new(vm->heap, callee);
         SetaeValue init;
         if (class_lookup(callee, "__init__", &init)) {
             if (setae_obj_type(init) != SETAE_T_FUNCTION) {
@@ -1009,10 +1005,9 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
     int t = setae_obj_type(obj);
     if (t == SETAE_T_INSTANCE) {
         SetaeInstance *inst = setae_to_ptr(obj);
-        SetaeDict *attrs = setae_to_ptr(inst->attrs);
-        int64_t i = dict_find_cstr(attrs, name);
-        if (i >= 0) {
-            return call_value(vm, attrs->entries[i].value, args, nargs);
+        SetaeValue found;
+        if (setae_instance_get(inst, name, &found)) {
+            return call_value(vm, found, args, nargs);
         }
         SetaeValue v;
         if (class_lookup(inst->cls, name, &v)) {
@@ -1384,10 +1379,11 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             SetaeValue val = stack[sp - 2];
             const char *name = setae_code_name(code, arg);
             int t = setae_obj_type(obj);
-            if (t == SETAE_T_INSTANCE || t == SETAE_T_CLASS) {
-                SetaeValue dv = t == SETAE_T_INSTANCE
-                                    ? ((SetaeInstance *)setae_to_ptr(obj))->attrs
-                                    : ((SetaeClass *)setae_to_ptr(obj))->dict;
+            if (t == SETAE_T_INSTANCE) {
+                setae_instance_set(vm->heap, setae_to_ptr(obj), name, val);
+                sp -= 2;
+            } else if (t == SETAE_T_CLASS) {
+                SetaeValue dv = ((SetaeClass *)setae_to_ptr(obj))->dict;
                 SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
                 dict_set(setae_to_ptr(dv), key, val);
                 sp -= 2;
