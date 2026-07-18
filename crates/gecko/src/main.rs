@@ -378,6 +378,12 @@ mod tests {
     }
 
     #[test]
+    fn deep_and_mutual_recursion_reuse_frames_correctly() {
+        let src = "def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\ndef is_even(n):\n    if n == 0:\n        return True\n    return is_odd(n - 1)\ndef is_odd(n):\n    if n == 0:\n        return False\n    return is_even(n - 1)\nprint(fib(20), is_even(200), is_odd(101))\n";
+        assert_eq!(run_source(src).unwrap(), "6765 True True\n");
+    }
+
+    #[test]
     fn polymorphic_method_dispatch_picks_the_right_override() {
         let src = "class Animal:\n    def speak(self):\n        return \"...\"\nclass Dog(Animal):\n    def speak(self):\n        return \"woof\"\nclass Cat(Animal):\n    def speak(self):\n        return \"meow\"\ndef go(a):\n    return a.speak()\nd = Dog()\nc = Cat()\nprint(go(d), go(c), go(d), go(c))\n";
         assert_eq!(run_source(src).unwrap(), "woof meow woof meow\n");

@@ -215,6 +215,11 @@ struct SetaeVM {
     SetaeSandboxHook sandbox_hook;
     uint32_t class_version;
 
+    SetaeValue **frame_pool;
+    uint32_t *frame_pool_caps;
+    size_t frame_pool_n;
+    size_t frame_pool_cap;
+
     SetaeValue exc;
 };
 

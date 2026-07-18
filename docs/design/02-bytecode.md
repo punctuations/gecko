@@ -4,8 +4,14 @@
 
 Setae is a stack-based VM. Operands and results live on an operand stack, one
 per frame. This is close to Python semantics and keeps the compiler simple. A
-register-based rewrite is a possible optimization for v0.0.5 and is out of scope
-now.
+register-based rewrite is a possible optimization and is out of scope now.
+
+A frame is one buffer: the locals, then the cells it owns, then the cells it
+captured, then a fixed operand budget. Only the locals region is zeroed on
+entry, since the operand slots are written before they are read and the
+collector only scans up to the live stack depth. Returned frame buffers go on a
+per-VM free list and are handed back to the next call that fits, so a loop or a
+recursion reuses buffers instead of allocating one per call.
 
 ## Code object
 
@@ -15,9 +21,12 @@ The Rust compiler emits one code object per function and one per module body:
 - names: the table of global and attribute names.
 - code: the instruction bytes.
 - nlocals: the number of local slots.
-- stacksize: the deepest the operand stack gets, computed by the compiler.
 - ncells, nfrees: closure slots. A frame lays out locals, then cells it owns,
   then cells it captured, then the operand stack.
+
+A frame reserves a fixed operand budget rather than a per-function depth. A
+compile-time stack-depth pass that sizes each frame exactly is a later
+refinement.
 
 A code object is a value, see 01-object-model.md, and is the unit the VM runs.
 

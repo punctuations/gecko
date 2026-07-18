@@ -11,6 +11,33 @@
 
 #define STACK_MAX 1024
 #define MAX_DEPTH 500
+#define FRAME_POOL_MAX 256
+
+static SetaeValue *frame_alloc(SetaeVM *vm, uint32_t need, uint32_t *out_cap) {
+    if (vm->frame_pool_n > 0 && vm->frame_pool_caps[vm->frame_pool_n - 1] >= need) {
+        vm->frame_pool_n--;
+        *out_cap = vm->frame_pool_caps[vm->frame_pool_n];
+        return vm->frame_pool[vm->frame_pool_n];
+    }
+    *out_cap = need;
+    return malloc(need * sizeof(SetaeValue));
+}
+
+static void frame_release(SetaeVM *vm, SetaeValue *buf, uint32_t cap) {
+    if (vm->frame_pool_n >= FRAME_POOL_MAX) {
+        free(buf);
+        return;
+    }
+    if (vm->frame_pool_n == vm->frame_pool_cap) {
+        vm->frame_pool_cap = vm->frame_pool_cap ? vm->frame_pool_cap * 2 : 16;
+        vm->frame_pool = realloc(vm->frame_pool, vm->frame_pool_cap * sizeof(SetaeValue *));
+        vm->frame_pool_caps =
+            realloc(vm->frame_pool_caps, vm->frame_pool_cap * sizeof(uint32_t));
+    }
+    vm->frame_pool[vm->frame_pool_n] = buf;
+    vm->frame_pool_caps[vm->frame_pool_n] = cap;
+    vm->frame_pool_n++;
+}
 
 SetaeVM *setae_vm_new(SetaeHeap *h) {
     SetaeVM *vm = calloc(1, sizeof(SetaeVM));
@@ -36,6 +63,11 @@ void setae_vm_destroy(SetaeVM *vm) {
     free(vm->module_cache);
     free(vm->codes);
     free(vm->out);
+    for (size_t i = 0; i < vm->frame_pool_n; i++) {
+        free(vm->frame_pool[i]);
+    }
+    free(vm->frame_pool);
+    free(vm->frame_pool_caps);
     free(vm);
 }
 
@@ -1150,7 +1182,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t nfrees = setae_code_nfrees(code);
     uint32_t fixed = nlocals + ncells + nfrees;
 
-    SetaeValue *frame = calloc(fixed + STACK_MAX, sizeof(SetaeValue));
+    uint32_t frame_cap;
+    SetaeValue *frame = frame_alloc(vm, fixed + STACK_MAX, &frame_cap);
+    memset(frame, 0, fixed * sizeof(SetaeValue));
     SetaeValue *locals = frame;
     SetaeValue *cellbase = frame + nlocals;
     SetaeValue *stack = frame + fixed;
@@ -1683,7 +1717,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     }
 
     vm->frames = fr.parent;
-    free(frame);
+    frame_release(vm, frame, frame_cap);
     vm->depth--;
     return result;
 }
