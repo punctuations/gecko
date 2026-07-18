@@ -16,6 +16,8 @@ struct SetaeCode {
     uint32_t ncode;
     uint32_t code_cap;
 
+    SetaeInlineCache *ic;
+
     struct SetaeCode **children;
     uint32_t nchildren;
     uint32_t children_cap;
@@ -63,6 +65,7 @@ void setae_code_free(SetaeCode *c) {
     free(c->consts);
     free(c->excs);
     free(c->code);
+    free(c->ic);
     free(c);
 }
 
@@ -177,6 +180,13 @@ const char *setae_code_name(const SetaeCode *c, uint32_t i) {
 const uint8_t *setae_code_bytes(const SetaeCode *c, uint32_t *n) {
     *n = c->ncode;
     return c->code;
+}
+
+SetaeInlineCache *setae_code_ic(SetaeCode *c) {
+    if (c->ic == NULL && c->ncode > 0) {
+        c->ic = calloc(c->ncode / 2, sizeof(SetaeInlineCache));
+    }
+    return c->ic;
 }
 
 uint32_t setae_code_nlocals(const SetaeCode *c) {

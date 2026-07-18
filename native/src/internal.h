@@ -99,6 +99,16 @@ typedef struct SetaeInstance {
     uint32_t slots_cap;
 } SetaeInstance;
 
+typedef struct SetaeInlineCache {
+    SetaeShape *shape;
+    SetaeShape *next;
+    SetaeValue cls;
+    SetaeValue method;
+    uint32_t slot;
+    uint32_t guard;
+    uint8_t kind;
+} SetaeInlineCache;
+
 typedef struct SetaeBound {
     SetaeObject obj;
     SetaeValue func;
@@ -135,6 +145,7 @@ SetaeValue setae_class_new(SetaeHeap *h, SetaeValue name, SetaeValue base,
                            SetaeValue dict);
 SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls);
 int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *out);
+int64_t setae_instance_slot(const SetaeInstance *inst, const char *name);
 void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v);
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
 
@@ -202,6 +213,7 @@ struct SetaeVM {
     int interrupted;
     SetaeValue oom;
     SetaeSandboxHook sandbox_hook;
+    uint32_t class_version;
 
     SetaeValue exc;
 };
@@ -215,6 +227,7 @@ const SetaeValue *setae_code_consts(const SetaeCode *c);
 uint32_t setae_code_nconsts(const SetaeCode *c);
 const char *setae_code_name(const SetaeCode *c, uint32_t i);
 const uint8_t *setae_code_bytes(const SetaeCode *c, uint32_t *n);
+SetaeInlineCache *setae_code_ic(SetaeCode *c);
 uint32_t setae_code_nlocals(const SetaeCode *c);
 uint32_t setae_code_nparams(const SetaeCode *c);
 uint32_t setae_code_ndefaults(const SetaeCode *c);

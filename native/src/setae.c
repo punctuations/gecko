@@ -132,16 +132,6 @@ void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
                   (uint32_t)(vm->nglobals - 1));
 }
 
-static int global_lookup(SetaeVM *vm, const char *name, SetaeValue *out) {
-    int64_t i = tab_find(vm->globals, vm->nglobals, vm->globals_index,
-                         vm->globals_index_cap, name);
-    if (i < 0) {
-        return 0;
-    }
-    *out = vm->globals[i].value;
-    return 1;
-}
-
 void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v) {
     if (vm->nbuiltins == vm->builtins_cap) {
         vm->builtins_cap = vm->builtins_cap ? vm->builtins_cap * 2 : 16;
@@ -154,16 +144,6 @@ void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v) {
     vm->nbuiltins++;
     tab_index_add(vm->builtins, vm->nbuiltins, &vm->builtins_index, &vm->builtins_index_cap,
                   (uint32_t)(vm->nbuiltins - 1));
-}
-
-static int builtin_lookup(SetaeVM *vm, const char *name, SetaeValue *out) {
-    int64_t i = tab_find(vm->builtins, vm->nbuiltins, vm->builtins_index,
-                         vm->builtins_index_cap, name);
-    if (i >= 0) {
-        *out = vm->builtins[i].value;
-        return 1;
-    }
-    return 0;
 }
 
 int setae_vm_error(SetaeVM *vm) {
@@ -1001,7 +981,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
 }
 
 static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
-                              SetaeValue *args, int nargs) {
+                              SetaeValue *args, int nargs, SetaeInlineCache *c) {
     int t = setae_obj_type(obj);
     if (t == SETAE_T_INSTANCE) {
         SetaeInstance *inst = setae_to_ptr(obj);
@@ -1022,6 +1002,11 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                         setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
                     return setae_none();
                 }
+                c->kind = 4;
+                c->shape = inst->shape;
+                c->cls = inst->cls;
+                c->method = v;
+                c->guard = vm->class_version;
                 return run_code(vm, f->code, args - 1, nargs + 1, f->cells, f->defaults,
                                 f->ndefaults, f->module);
             }
@@ -1158,6 +1143,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     const SetaeValue *consts = setae_code_consts(code);
     uint32_t ncode;
     const uint8_t *bytes = setae_code_bytes(code, &ncode);
+    SetaeInlineCache *ic = setae_code_ic((SetaeCode *)code);
     uint32_t nlocals = setae_code_nlocals(code);
     uint32_t nparams = setae_code_nparams(code);
     uint32_t ncells = setae_code_ncells(code);
@@ -1225,27 +1211,51 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             stack[sp++] = consts[arg];
             break;
         case OP_LOAD_NAME: {
-            const char *name = setae_code_name(code, arg);
-            SetaeValue v;
-            int found;
-            if (module != 0) {
-                SetaeDict *d = setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict);
-                int64_t i = dict_find_cstr(d, name);
-                found = i >= 0;
-                if (found) {
-                    v = d->entries[i].value;
-                }
-            } else {
-                found = global_lookup(vm, name, &v);
-            }
-            if (!found) {
-                found = builtin_lookup(vm, name, &v);
-            }
-            if (!found) {
-                setae_vm_raise(vm, "NameError", "name '%s' is not defined", name);
+            SetaeInlineCache *c = &ic[unit];
+            if (c->kind == 1) {
+                stack[sp++] = vm->globals[c->slot].value;
                 break;
             }
-            stack[sp++] = v;
+            SetaeDict *md =
+                module != 0 ? setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict) : NULL;
+            if (c->kind == 2) {
+                stack[sp++] = md->entries[c->slot].value;
+                break;
+            }
+            uint32_t guard = md != NULL ? md->len : (uint32_t)vm->nglobals;
+            if (c->kind == 3 && c->guard == guard) {
+                stack[sp++] = vm->builtins[c->slot].value;
+                break;
+            }
+            const char *name = setae_code_name(code, arg);
+            if (md != NULL) {
+                int64_t i = dict_find_cstr(md, name);
+                if (i >= 0) {
+                    c->kind = 2;
+                    c->slot = (uint32_t)i;
+                    stack[sp++] = md->entries[i].value;
+                    break;
+                }
+            } else {
+                int64_t i = tab_find(vm->globals, vm->nglobals, vm->globals_index,
+                                     vm->globals_index_cap, name);
+                if (i >= 0) {
+                    c->kind = 1;
+                    c->slot = (uint32_t)i;
+                    stack[sp++] = vm->globals[i].value;
+                    break;
+                }
+            }
+            int64_t bi = tab_find(vm->builtins, vm->nbuiltins, vm->builtins_index,
+                                  vm->builtins_index_cap, name);
+            if (bi >= 0) {
+                c->kind = 3;
+                c->slot = (uint32_t)bi;
+                c->guard = guard;
+                stack[sp++] = vm->builtins[bi].value;
+                break;
+            }
+            setae_vm_raise(vm, "NameError", "name '%s' is not defined", name);
             break;
         }
         case OP_STORE_NAME: {
@@ -1371,21 +1381,61 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             stack[sp++] = tv;
             break;
         }
-        case OP_LOAD_ATTR:
-            stack[sp - 1] = load_attr(vm, stack[sp - 1], setae_code_name(code, arg));
+        case OP_LOAD_ATTR: {
+            SetaeValue obj = stack[sp - 1];
+            if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
+                SetaeInstance *inst = setae_to_ptr(obj);
+                if (ic[unit].shape == inst->shape) {
+                    stack[sp - 1] = inst->slots[ic[unit].slot];
+                    break;
+                }
+                int64_t slot = setae_instance_slot(inst, setae_code_name(code, arg));
+                if (slot >= 0) {
+                    ic[unit].shape = inst->shape;
+                    ic[unit].slot = (uint32_t)slot;
+                    stack[sp - 1] = inst->slots[slot];
+                    break;
+                }
+            }
+            stack[sp - 1] = load_attr(vm, obj, setae_code_name(code, arg));
             break;
+        }
         case OP_STORE_ATTR: {
             SetaeValue obj = stack[sp - 1];
             SetaeValue val = stack[sp - 2];
-            const char *name = setae_code_name(code, arg);
             int t = setae_obj_type(obj);
             if (t == SETAE_T_INSTANCE) {
-                setae_instance_set(vm->heap, setae_to_ptr(obj), name, val);
+                SetaeInstance *inst = setae_to_ptr(obj);
+                if (ic[unit].shape == inst->shape) {
+                    SetaeShape *ns = ic[unit].next;
+                    if (ns->nslots > inst->slots_cap) {
+                        uint32_t cap = inst->slots_cap ? inst->slots_cap * 2 : 4;
+                        if (cap < ns->nslots) {
+                            cap = ns->nslots;
+                        }
+                        inst->slots = realloc(inst->slots, cap * sizeof(SetaeValue));
+                        inst->slots_cap = cap;
+                    }
+                    inst->slots[ic[unit].slot] = val;
+                    inst->shape = ns;
+                    sp -= 2;
+                    break;
+                }
+                const char *name = setae_code_name(code, arg);
+                SetaeShape *from = inst->shape;
+                setae_instance_set(vm->heap, inst, name, val);
+                ic[unit].shape = from;
+                ic[unit].next = inst->shape;
+                ic[unit].slot = (uint32_t)setae_instance_slot(inst, name);
                 sp -= 2;
-            } else if (t == SETAE_T_CLASS) {
+                break;
+            }
+            const char *name = setae_code_name(code, arg);
+            if (t == SETAE_T_CLASS) {
                 SetaeValue dv = ((SetaeClass *)setae_to_ptr(obj))->dict;
                 SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
                 dict_set(setae_to_ptr(dv), key, val);
+                vm->class_version++;
                 sp -= 2;
             } else {
                 setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
@@ -1397,6 +1447,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             SetaeValue cname = stack[--sp];
             SetaeValue base = stack[--sp];
             SetaeValue dict = stack[--sp];
+            vm->class_version++;
             if (!setae_is_none(base) && setae_obj_type(base) == SETAE_T_EXCTYPE) {
                 char name[128];
                 size_t len = setae_str_len(cname);
@@ -1573,10 +1624,34 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         }
         case OP_CALL_METHOD: {
             int n = (int)(arg & 0xff);
-            const char *name = setae_code_name(code, arg >> 8);
             SetaeValue *argv = &stack[sp - n];
             SetaeValue obj = stack[sp - n - 1];
-            SetaeValue r = call_method(vm, obj, name, argv, n);
+            SetaeInlineCache *c = &ic[unit];
+            if (c->kind == 4 && setae_obj_type(obj) == SETAE_T_INSTANCE) {
+                SetaeInstance *inst = setae_to_ptr(obj);
+                if (c->shape == inst->shape && c->cls == inst->cls &&
+                    c->guard == vm->class_version) {
+                    SetaeFunc *f = setae_to_ptr(c->method);
+                    uint32_t nparams = setae_code_nparams(f->code);
+                    uint32_t required = nparams - f->ndefaults;
+                    SetaeValue r;
+                    if ((uint32_t)n + 1 < required || (uint32_t)n + 1 > nparams) {
+                        setae_vm_raise(
+                            vm, "TypeError",
+                            "%s() takes %u positional arguments but %u were given",
+                            setae_code_fname(f->code), nparams, (uint32_t)n + 1);
+                        r = setae_none();
+                    } else {
+                        r = run_code(vm, f->code, argv - 1, n + 1, f->cells, f->defaults,
+                                     f->ndefaults, f->module);
+                    }
+                    sp -= n + 1;
+                    stack[sp++] = r;
+                    break;
+                }
+            }
+            const char *name = setae_code_name(code, arg >> 8);
+            SetaeValue r = call_method(vm, obj, name, argv, n, c);
             sp -= n + 1;
             stack[sp++] = r;
             break;

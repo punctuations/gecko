@@ -284,6 +284,10 @@ SetaeValue setae_instance_new(SetaeHeap *h, SetaeValue cls) {
     return setae_from_ptr(i);
 }
 
+int64_t setae_instance_slot(const SetaeInstance *inst, const char *name) {
+    return shape_slot(inst->shape, name);
+}
+
 int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *out) {
     int64_t slot = shape_slot(inst->shape, name);
     if (slot < 0) {

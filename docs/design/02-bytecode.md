@@ -142,6 +142,42 @@ Setae uses computed goto, a dispatch table of label addresses, where the C
 compiler supports it, and falls back to a switch. The opcode numbering keeps
 that table dense.
 
+## Inline caches
+
+A code object carries a side array of inline caches, one slot per instruction
+unit, allocated on first run and never serialized. Four opcodes use it.
+
+LOAD_ATTR on an instance records the shape it last saw and the slot the attribute
+lived at. On the next execution, if the instance has that same shape, the load is
+a pointer compare and an array index, skipping the walk down the shape chain. A
+different shape misses, re-resolves the slot, and overwrites the cache, so a site
+that sees one shape runs fast and a polymorphic site stays correct by
+re-checking. The key is shape identity alone, since a shape's slot layout never
+changes.
+
+STORE_ATTR records the shape it saw, the shape the store transitions to, and the
+slot. On a hit it writes the slot and swaps the shape without walking or
+searching the transition edges, which is the common path through an `__init__`
+that fills the same fields on every instance.
+
+LOAD_NAME records where the name resolved. A name found in the flat globals or a
+module dict caches the table and the entry index, and later reads the live value
+there directly; those tables are append-only, so the index stays valid and a
+reassignment is seen because the value is read fresh. A name found in the
+builtins caches the index plus the size of the shadowing namespace at the time.
+If a global or module-level name is added later, that size changes, the cache
+misses, and the name re-resolves, so a global that shadows a builtin takes over
+on its next use.
+
+CALL_METHOD records the instance shape, the class, and the resolved method
+function, guarded by a class version the VM bumps on every class creation or
+modification. A hit skips both the shape walk that rules out an instance
+attribute shadowing the name and the walk up the class chain, going straight to
+the call. The shape pins that no data attribute shadows the method, the class
+pins which method, and the version busts the cache when a method is reassigned or
+a class is redefined, which also covers a class address being reused after
+collection.
+
 ## Serialization
 
 Code objects serialize to a small length-prefixed binary format with a

@@ -378,6 +378,54 @@ mod tests {
     }
 
     #[test]
+    fn polymorphic_method_dispatch_picks_the_right_override() {
+        let src = "class Animal:\n    def speak(self):\n        return \"...\"\nclass Dog(Animal):\n    def speak(self):\n        return \"woof\"\nclass Cat(Animal):\n    def speak(self):\n        return \"meow\"\ndef go(a):\n    return a.speak()\nd = Dog()\nc = Cat()\nprint(go(d), go(c), go(d), go(c))\n";
+        assert_eq!(run_source(src).unwrap(), "woof meow woof meow\n");
+    }
+
+    #[test]
+    fn reassigning_a_method_busts_the_cache() {
+        let src = "class C:\n    def f(self):\n        return 1\ndef g(self):\n    return 2\nc = C()\nprint(c.f())\nC.f = g\nprint(c.f())\n";
+        assert_eq!(run_source(src).unwrap(), "1\n2\n");
+    }
+
+    #[test]
+    fn a_data_attribute_shadows_a_method_at_a_call_site() {
+        let src = "class C:\n    def f(self):\n        return 1\ndef plain(v):\n    return v + 100\nc = C()\nprint(c.f())\nc.f = plain\nprint(c.f(5))\n";
+        assert_eq!(run_source(src).unwrap(), "1\n105\n");
+    }
+
+    #[test]
+    fn inherited_methods_resolve_through_the_cache() {
+        let src = "class Base:\n    def m(self):\n        return 42\nclass Mid(Base):\n    pass\nclass Leaf(Mid):\n    pass\nprint(Leaf().m(), Leaf().m())\n";
+        assert_eq!(run_source(src).unwrap(), "42 42\n");
+    }
+
+    #[test]
+    fn a_cached_global_reads_its_live_value() {
+        let src = "def get():\n    return x\nx = 1\nprint(get())\nx = 2\nprint(get())\n";
+        assert_eq!(run_source(src).unwrap(), "1\n2\n");
+    }
+
+    #[test]
+    fn a_cached_builtin_busts_when_a_global_shadows_it() {
+        let src = "def uselen(a):\n    return len(a)\nprint(uselen([1, 2, 3]))\nlen = 99\ntry:\n    uselen([1, 2, 3])\nexcept TypeError:\n    print(\"shadowed\")\n";
+        assert_eq!(run_source(src).unwrap(), "3\nshadowed\n");
+    }
+
+    #[test]
+    fn polymorphic_attribute_site_reads_the_right_slot() {
+        let src = "class A:\n    def __init__(self):\n        self.x = 1\n        self.y = 2\nclass B:\n    def __init__(self):\n        self.y = 10\n        self.x = 20\ndef getx(o):\n    return o.x\na = A()\nb = B()\nprint(getx(a), getx(b), getx(a), getx(b))\n";
+        assert_eq!(run_source(src).unwrap(), "1 20 1 20\n");
+    }
+
+    #[test]
+    fn adding_an_attribute_busts_a_cached_site() {
+        let src = "class G:\n    pass\ndef read(o):\n    return o.a\ng = G()\ng.a = 1\nprint(read(g))\ng.b = 2\nprint(read(g), g.b)\n";
+        assert_eq!(run_source(src).unwrap(), "1\n1 2\n");
+    }
+
+    #[test]
     fn instance_attributes_get_and_set() {
         let src = "class P:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\np = P(3, 4)\nprint(p.x, p.y)\np.x = 100\nprint(p.x, p.y)\np.z = 9\nprint(p.z)\n";
         assert_eq!(run_source(src).unwrap(), "3 4\n100 4\n9\n");
