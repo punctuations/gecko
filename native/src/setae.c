@@ -9,6 +9,10 @@
 #include <string.h>
 #include <time.h>
 
+#if !defined(__GNUC__)
+#error "the Setae dispatch loop requires computed goto (GCC or Clang)"
+#endif
+
 #define STACK_MAX 1024
 #define MAX_DEPTH 500
 #define FRAME_POOL_MAX 256
@@ -1210,59 +1214,123 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     SetaeValue result = setae_none();
     uint32_t ip = 0;
     uint32_t ext = 0;
-    while (ip < ncode && !vm->error) {
-        fr.sp = sp;
-        if (limited) {
-            vm->steps++;
-            if (vm->step_limit != 0 && vm->steps > vm->step_limit) {
-                vm->interrupted = 1;
-                vm->error = 1;
-                snprintf(vm->errmsg, sizeof(vm->errmsg),
-                         "RuntimeError: step limit exceeded");
-                break;
-            }
-            if (vm->deadline_ns != 0 && (vm->steps & 0xfff) == 0 &&
-                monotonic_ns() > vm->deadline_ns) {
-                vm->interrupted = 1;
-                vm->error = 1;
-                snprintf(vm->errmsg, sizeof(vm->errmsg),
-                         "RuntimeError: time limit exceeded");
-                break;
-            }
+    uint32_t unit = 0;
+    uint32_t arg = 0;
+    uint8_t op = 0;
+
+    static void *const table[] = {
+        [OP_LOAD_CONST] = &&L_OP_LOAD_CONST,
+        [OP_LOAD_NAME] = &&L_OP_LOAD_NAME,
+        [OP_STORE_NAME] = &&L_OP_STORE_NAME,
+        [OP_LOAD_LOCAL] = &&L_OP_LOAD_LOCAL,
+        [OP_STORE_LOCAL] = &&L_OP_STORE_LOCAL,
+        [OP_POP_TOP] = &&L_OP_POP_TOP,
+        [OP_BINARY_OP] = &&L_OP_BINARY_OP,
+        [OP_CALL] = &&L_OP_CALL,
+        [OP_RETURN] = &&L_OP_RETURN,
+        [OP_JUMP] = &&L_OP_JUMP,
+        [OP_POP_JUMP_IF_FALSE] = &&L_OP_POP_JUMP_IF_FALSE,
+        [OP_POP_JUMP_IF_TRUE] = &&L_OP_POP_JUMP_IF_TRUE,
+        [OP_JUMP_IF_FALSE_OR_POP] = &&L_OP_JUMP_IF_FALSE_OR_POP,
+        [OP_JUMP_IF_TRUE_OR_POP] = &&L_OP_JUMP_IF_TRUE_OR_POP,
+        [OP_COMPARE_OP] = &&L_OP_COMPARE_OP,
+        [OP_UNARY_NEG] = &&L_OP_UNARY_NEG,
+        [OP_UNARY_NOT] = &&L_OP_UNARY_NOT,
+        [OP_MAKE_FUNCTION] = &&L_OP_MAKE_FUNCTION,
+        [OP_BUILD_LIST] = &&L_OP_BUILD_LIST,
+        [OP_BUILD_DICT] = &&L_OP_BUILD_DICT,
+        [OP_SUBSCR] = &&L_OP_SUBSCR,
+        [OP_STORE_SUBSCR] = &&L_OP_STORE_SUBSCR,
+        [OP_GET_ITER] = &&L_OP_GET_ITER,
+        [OP_FOR_ITER] = &&L_OP_FOR_ITER,
+        [OP_CALL_METHOD] = &&L_OP_CALL_METHOD,
+        [OP_EXTENDED_ARG] = &&L_OP_EXTENDED_ARG,
+        [OP_LOAD_CLOSURE] = &&L_OP_LOAD_CLOSURE,
+        [OP_LOAD_DEREF] = &&L_OP_LOAD_DEREF,
+        [OP_STORE_DEREF] = &&L_OP_STORE_DEREF,
+        [OP_BUILD_TUPLE] = &&L_OP_BUILD_TUPLE,
+        [OP_UNPACK_SEQUENCE] = &&L_OP_UNPACK_SEQUENCE,
+        [OP_RAISE] = &&L_OP_RAISE,
+        [OP_EXC_MATCH] = &&L_OP_EXC_MATCH,
+        [OP_RERAISE] = &&L_OP_RERAISE,
+        [OP_LOAD_ATTR] = &&L_OP_LOAD_ATTR,
+        [OP_STORE_ATTR] = &&L_OP_STORE_ATTR,
+        [OP_MAKE_CLASS] = &&L_OP_MAKE_CLASS,
+        [OP_IMPORT] = &&L_OP_IMPORT,
+        [OP_IMPORT_MISSING] = &&L_OP_IMPORT_MISSING,
+    };
+
+#define DISPATCH()                                                             \
+    do {                                                                       \
+        if (vm->error || ip >= ncode || limited)                               \
+            goto slow_dispatch;                                                \
+        if (sp >= STACK_MAX - 1)                                               \
+            goto stack_overflow;                                               \
+        fr.sp = sp;                                                            \
+        unit = ip / 2;                                                         \
+        op = bytes[ip];                                                        \
+        arg = ext | bytes[ip + 1];                                             \
+        ext = 0;                                                               \
+        ip += 2;                                                               \
+        goto *table[op];                                                       \
+    } while (0)
+
+    DISPATCH();
+
+slow_dispatch:
+    if (vm->error)
+        goto handle_error;
+    if (ip >= ncode)
+        goto loop_done;
+    fr.sp = sp;
+    if (limited) {
+        vm->steps++;
+        if (vm->step_limit != 0 && vm->steps > vm->step_limit) {
+            vm->interrupted = 1;
+            vm->error = 1;
+            snprintf(vm->errmsg, sizeof(vm->errmsg), "RuntimeError: step limit exceeded");
+            goto loop_done;
         }
-        uint32_t unit = ip / 2;
-        uint8_t op = bytes[ip];
-        uint32_t arg = ext | bytes[ip + 1];
-        ip += 2;
-        if (op == OP_EXTENDED_ARG) {
-            ext = arg << 8;
-            continue;
+        if (vm->deadline_ns != 0 && (vm->steps & 0xfff) == 0 &&
+            monotonic_ns() > vm->deadline_ns) {
+            vm->interrupted = 1;
+            vm->error = 1;
+            snprintf(vm->errmsg, sizeof(vm->errmsg), "RuntimeError: time limit exceeded");
+            goto loop_done;
         }
-        ext = 0;
-        if (sp >= STACK_MAX - 1) {
-            setae_vm_raise(vm, "RuntimeError", "value stack overflow");
-            break;
-        }
-        switch (op) {
-        case OP_LOAD_CONST:
+    }
+    if (sp >= STACK_MAX - 1)
+        goto stack_overflow;
+    unit = ip / 2;
+    op = bytes[ip];
+    arg = ext | bytes[ip + 1];
+    ext = 0;
+    ip += 2;
+    goto *table[op];
+
+stack_overflow:
+    setae_vm_raise(vm, "RuntimeError", "value stack overflow");
+    goto handle_error;
+
+        L_OP_LOAD_CONST:
             stack[sp++] = consts[arg];
-            break;
-        case OP_LOAD_NAME: {
+            DISPATCH();
+        L_OP_LOAD_NAME: {
             SetaeInlineCache *c = &ic[unit];
             if (c->kind == 1) {
                 stack[sp++] = vm->globals[c->slot].value;
-                break;
+                DISPATCH();
             }
             SetaeDict *md =
                 module != 0 ? setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict) : NULL;
             if (c->kind == 2) {
                 stack[sp++] = md->entries[c->slot].value;
-                break;
+                DISPATCH();
             }
             uint32_t guard = md != NULL ? md->len : (uint32_t)vm->nglobals;
             if (c->kind == 3 && c->guard == guard) {
                 stack[sp++] = vm->builtins[c->slot].value;
-                break;
+                DISPATCH();
             }
             const char *name = setae_code_name(code, arg);
             if (md != NULL) {
@@ -1271,7 +1339,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                     c->kind = 2;
                     c->slot = (uint32_t)i;
                     stack[sp++] = md->entries[i].value;
-                    break;
+                    DISPATCH();
                 }
             } else {
                 int64_t i = tab_find(vm->globals, vm->nglobals, vm->globals_index,
@@ -1280,7 +1348,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                     c->kind = 1;
                     c->slot = (uint32_t)i;
                     stack[sp++] = vm->globals[i].value;
-                    break;
+                    DISPATCH();
                 }
             }
             int64_t bi = tab_find(vm->builtins, vm->nbuiltins, vm->builtins_index,
@@ -1290,12 +1358,12 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 c->slot = (uint32_t)bi;
                 c->guard = guard;
                 stack[sp++] = vm->builtins[bi].value;
-                break;
+                DISPATCH();
             }
             setae_vm_raise(vm, "NameError", "name '%s' is not defined", name);
-            break;
+            DISPATCH();
         }
-        case OP_STORE_NAME: {
+        L_OP_STORE_NAME: {
             const char *name = setae_code_name(code, arg);
             SetaeValue val = stack[--sp];
             if (module != 0) {
@@ -1305,85 +1373,85 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             } else {
                 setae_vm_set_global(vm, name, val);
             }
-            break;
+            DISPATCH();
         }
-        case OP_LOAD_LOCAL:
+        L_OP_LOAD_LOCAL:
             if (locals[arg] == 0) {
                 setae_vm_raise(
                     vm, "UnboundLocalError", "local variable referenced before assignment");
-                break;
+                DISPATCH();
             }
             stack[sp++] = locals[arg];
-            break;
-        case OP_STORE_LOCAL:
+            DISPATCH();
+        L_OP_STORE_LOCAL:
             locals[arg] = stack[--sp];
-            break;
-        case OP_POP_TOP:
+            DISPATCH();
+        L_OP_POP_TOP:
             sp--;
-            break;
-        case OP_BINARY_OP: {
+            DISPATCH();
+        L_OP_BINARY_OP: {
             SetaeValue b = stack[--sp];
             SetaeValue a = stack[--sp];
             stack[sp++] = binary_op(vm, (SetaeBinOp)(arg & 0x7f), (int)(arg >> 7), a, b);
-            break;
+            DISPATCH();
         }
-        case OP_CALL: {
+        L_OP_CALL: {
             int n = (int)arg;
             SetaeValue *argv = &stack[sp - n];
             SetaeValue callee = stack[sp - n - 1];
             SetaeValue r = call_value(vm, callee, argv, n);
             sp -= n + 1;
             stack[sp++] = r;
-            break;
+            DISPATCH();
         }
-        case OP_RETURN:
+        L_OP_RETURN:
             result = stack[--sp];
             ip = ncode;
-            break;
-        case OP_JUMP:
+            DISPATCH();
+        L_OP_JUMP:
             ip = arg * 2;
-            break;
-        case OP_POP_JUMP_IF_FALSE:
+            DISPATCH();
+        L_OP_POP_JUMP_IF_FALSE:
             if (!truthy(stack[--sp])) {
                 ip = arg * 2;
             }
-            break;
-        case OP_POP_JUMP_IF_TRUE:
+            DISPATCH();
+        L_OP_POP_JUMP_IF_TRUE:
             if (truthy(stack[--sp])) {
                 ip = arg * 2;
             }
-            break;
-        case OP_JUMP_IF_FALSE_OR_POP:
+            DISPATCH();
+        L_OP_JUMP_IF_FALSE_OR_POP:
             if (!truthy(stack[sp - 1])) {
                 ip = arg * 2;
             } else {
                 sp--;
             }
-            break;
-        case OP_JUMP_IF_TRUE_OR_POP:
+            DISPATCH();
+        L_OP_JUMP_IF_TRUE_OR_POP:
             if (truthy(stack[sp - 1])) {
                 ip = arg * 2;
             } else {
                 sp--;
             }
-            break;
-        case OP_COMPARE_OP: {
+            DISPATCH();
+        L_OP_COMPARE_OP: {
             SetaeValue b = stack[--sp];
             SetaeValue a = stack[--sp];
             stack[sp++] = compare(vm, (SetaeCmpOp)arg, a, b);
-            break;
+            DISPATCH();
         }
-        case OP_UNARY_NEG:
+        L_OP_UNARY_NEG:
             stack[sp - 1] = unary_neg(vm, stack[sp - 1]);
-            break;
-        case OP_UNARY_NOT:
+            DISPATCH();
+        L_OP_UNARY_NOT:
             stack[sp - 1] = setae_bool(!truthy(stack[sp - 1]));
-            break;
-        case OP_MAKE_FUNCTION: {
+            DISPATCH();
+        L_OP_MAKE_FUNCTION: {
             const SetaeCode *child = setae_code_child(code, arg);
             if (child == NULL) {
                 setae_vm_raise(vm, "RuntimeError", "bad code index %u", arg);
-                break;
+                DISPATCH();
             }
             uint32_t nf = setae_code_nfrees(child);
             uint32_t nd = setae_code_ndefaults(child);
@@ -1391,53 +1459,53 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                                           &stack[sp - nf - nd], nd, module);
             sp -= (int)(nf + nd);
             stack[sp++] = f;
-            break;
+            DISPATCH();
         }
-        case OP_LOAD_CLOSURE:
+        L_OP_LOAD_CLOSURE:
             stack[sp++] = cellbase[arg];
-            break;
-        case OP_LOAD_DEREF: {
+            DISPATCH();
+        L_OP_LOAD_DEREF: {
             SetaeCell *cell = setae_to_ptr(cellbase[arg]);
             if (cell->value == 0) {
                 setae_vm_raise(
                     vm, "UnboundLocalError", "variable referenced before assignment");
-                break;
+                DISPATCH();
             }
             stack[sp++] = cell->value;
-            break;
+            DISPATCH();
         }
-        case OP_STORE_DEREF: {
+        L_OP_STORE_DEREF: {
             SetaeCell *cell = setae_to_ptr(cellbase[arg]);
             cell->value = stack[--sp];
-            break;
+            DISPATCH();
         }
-        case OP_BUILD_TUPLE: {
+        L_OP_BUILD_TUPLE: {
             int n = (int)arg;
             SetaeValue tv = setae_tuple_new(vm->heap, &stack[sp - n], (uint32_t)n);
             sp -= n;
             stack[sp++] = tv;
-            break;
+            DISPATCH();
         }
-        case OP_LOAD_ATTR: {
+        L_OP_LOAD_ATTR: {
             SetaeValue obj = stack[sp - 1];
             if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
                 SetaeInstance *inst = setae_to_ptr(obj);
                 if (ic[unit].shape == inst->shape) {
                     stack[sp - 1] = inst->slots[ic[unit].slot];
-                    break;
+                    DISPATCH();
                 }
                 int64_t slot = setae_instance_slot(inst, setae_code_name(code, arg));
                 if (slot >= 0) {
                     ic[unit].shape = inst->shape;
                     ic[unit].slot = (uint32_t)slot;
                     stack[sp - 1] = inst->slots[slot];
-                    break;
+                    DISPATCH();
                 }
             }
             stack[sp - 1] = load_attr(vm, obj, setae_code_name(code, arg));
-            break;
+            DISPATCH();
         }
-        case OP_STORE_ATTR: {
+        L_OP_STORE_ATTR: {
             SetaeValue obj = stack[sp - 1];
             SetaeValue val = stack[sp - 2];
             int t = setae_obj_type(obj);
@@ -1456,7 +1524,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                     inst->slots[ic[unit].slot] = val;
                     inst->shape = ns;
                     sp -= 2;
-                    break;
+                    DISPATCH();
                 }
                 const char *name = setae_code_name(code, arg);
                 SetaeShape *from = inst->shape;
@@ -1465,7 +1533,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 ic[unit].next = inst->shape;
                 ic[unit].slot = (uint32_t)setae_instance_slot(inst, name);
                 sp -= 2;
-                break;
+                DISPATCH();
             }
             const char *name = setae_code_name(code, arg);
             if (t == SETAE_T_CLASS) {
@@ -1478,9 +1546,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
                                setae_type_name(obj), name);
             }
-            break;
+            DISPATCH();
         }
-        case OP_MAKE_CLASS: {
+        L_OP_MAKE_CLASS: {
             SetaeValue cname = stack[--sp];
             SetaeValue base = stack[--sp];
             SetaeValue dict = stack[--sp];
@@ -1494,24 +1562,24 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 memcpy(name, setae_str_data(cname), len);
                 name[len] = '\0';
                 stack[sp++] = setae_exctype_new(vm->heap, name);
-                break;
+                DISPATCH();
             }
             if (!setae_is_none(base) && setae_obj_type(base) != SETAE_T_CLASS) {
                 setae_vm_raise(vm, "TypeError", "base must be a class, not '%s'",
                                setae_type_name(base));
-                break;
+                DISPATCH();
             }
             stack[sp++] = setae_class_new(vm->heap, cname, base, dict);
-            break;
+            DISPATCH();
         }
-        case OP_IMPORT: {
+        L_OP_IMPORT: {
             if (arg >= vm->nmodules) {
                 setae_vm_raise(vm, "RuntimeError", "bad module index %u", arg);
-                break;
+                DISPATCH();
             }
             if (vm->module_cache[arg] != 0) {
                 stack[sp++] = vm->module_cache[arg];
-                break;
+                DISPATCH();
             }
             const SetaeCode *mcode = setae_code_module(vm->root, arg);
             SetaeValue mname =
@@ -1536,31 +1604,31 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             }
             run_code(vm, mcode, NULL, 0, NULL, NULL, 0, mod);
             if (vm->error) {
-                break;
+                DISPATCH();
             }
             stack[sp++] = mod;
-            break;
+            DISPATCH();
         }
-        case OP_IMPORT_MISSING:
+        L_OP_IMPORT_MISSING:
             setae_vm_raise(vm, "ImportError", "No module named '%s'",
                            setae_code_name(code, arg));
-            break;
-        case OP_RAISE:
+            DISPATCH();
+        L_OP_RAISE:
             raise_value(vm, stack[--sp]);
-            break;
-        case OP_RERAISE:
+            DISPATCH();
+        L_OP_RERAISE:
             raise_pending(vm, stack[--sp]);
-            break;
-        case OP_EXC_MATCH: {
+            DISPATCH();
+        L_OP_EXC_MATCH: {
             SetaeValue type = stack[--sp];
             int r = exc_matches(vm, stack[sp - 1], type);
             if (vm->error) {
-                break;
+                DISPATCH();
             }
             stack[sp++] = setae_bool(r);
-            break;
+            DISPATCH();
         }
-        case OP_UNPACK_SEQUENCE: {
+        L_OP_UNPACK_SEQUENCE: {
             SetaeValue seq = stack[--sp];
             const SetaeValue *items;
             uint32_t len;
@@ -1576,25 +1644,25 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             } else {
                 setae_vm_raise(vm, "TypeError", "cannot unpack non-iterable %s object",
                                setae_type_name(seq));
-                break;
+                DISPATCH();
             }
             if (len < arg) {
                 setae_vm_raise(
                     vm, "ValueError", "not enough values to unpack (expected %u, got %u)",
                     arg, len);
-                break;
+                DISPATCH();
             }
             if (len > arg) {
                 setae_vm_raise(vm, "ValueError", "too many values to unpack (expected %u)",
                                arg);
-                break;
+                DISPATCH();
             }
             for (uint32_t i = arg; i-- > 0;) {
                 stack[sp++] = items[i];
             }
-            break;
+            DISPATCH();
         }
-        case OP_BUILD_LIST: {
+        L_OP_BUILD_LIST: {
             int n = (int)arg;
             SetaeValue lv = setae_list_new(vm->heap, (uint32_t)n);
             SetaeList *l = setae_to_ptr(lv);
@@ -1603,9 +1671,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             }
             sp -= n;
             stack[sp++] = lv;
-            break;
+            DISPATCH();
         }
-        case OP_BUILD_DICT: {
+        L_OP_BUILD_DICT: {
             int n = (int)arg;
             SetaeValue dv = setae_dict_new(vm->heap);
             SetaeDict *d = setae_to_ptr(dv);
@@ -1621,34 +1689,34 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
             }
             sp -= 2 * n;
             stack[sp++] = dv;
-            break;
+            DISPATCH();
         }
-        case OP_SUBSCR: {
+        L_OP_SUBSCR: {
             SetaeValue idx = stack[--sp];
             SetaeValue obj = stack[--sp];
             stack[sp++] = subscript(vm, obj, idx);
-            break;
+            DISPATCH();
         }
-        case OP_STORE_SUBSCR: {
+        L_OP_STORE_SUBSCR: {
             SetaeValue idx = stack[--sp];
             SetaeValue obj = stack[--sp];
             SetaeValue val = stack[--sp];
             store_subscript(vm, obj, idx, val);
-            break;
+            DISPATCH();
         }
-        case OP_GET_ITER: {
+        L_OP_GET_ITER: {
             SetaeValue v = stack[sp - 1];
             int t = setae_obj_type(v);
             if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
                 t != SETAE_T_STR && t != SETAE_T_RANGE) {
                 setae_vm_raise(vm, "TypeError", "'%s' object is not iterable",
                                setae_type_name(v));
-                break;
+                DISPATCH();
             }
             stack[sp - 1] = setae_iter_new(vm->heap, v);
-            break;
+            DISPATCH();
         }
-        case OP_FOR_ITER: {
+        L_OP_FOR_ITER: {
             SetaeIter *it = setae_to_ptr(stack[sp - 1]);
             SetaeValue next;
             if (iter_next(vm, it, &next)) {
@@ -1657,9 +1725,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                 sp--;
                 ip = arg * 2;
             }
-            break;
+            DISPATCH();
         }
-        case OP_CALL_METHOD: {
+        L_OP_CALL_METHOD: {
             int n = (int)(arg & 0xff);
             SetaeValue *argv = &stack[sp - n];
             SetaeValue obj = stack[sp - n - 1];
@@ -1684,40 +1752,44 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                     }
                     sp -= n + 1;
                     stack[sp++] = r;
-                    break;
+                    DISPATCH();
                 }
             }
             const char *name = setae_code_name(code, arg >> 8);
             SetaeValue r = call_method(vm, obj, name, argv, n, c);
             sp -= n + 1;
             stack[sp++] = r;
-            break;
+            DISPATCH();
         }
-        default:
-            setae_vm_raise(vm, "RuntimeError", "bad opcode %u", op);
-            break;
-        }
-        if (vm->error && !vm->interrupted) {
-            uint32_t nexc;
-            const SetaeExcEntry *entries = setae_code_excs(code, &nexc);
-            for (uint32_t i = 0; i < nexc; i++) {
-                if (unit >= entries[i].start && unit < entries[i].end) {
-                    sp = (int)entries[i].depth;
-                    fr.sp = sp;
-                    SetaeValue exc = vm->exc;
-                    vm->error = 0;
-                    vm->errmsg[0] = '\0';
-                    vm->exc = 0;
-                    if (exc == 0) {
-                        exc = setae_exc_new(vm->heap, "RuntimeError", setae_none());
-                    }
-                    stack[sp++] = exc;
-                    ip = entries[i].target * 2;
-                    break;
+    L_OP_EXTENDED_ARG:
+        ext = arg << 8;
+        DISPATCH();
+
+handle_error:
+    if (!vm->interrupted) {
+        uint32_t nexc;
+        const SetaeExcEntry *entries = setae_code_excs(code, &nexc);
+        for (uint32_t i = 0; i < nexc; i++) {
+            if (unit >= entries[i].start && unit < entries[i].end) {
+                sp = (int)entries[i].depth;
+                fr.sp = sp;
+                SetaeValue exc = vm->exc;
+                vm->error = 0;
+                vm->errmsg[0] = '\0';
+                vm->exc = 0;
+                if (exc == 0) {
+                    exc = setae_exc_new(vm->heap, "RuntimeError", setae_none());
                 }
+                stack[sp++] = exc;
+                ip = entries[i].target * 2;
+                goto slow_dispatch;
             }
         }
     }
+    goto loop_done;
+
+loop_done:
+#undef DISPATCH
 
     vm->frames = fr.parent;
     frame_release(vm, frame, frame_cap);

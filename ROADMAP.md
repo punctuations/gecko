@@ -11,9 +11,12 @@ it.
 - v0.0.2, classes, exceptions, closures, comprehensions, decorators, imports.
 - v0.0.3, packaging. site-packages, package imports, wheels, module resolution.
 - v0.0.4, embedding. Many VMs per process, sandboxing, memory and time bounds.
-- v0.0.5, optimization. Hidden classes, inline caches, bytecode specialization,
-  constant folding, SSA passes. Shrinking the frozen-program runner below the
-  Rust std floor of about 300 KB, through build-std or a no_std stub.
+- v0.0.5, optimization. Hidden classes, inline caches, computed-goto dispatch,
+  constant folding, hash-indexed dicts and namespaces, and pooled call frames.
+  The frozen-program runner drops below the Rust std floor of about 300 KB
+  through build-std. Bytecode specialization was tried and dropped, the release
+  build already inlines the dispatch, and SSA passes are deferred to their own
+  milestone.
 - v0.0.6, multicore. Isolates, actors, channels.
 - v0.0.7, scheduler. Work stealing, thread pools, timers, message queues.
 - v0.0.8, data engine. Typed arrays, SIMD, shared buffers, parallel map, reduce,

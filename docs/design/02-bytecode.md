@@ -147,9 +147,15 @@ reraises.
 
 ## Dispatch
 
-Setae uses computed goto, a dispatch table of label addresses, where the C
-compiler supports it, and falls back to a switch. The opcode numbering keeps
-that table dense.
+Setae dispatches with computed goto: a table of label addresses indexed by
+opcode, and each opcode ends by jumping through it to the next. Giving every
+opcode its own indirect jump lets the branch predictor learn per-opcode
+patterns, which a single switch cannot, and that is a measurable win, around a
+fifth off a call-heavy loop. The common fetch is inlined at each site and only
+the rare cases (an error to unwind, the end of the code, a step or time limit)
+fall out to a shared slow path. This needs a GCC-compatible compiler, which the
+supported toolchains (gcc, clang, clang-cl) all are; there is no switch
+fallback.
 
 ## Inline caches
 

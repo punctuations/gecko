@@ -351,6 +351,30 @@ mod tests {
     }
 
     #[test]
+    fn an_operand_stack_overflow_is_a_clean_error() {
+        let mut src = String::from("x = [");
+        for i in 0..1100 {
+            if i > 0 {
+                src.push(',');
+            }
+            src.push_str(&i.to_string());
+        }
+        src.push_str("]\nprint(len(x))\n");
+        let f = run_source(&src).unwrap_err();
+        assert!(f.message.contains("value stack overflow"), "{}", f.message);
+    }
+
+    #[test]
+    fn extended_arg_on_a_jump_target() {
+        let mut src = String::from("x = 0\nfor j in range(3):\n");
+        for i in 0..200 {
+            src.push_str(&format!("    x = x + {i} - {i}\n"));
+        }
+        src.push_str("    x = x + 1\nprint(x)\n");
+        assert_eq!(run_source(&src).unwrap(), "3\n");
+    }
+
+    #[test]
     fn parameter_defaults_fill_missing_arguments() {
         let src = "def greet(name, greeting=\"hi\"):\n    return greeting + \" \" + name\nprint(greet(\"a\"))\nprint(greet(\"b\", \"yo\"))\n";
         assert_eq!(run_source(src).unwrap(), "hi a\nyo b\n");
