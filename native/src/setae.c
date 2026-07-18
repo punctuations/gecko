@@ -1206,26 +1206,29 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         cellbase[ncells + i] = captured[i];
     }
 
+    int limited = vm->step_limit != 0 || vm->deadline_ns != 0;
     SetaeValue result = setae_none();
     uint32_t ip = 0;
     uint32_t ext = 0;
     while (ip < ncode && !vm->error) {
         fr.sp = sp;
-        vm->steps++;
-        if (vm->step_limit != 0 && vm->steps > vm->step_limit) {
-            vm->interrupted = 1;
-            vm->error = 1;
-            snprintf(vm->errmsg, sizeof(vm->errmsg),
-                     "RuntimeError: step limit exceeded");
-            break;
-        }
-        if (vm->deadline_ns != 0 && (vm->steps & 0xfff) == 0 &&
-            monotonic_ns() > vm->deadline_ns) {
-            vm->interrupted = 1;
-            vm->error = 1;
-            snprintf(vm->errmsg, sizeof(vm->errmsg),
-                     "RuntimeError: time limit exceeded");
-            break;
+        if (limited) {
+            vm->steps++;
+            if (vm->step_limit != 0 && vm->steps > vm->step_limit) {
+                vm->interrupted = 1;
+                vm->error = 1;
+                snprintf(vm->errmsg, sizeof(vm->errmsg),
+                         "RuntimeError: step limit exceeded");
+                break;
+            }
+            if (vm->deadline_ns != 0 && (vm->steps & 0xfff) == 0 &&
+                monotonic_ns() > vm->deadline_ns) {
+                vm->interrupted = 1;
+                vm->error = 1;
+                snprintf(vm->errmsg, sizeof(vm->errmsg),
+                         "RuntimeError: time limit exceeded");
+                break;
+            }
         }
         uint32_t unit = ip / 2;
         uint8_t op = bytes[ip];
