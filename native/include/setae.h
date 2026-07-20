@@ -133,6 +133,9 @@ typedef enum {
     OP_MAKE_CLASS,
     OP_IMPORT,
     OP_IMPORT_MISSING,
+    OP_CALL_EX,
+    OP_LIST_EXTEND,
+    OP_DICT_MERGE,
 } SetaeOp;
 
 typedef enum {
@@ -170,6 +173,8 @@ void setae_code_emit(SetaeCode *c, uint8_t op, uint8_t arg);
 void setae_code_set_nlocals(SetaeCode *c, uint32_t n);
 void setae_code_set_nparams(SetaeCode *c, uint32_t n);
 void setae_code_set_ndefaults(SetaeCode *c, uint32_t n);
+void setae_code_add_param_name(SetaeCode *c, const char *name);
+void setae_code_set_variadic(SetaeCode *c, uint8_t varargs, uint8_t kwargs);
 void setae_code_set_ncells(SetaeCode *c, uint32_t n);
 void setae_code_set_nfrees(SetaeCode *c, uint32_t n);
 void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t target,

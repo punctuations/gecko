@@ -10,6 +10,9 @@ pub struct Code {
     pub ndefaults: u32,
     pub ncells: u32,
     pub nfrees: u32,
+    pub param_names: Vec<String>,
+    pub varargs: bool,
+    pub kwargs: bool,
     pub codes: Vec<Code>,
     pub modules: Vec<Code>,
     pub parent_module: i32,
@@ -80,6 +83,9 @@ pub enum Op {
     MakeClass = 36,
     Import = 37,
     ImportMissing = 38,
+    CallEx = 39,
+    ListExtend = 40,
+    DictMerge = 41,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -179,6 +185,12 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     w32(out, c.ndefaults);
     w32(out, c.ncells);
     w32(out, c.nfrees);
+    w32(out, c.param_names.len() as u32);
+    for n in &c.param_names {
+        wstr(out, n);
+    }
+    out.push(c.varargs as u8);
+    out.push(c.kwargs as u8);
     w32(out, c.codes.len() as u32);
     for child in &c.codes {
         write_code(out, child);
@@ -268,6 +280,12 @@ impl Reader<'_> {
         let ndefaults = self.u32()?;
         let ncells = self.u32()?;
         let nfrees = self.u32()?;
+        let mut param_names = Vec::new();
+        for _ in 0..self.u32()? {
+            param_names.push(self.str()?);
+        }
+        let varargs = self.u8()? != 0;
+        let kwargs = self.u8()? != 0;
         let mut codes = Vec::new();
         for _ in 0..self.u32()? {
             codes.push(self.code()?);
@@ -288,6 +306,9 @@ impl Reader<'_> {
             ndefaults,
             ncells,
             nfrees,
+            param_names,
+            varargs,
+            kwargs,
             codes,
             modules,
             parent_module,
@@ -336,6 +357,9 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         36 => Op::MakeClass,
         37 => Op::Import,
         38 => Op::ImportMissing,
+        39 => Op::CallEx,
+        40 => Op::ListExtend,
+        41 => Op::DictMerge,
         _ => return Err(format!("bad opcode {v}")),
     })
 }
@@ -377,6 +401,9 @@ mod tests {
             ndefaults: 0,
             ncells: 0,
             nfrees: 1,
+            param_names: Vec::new(),
+            varargs: false,
+            kwargs: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,
@@ -401,6 +428,9 @@ mod tests {
             ndefaults: 0,
             ncells: 0,
             nfrees: 0,
+            param_names: Vec::new(),
+            varargs: false,
+            kwargs: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: 3,
@@ -438,6 +468,9 @@ mod tests {
             ndefaults: 0,
             ncells: 2,
             nfrees: 0,
+            param_names: Vec::new(),
+            varargs: false,
+            kwargs: false,
             codes: vec![inner],
             modules: vec![submodule],
             parent_module: -1,
@@ -461,6 +494,9 @@ mod tests {
             ndefaults: 0,
             ncells: 0,
             nfrees: 0,
+            param_names: Vec::new(),
+            varargs: false,
+            kwargs: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,

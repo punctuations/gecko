@@ -201,6 +201,7 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
             }
         }
         Expr::Unary { operand, .. } => desugar_expr(operand, hoisted, n),
+        Expr::Starred(inner) => desugar_expr(inner, hoisted, n),
         Expr::Bin { left, right, .. } => {
             desugar_expr(left, hoisted, n);
             desugar_expr(right, hoisted, n);
@@ -318,6 +319,7 @@ fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
         params: vec![Param {
             name: ".0".into(),
             default: None,
+            kind: ast::ParamKind::Normal,
         }],
         body,
         decorators: Vec::new(),
@@ -342,6 +344,9 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         ndefaults: 0,
         ncells,
         nfrees,
+        param_names: Vec::new(),
+        varargs: false,
+        kwargs: false,
         codes: Vec::new(),
         modules: Vec::new(),
         parent_module: -1,
@@ -731,6 +736,7 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Unary { operand, .. } => expr_reads(operand, out),
+        Expr::Starred(inner) => expr_reads(inner, out),
         Expr::Bin { left, right, .. } => {
             expr_reads(left, out);
             expr_reads(right, out);
@@ -1020,15 +1026,49 @@ impl Compiler {
         body: &[Stmt],
         decorators: &[Expr],
     ) -> Result<(), CompileError> {
-        let first_default = params.iter().position(|p| p.default.is_some());
+        let mut seen_star = false;
+        let mut seen_dstar = false;
+        let mut nvar = 0;
+        let mut nkw = 0;
+        for p in params {
+            match p.kind {
+                ast::ParamKind::Normal => {
+                    if seen_star || seen_dstar {
+                        return Err(CompileError {
+                            message: "parameter follows * or ** parameter".into(),
+                        });
+                    }
+                }
+                ast::ParamKind::VarArgs => {
+                    if seen_star || seen_dstar {
+                        return Err(CompileError {
+                            message: "duplicate or misplaced * parameter".into(),
+                        });
+                    }
+                    seen_star = true;
+                    nvar += 1;
+                }
+                ast::ParamKind::KwArgs => {
+                    if seen_dstar {
+                        return Err(CompileError {
+                            message: "duplicate ** parameter".into(),
+                        });
+                    }
+                    seen_dstar = true;
+                    nkw += 1;
+                }
+            }
+        }
+        let k = params.len() - nvar - nkw;
+        let first_default = params[..k].iter().position(|p| p.default.is_some());
         let ndefaults = match first_default {
             Some(start) => {
-                if params[start..].iter().any(|p| p.default.is_none()) {
+                if params[start..k].iter().any(|p| p.default.is_none()) {
                     return Err(CompileError {
                         message: "non-default argument follows default argument".into(),
                     });
                 }
-                (params.len() - start) as u32
+                (k - start) as u32
             }
             None => 0,
         };
@@ -1044,11 +1084,14 @@ impl Compiler {
         let mut child = new_code(
             name,
             info.locals.len() as u32,
-            params.len() as u32,
+            k as u32,
             info.cells.len() as u32,
             info.frees.len() as u32,
         );
         child.ndefaults = ndefaults;
+        child.varargs = seen_star;
+        child.kwargs = seen_dstar;
+        child.param_names = params[..k].iter().map(|p| p.name.clone()).collect();
         let mut sub = Compiler {
             code: child,
             scope: Some(info),
@@ -1076,7 +1119,7 @@ impl Compiler {
             self.expr(d)?;
         }
         if let Some(start) = first_default {
-            for p in &params[start..] {
+            for p in &params[start..k] {
                 self.expr(p.default.as_ref().unwrap())?;
             }
         }
@@ -1086,6 +1129,53 @@ impl Compiler {
             self.emit(Op::Call, 1);
         }
         self.store(name);
+        Ok(())
+    }
+
+    fn build_call_positionals(&mut self, args: &[Expr]) -> Result<(), CompileError> {
+        self.emit(Op::BuildList, 0);
+        let mut i = 0;
+        while i < args.len() {
+            if let Expr::Starred(inner) = &args[i] {
+                self.expr(inner)?;
+                self.emit(Op::ListExtend, 0);
+                i += 1;
+            } else {
+                let start = i;
+                while i < args.len() && !matches!(args[i], Expr::Starred(_)) {
+                    i += 1;
+                }
+                for a in &args[start..i] {
+                    self.expr(a)?;
+                }
+                self.emit(Op::BuildList, (i - start) as u32);
+                self.emit(Op::ListExtend, 0);
+            }
+        }
+        Ok(())
+    }
+
+    fn build_call_kwargs(&mut self, keywords: &[ast::Keyword]) -> Result<(), CompileError> {
+        self.emit(Op::BuildDict, 0);
+        let mut i = 0;
+        while i < keywords.len() {
+            if keywords[i].arg.is_none() {
+                self.expr(&keywords[i].value)?;
+                self.emit(Op::DictMerge, 0);
+                i += 1;
+            } else {
+                let start = i;
+                while i < keywords.len() && keywords[i].arg.is_some() {
+                    i += 1;
+                }
+                for kw in &keywords[start..i] {
+                    self.load_const(Const::Str(kw.arg.clone().unwrap()));
+                    self.expr(&kw.value)?;
+                }
+                self.emit(Op::BuildDict, (i - start) as u32);
+                self.emit(Op::DictMerge, 0);
+            }
+        }
         Ok(())
     }
 
@@ -1565,6 +1655,7 @@ impl Compiler {
             return Ok(());
         }
         match e {
+            Expr::Starred(_) => return unsupported("starred expression in this position"),
             Expr::Str(s) => self.load_const(Const::Str(s.clone())),
             Expr::Float(f) => self.load_const(Const::Float(*f)),
             Expr::Bool(b) => self.load_const(Const::Bool(*b)),
@@ -1608,25 +1699,36 @@ impl Compiler {
                 args,
                 keywords,
             } => {
-                if !keywords.is_empty() {
-                    return unsupported("keyword arguments");
-                }
-                if args.len() > 255 {
-                    return unsupported("more than 255 arguments");
-                }
-                if let Expr::Attribute { value, attr } = func.as_ref() {
-                    self.expr(value)?;
-                    for a in args {
-                        self.expr(a)?;
+                let has_star = args.iter().any(|a| matches!(a, Expr::Starred(_)));
+                if keywords.is_empty() && !has_star {
+                    if args.len() > 255 {
+                        return unsupported("more than 255 arguments");
                     }
-                    let name = self.name_idx(attr);
-                    self.emit(Op::CallMethod, (name << 8) | args.len() as u32);
+                    if let Expr::Attribute { value, attr } = func.as_ref() {
+                        self.expr(value)?;
+                        for a in args {
+                            self.expr(a)?;
+                        }
+                        let name = self.name_idx(attr);
+                        self.emit(Op::CallMethod, (name << 8) | args.len() as u32);
+                    } else {
+                        self.expr(func)?;
+                        for a in args {
+                            self.expr(a)?;
+                        }
+                        self.emit(Op::Call, args.len() as u32);
+                    }
                 } else {
-                    self.expr(func)?;
-                    for a in args {
-                        self.expr(a)?;
+                    if let Expr::Attribute { value, attr } = func.as_ref() {
+                        self.expr(value)?;
+                        let name = self.name_idx(attr);
+                        self.emit(Op::LoadAttr, name);
+                    } else {
+                        self.expr(func)?;
                     }
-                    self.emit(Op::Call, args.len() as u32);
+                    self.build_call_positionals(args)?;
+                    self.build_call_kwargs(keywords)?;
+                    self.emit(Op::CallEx, 0);
                 }
             }
             Expr::Bin { op, left, right } => {

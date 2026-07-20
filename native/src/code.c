@@ -30,12 +30,18 @@ struct SetaeCode {
     uint32_t nexcs;
     uint32_t excs_cap;
 
+    char **param_names;
+    uint32_t nparam_names;
+    uint32_t param_names_cap;
+
     char *fname;
     uint32_t nlocals;
     uint32_t nparams;
     uint32_t ndefaults;
     uint32_t ncells;
     uint32_t nfrees;
+    int varargs;
+    int kwargs;
     int32_t module_parent;
 };
 
@@ -61,6 +67,10 @@ void setae_code_free(SetaeCode *c) {
         free(c->names[i]);
     }
     free(c->names);
+    for (uint32_t i = 0; i < c->nparam_names; i++) {
+        free(c->param_names[i]);
+    }
+    free(c->param_names);
     free(c->fname);
     free(c->consts);
     free(c->excs);
@@ -148,6 +158,34 @@ void setae_code_set_nparams(SetaeCode *c, uint32_t n) {
 
 void setae_code_set_ndefaults(SetaeCode *c, uint32_t n) {
     c->ndefaults = n;
+}
+
+void setae_code_add_param_name(SetaeCode *c, const char *name) {
+    if (c->nparam_names == c->param_names_cap) {
+        c->param_names_cap = c->param_names_cap ? c->param_names_cap * 2 : 4;
+        c->param_names = realloc(c->param_names, c->param_names_cap * sizeof(char *));
+    }
+    size_t n = strlen(name) + 1;
+    c->param_names[c->nparam_names] = malloc(n);
+    memcpy(c->param_names[c->nparam_names], name, n);
+    c->nparam_names++;
+}
+
+void setae_code_set_variadic(SetaeCode *c, uint8_t varargs, uint8_t kwargs) {
+    c->varargs = varargs;
+    c->kwargs = kwargs;
+}
+
+const char *setae_code_param_name(const SetaeCode *c, uint32_t i) {
+    return c->param_names[i];
+}
+
+int setae_code_varargs(const SetaeCode *c) {
+    return c->varargs;
+}
+
+int setae_code_kwargs(const SetaeCode *c) {
+    return c->kwargs;
 }
 
 void setae_code_set_ncells(SetaeCode *c, uint32_t n) {

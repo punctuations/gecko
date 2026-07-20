@@ -926,29 +926,34 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
-                           SetaeValue module);
+                           SetaeValue kwargs, SetaeValue module);
+
+static int has_kwargs_given(SetaeValue kwargs) {
+    return kwargs != 0 && ((SetaeDict *)setae_to_ptr(kwargs))->len > 0;
+}
 
 static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
-                             int nargs) {
+                             int nargs, SetaeValue kwargs) {
     int t = setae_obj_type(callee);
     if (t == SETAE_T_BUILTIN) {
+        if (has_kwargs_given(kwargs)) {
+            setae_vm_raise(vm, "TypeError", "this builtin takes no keyword arguments");
+            return setae_none();
+        }
         SetaeBuiltin *b = setae_to_ptr(callee);
         return b->fn(vm, args, nargs);
     }
     if (t == SETAE_T_FUNCTION) {
         SetaeFunc *f = setae_to_ptr(callee);
-        uint32_t nparams = setae_code_nparams(f->code);
-        uint32_t required = nparams - f->ndefaults;
-        if ((uint32_t)nargs < required || (uint32_t)nargs > nparams) {
-            setae_vm_raise(vm, "TypeError", "%s() takes %u positional arguments but %d were given",
-                           setae_code_fname(f->code), nparams, nargs);
-            return setae_none();
-        }
-        return run_code(vm, f->code, args, nargs, f->cells, f->defaults, f->ndefaults,
+        return run_code(vm, f->code, args, nargs, f->cells, f->defaults, f->ndefaults, kwargs,
                         f->module);
     }
     if (t == SETAE_T_EXCTYPE) {
         SetaeExcType *et = setae_to_ptr(callee);
+        if (has_kwargs_given(kwargs)) {
+            setae_vm_raise(vm, "TypeError", "%s() takes no keyword arguments", et->name);
+            return setae_none();
+        }
         if (nargs > 1) {
             setae_vm_raise(vm, "TypeError", "%s() takes at most 1 argument (%d given)",
                            et->name, nargs);
@@ -966,14 +971,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                 return setae_none();
             }
             SetaeFunc *f = setae_to_ptr(init);
-            uint32_t nparams = setae_code_nparams(f->code);
-            uint32_t required = nparams - f->ndefaults;
-            if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
-                setae_vm_raise(
-                    vm, "TypeError",
-                    "%.*s.__init__() takes %u positional arguments but %u were given",
-                    (int)setae_str_len(c->name), setae_str_data(c->name), nparams,
-                    (uint32_t)nargs + 1);
+            if (nargs + 1 > 256) {
+                setae_vm_raise(vm, "TypeError", "too many arguments");
                 return setae_none();
             }
             SetaeValue argv[256];
@@ -981,12 +980,12 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
             for (int i = 0; i < nargs; i++) {
                 argv[i + 1] = args[i];
             }
-            run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
+            run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults, kwargs,
                      f->module);
             if (vm->error) {
                 return setae_none();
             }
-        } else if (nargs != 0) {
+        } else if (nargs != 0 || has_kwargs_given(kwargs)) {
             setae_vm_raise(vm, "TypeError", "%.*s() takes no arguments (%d given)",
                            (int)setae_str_len(c->name), setae_str_data(c->name), nargs);
             return setae_none();
@@ -996,12 +995,8 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
     if (t == SETAE_T_BOUND) {
         SetaeBound *b = setae_to_ptr(callee);
         SetaeFunc *f = setae_to_ptr(b->func);
-        uint32_t nparams = setae_code_nparams(f->code);
-        uint32_t required = nparams - f->ndefaults;
-        if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
-            setae_vm_raise(vm, "TypeError",
-                           "%s() takes %u positional arguments but %u were given",
-                           setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
+        if (nargs + 1 > 256) {
+            setae_vm_raise(vm, "TypeError", "too many arguments");
             return setae_none();
         }
         SetaeValue argv[256];
@@ -1010,7 +1005,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
             argv[i + 1] = args[i];
         }
         return run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
-                        f->module);
+                        kwargs, f->module);
     }
     setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
@@ -1023,30 +1018,21 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         SetaeInstance *inst = setae_to_ptr(obj);
         SetaeValue found;
         if (setae_instance_get(inst, name, &found)) {
-            return call_value(vm, found, args, nargs);
+            return call_value(vm, found, args, nargs, 0);
         }
         SetaeValue v;
         if (class_lookup(inst->cls, name, &v)) {
             if (setae_obj_type(v) == SETAE_T_FUNCTION) {
                 SetaeFunc *f = setae_to_ptr(v);
-                uint32_t nparams = setae_code_nparams(f->code);
-                uint32_t required = nparams - f->ndefaults;
-                if ((uint32_t)nargs + 1 < required || (uint32_t)nargs + 1 > nparams) {
-                    setae_vm_raise(
-                        vm, "TypeError",
-                        "%s() takes %u positional arguments but %u were given",
-                        setae_code_fname(f->code), nparams, (uint32_t)nargs + 1);
-                    return setae_none();
-                }
                 c->kind = 4;
                 c->shape = inst->shape;
                 c->cls = inst->cls;
                 c->method = v;
                 c->guard = vm->class_version;
                 return run_code(vm, f->code, args - 1, nargs + 1, f->cells, f->defaults,
-                                f->ndefaults, f->module);
+                                f->ndefaults, 0, f->module);
             }
-            return call_value(vm, v, args, nargs);
+            return call_value(vm, v, args, nargs, 0);
         }
         attr_error(vm, obj, name);
         return setae_none();
@@ -1054,7 +1040,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
     if (t == SETAE_T_CLASS) {
         SetaeValue v;
         if (class_lookup(obj, name, &v)) {
-            return call_value(vm, v, args, nargs);
+            return call_value(vm, v, args, nargs, 0);
         }
         attr_error(vm, obj, name);
         return setae_none();
@@ -1064,7 +1050,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         SetaeDict *d = setae_to_ptr(m->dict);
         int64_t i = dict_find_cstr(d, name);
         if (i >= 0) {
-            return call_value(vm, d->entries[i].value, args, nargs);
+            return call_value(vm, d->entries[i].value, args, nargs, 0);
         }
         attr_error(vm, obj, name);
         return setae_none();
@@ -1169,7 +1155,109 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
-                           SetaeValue module) {
+                           SetaeValue kwargs, SetaeValue module);
+
+static int bind_args(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int nargs,
+                     const SetaeValue *defaults, uint32_t ndefaults, SetaeValue kwargs,
+                     SetaeValue *locals) {
+    uint32_t k = setae_code_nparams(code);
+    int has_va = setae_code_varargs(code);
+    int has_kw = setae_code_kwargs(code);
+    uint32_t va_slot = k;
+    uint32_t kw_slot = k + (has_va ? 1u : 0u);
+    uint32_t required = k - ndefaults;
+    uint32_t npos = (uint32_t)nargs;
+
+    if (k > 256) {
+        setae_vm_raise(vm, "RuntimeError", "too many parameters");
+        return 0;
+    }
+    uint8_t filled[256];
+    memset(filled, 0, k);
+
+    uint32_t nbind = npos < k ? npos : k;
+    for (uint32_t i = 0; i < nbind; i++) {
+        locals[i] = args[i];
+        filled[i] = 1;
+    }
+    if (npos > k) {
+        if (has_va) {
+            locals[va_slot] = setae_tuple_new(vm->heap, &args[k], npos - k);
+        } else {
+            setae_vm_raise(vm, "TypeError",
+                           "%s() takes %u positional arguments but %u were given",
+                           setae_code_fname(code), k, npos);
+            return 0;
+        }
+    } else if (has_va) {
+        locals[va_slot] = setae_tuple_new(vm->heap, NULL, 0);
+    }
+
+    SetaeValue kwdict = 0;
+    if (has_kw) {
+        kwdict = setae_dict_new(vm->heap);
+        locals[kw_slot] = kwdict;
+    }
+    if (kwargs != 0) {
+        SetaeDict *kd = setae_to_ptr(kwargs);
+        for (uint32_t e = 0; e < kd->len; e++) {
+            SetaeValue key = kd->entries[e].key;
+            SetaeValue val = kd->entries[e].value;
+            int matched = -1;
+            if (setae_is_str(key)) {
+                size_t klen = setae_str_len(key);
+                const char *kdata = setae_str_data(key);
+                for (uint32_t p = 0; p < k; p++) {
+                    const char *pn = setae_code_param_name(code, p);
+                    if (strlen(pn) == klen && memcmp(pn, kdata, klen) == 0) {
+                        matched = (int)p;
+                        break;
+                    }
+                }
+            }
+            if (matched >= 0) {
+                if (filled[matched]) {
+                    setae_vm_raise(vm, "TypeError",
+                                   "%s() got multiple values for argument '%s'",
+                                   setae_code_fname(code), setae_code_param_name(code, matched));
+                    return 0;
+                }
+                locals[matched] = val;
+                filled[matched] = 1;
+            } else if (has_kw) {
+                dict_set(setae_to_ptr(kwdict), key, val);
+            } else if (setae_is_str(key)) {
+                setae_vm_raise(vm, "TypeError",
+                               "%s() got an unexpected keyword argument '%.*s'",
+                               setae_code_fname(code), (int)setae_str_len(key),
+                               setae_str_data(key));
+                return 0;
+            } else {
+                setae_vm_raise(vm, "TypeError", "keywords must be strings");
+                return 0;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < k; i++) {
+        if (!filled[i]) {
+            if (i >= required) {
+                locals[i] = defaults[i - required];
+            } else {
+                setae_vm_raise(vm, "TypeError",
+                               "%s() missing a required positional argument: '%s'",
+                               setae_code_fname(code), setae_code_param_name(code, i));
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
+                           int nargs, const SetaeValue *captured,
+                           const SetaeValue *defaults, uint32_t ndefaults,
+                           SetaeValue kwargs, SetaeValue module) {
     if (vm->depth >= MAX_DEPTH) {
         setae_vm_raise(vm, "RecursionError", "maximum recursion depth exceeded");
         return setae_none();
@@ -1181,7 +1269,6 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     const uint8_t *bytes = setae_code_bytes(code, &ncode);
     SetaeInlineCache *ic = setae_code_ic((SetaeCode *)code);
     uint32_t nlocals = setae_code_nlocals(code);
-    uint32_t nparams = setae_code_nparams(code);
     uint32_t ncells = setae_code_ncells(code);
     uint32_t nfrees = setae_code_nfrees(code);
     uint32_t fixed = nlocals + ncells + nfrees;
@@ -1192,16 +1279,17 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     SetaeValue *locals = frame;
     SetaeValue *cellbase = frame + nlocals;
     SetaeValue *stack = frame + fixed;
-    for (int i = 0; i < nargs; i++) {
-        locals[i] = args[i];
-    }
-    for (uint32_t i = (uint32_t)nargs; i < nparams; i++) {
-        locals[i] = defaults[i - (nparams - ndefaults)];
-    }
     int sp = 0;
 
     SetaeFrame fr = {frame, fixed, 0, module, vm->frames};
     vm->frames = &fr;
+
+    if (!bind_args(vm, code, args, nargs, defaults, ndefaults, kwargs, locals)) {
+        vm->frames = fr.parent;
+        frame_release(vm, frame, frame_cap);
+        vm->depth--;
+        return setae_none();
+    }
 
     for (uint32_t i = 0; i < ncells; i++) {
         cellbase[i] = setae_cell_new(vm->heap);
@@ -1258,6 +1346,9 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_MAKE_CLASS] = &&L_OP_MAKE_CLASS,
         [OP_IMPORT] = &&L_OP_IMPORT,
         [OP_IMPORT_MISSING] = &&L_OP_IMPORT_MISSING,
+        [OP_CALL_EX] = &&L_OP_CALL_EX,
+        [OP_LIST_EXTEND] = &&L_OP_LIST_EXTEND,
+        [OP_DICT_MERGE] = &&L_OP_DICT_MERGE,
     };
 
 #define DISPATCH()                                                             \
@@ -1399,7 +1490,7 @@ stack_overflow:
             int n = (int)arg;
             SetaeValue *argv = &stack[sp - n];
             SetaeValue callee = stack[sp - n - 1];
-            SetaeValue r = call_value(vm, callee, argv, n);
+            SetaeValue r = call_value(vm, callee, argv, n, 0);
             sp -= n + 1;
             stack[sp++] = r;
             DISPATCH();
@@ -1602,7 +1693,7 @@ stack_overflow:
                 SetaeValue key = setae_str_new(vm->heap, leaf, strlen(leaf));
                 dict_set(setae_to_ptr(pm->dict), key, mod);
             }
-            run_code(vm, mcode, NULL, 0, NULL, NULL, 0, mod);
+            run_code(vm, mcode, NULL, 0, NULL, NULL, 0, 0, mod);
             if (vm->error) {
                 DISPATCH();
             }
@@ -1613,6 +1704,58 @@ stack_overflow:
             setae_vm_raise(vm, "ImportError", "No module named '%s'",
                            setae_code_name(code, arg));
             DISPATCH();
+        L_OP_CALL_EX: {
+            SetaeValue kwd = stack[sp - 1];
+            SetaeList *pl = setae_to_ptr(stack[sp - 2]);
+            SetaeValue callee = stack[sp - 3];
+            SetaeValue r = call_value(vm, callee, pl->items, (int)pl->len, kwd);
+            sp -= 3;
+            stack[sp++] = r;
+            DISPATCH();
+        }
+        L_OP_LIST_EXTEND: {
+            SetaeValue itv = stack[sp - 1];
+            int et = setae_obj_type(itv);
+            if (et == SETAE_T_LIST) {
+                SetaeList *src = setae_to_ptr(itv);
+                for (uint32_t i = 0; i < src->len; i++) {
+                    setae_list_push(setae_to_ptr(stack[sp - 2]), src->items[i]);
+                }
+            } else if (et == SETAE_T_TUPLE) {
+                SetaeTuple *src = setae_to_ptr(itv);
+                for (uint32_t i = 0; i < src->len; i++) {
+                    setae_list_push(setae_to_ptr(stack[sp - 2]), src->items[i]);
+                }
+            } else if (et == SETAE_T_RANGE || et == SETAE_T_STR || et == SETAE_T_DICT) {
+                SetaeValue iterv = setae_iter_new(vm->heap, itv);
+                setae_vm_push_tmp(vm, iterv);
+                SetaeValue elem;
+                while (iter_next(vm, setae_to_ptr(iterv), &elem)) {
+                    setae_list_push(setae_to_ptr(stack[sp - 2]), elem);
+                }
+                setae_vm_pop_tmp(vm);
+            } else {
+                setae_vm_raise(vm, "TypeError", "argument after * must be iterable, not %s",
+                               setae_type_name(itv));
+            }
+            sp--;
+            DISPATCH();
+        }
+        L_OP_DICT_MERGE: {
+            SetaeValue srcv = stack[sp - 1];
+            if (setae_obj_type(srcv) != SETAE_T_DICT) {
+                setae_vm_raise(vm, "TypeError", "argument after ** must be a dict, not %s",
+                               setae_type_name(srcv));
+            } else {
+                SetaeDict *src = setae_to_ptr(srcv);
+                for (uint32_t i = 0; i < src->len; i++) {
+                    dict_set(setae_to_ptr(stack[sp - 2]), src->entries[i].key,
+                             src->entries[i].value);
+                }
+            }
+            sp--;
+            DISPATCH();
+        }
         L_OP_RAISE:
             raise_value(vm, stack[--sp]);
             DISPATCH();
@@ -1748,7 +1891,7 @@ stack_overflow:
                         r = setae_none();
                     } else {
                         r = run_code(vm, f->code, argv - 1, n + 1, f->cells, f->defaults,
-                                     f->ndefaults, f->module);
+                                     f->ndefaults, 0, f->module);
                     }
                     sp -= n + 1;
                     stack[sp++] = r;
@@ -1814,5 +1957,5 @@ SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
     if (vm->oom == 0) {
         vm->oom = setae_exc_new(vm->heap, "MemoryError", setae_none());
     }
-    return run_code(vm, code, NULL, 0, NULL, NULL, 0, 0);
+    return run_code(vm, code, NULL, 0, NULL, NULL, 0, 0, 0);
 }

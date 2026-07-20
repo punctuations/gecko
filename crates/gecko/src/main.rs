@@ -387,6 +387,73 @@ mod tests {
     }
 
     #[test]
+    fn varargs_collect_extra_positionals() {
+        let src =
+            "def g(a, b, *rest):\n    return (a, b, rest)\nprint(g(1, 2, 3, 4))\nprint(g(1, 2))\n";
+        assert_eq!(run_source(src).unwrap(), "(1, 2, (3, 4))\n(1, 2, ())\n");
+    }
+
+    #[test]
+    fn kwargs_collect_extra_keywords() {
+        let src = "def h(a, **k):\n    return (a, k)\nprint(h(1, x=2, y=3))\n";
+        assert_eq!(run_source(src).unwrap(), "(1, {'x': 2, 'y': 3})\n");
+    }
+
+    #[test]
+    fn keyword_arguments_bind_by_name() {
+        let src = "def f(a, b):\n    return a - b\nprint(f(b=1, a=10))\nprint(f(10, b=3))\n";
+        assert_eq!(run_source(src).unwrap(), "9\n7\n");
+    }
+
+    #[test]
+    fn full_signature_binds_correctly() {
+        let src = "def f(a, b=10, *args, **kw):\n    return (a, b, args, kw)\nprint(f(1))\nprint(f(1, 2, 3, 4, p=5))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "(1, 10, (), {})\n(1, 2, (3, 4), {'p': 5})\n"
+        );
+    }
+
+    #[test]
+    fn call_site_spreads_expand() {
+        let src = "def g(a, b, *rest):\n    return (a, b, rest)\nxs = [2, 3, 4]\nprint(g(1, *xs))\nd = {'y': 9}\ndef h(**k):\n    return k\nprint(h(x=1, **d))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "(1, 2, (3, 4))\n{'x': 1, 'y': 9}\n"
+        );
+    }
+
+    #[test]
+    fn too_many_positionals_without_varargs_errors() {
+        let f = run_source("def f(a, b):\n    return a\nf(1, 2, 3)\n").unwrap_err();
+        assert!(
+            f.message.contains("positional arguments but 3"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn unexpected_keyword_argument_errors() {
+        let f = run_source("def f(a):\n    return a\nf(x=1)\n").unwrap_err();
+        assert!(
+            f.message.contains("unexpected keyword argument"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn duplicate_argument_value_errors() {
+        let f = run_source("def f(a, b):\n    return a\nf(1, a=2)\n").unwrap_err();
+        assert!(
+            f.message.contains("multiple values for argument"),
+            "{}",
+            f.message
+        );
+    }
+
+    #[test]
     fn too_few_arguments_still_errors_with_defaults() {
         let f = run_source("def f(a, b=1):\n    return a\nf()\n").unwrap_err();
         assert!(f.message.contains("positional argument"));

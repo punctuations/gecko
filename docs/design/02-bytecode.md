@@ -72,6 +72,11 @@ Implemented:
 - IMPORT (arg is a module index; pushes the module object)
 - IMPORT_MISSING (arg is a name index; raises ImportError for a module the
   compiler could not resolve)
+- CALL_EX (pops a keyword dict, a positional list, and the callee; binds them to
+  the callee's parameters, so keyword arguments and `*`/`**` spreads go through
+  here while a plain positional call stays on CALL)
+- LIST_EXTEND, DICT_MERGE (extend the list or dict below the top with the
+  iterable or dict on top; the compiler uses them to assemble a spread call)
 
 The two OR_POP forms give `and` and `or` their value-preserving semantics
 without a DUP_TOP.

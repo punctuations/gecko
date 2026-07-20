@@ -93,6 +93,8 @@ unsafe extern "C" {
     pub fn setae_code_set_ndefaults(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_ncells(c: *mut SetaeCode, n: u32);
     pub fn setae_code_set_nfrees(c: *mut SetaeCode, n: u32);
+    pub fn setae_code_add_param_name(c: *mut SetaeCode, name: *const c_char);
+    pub fn setae_code_set_variadic(c: *mut SetaeCode, varargs: u8, kwargs: u8);
     pub fn setae_code_add_exc(c: *mut SetaeCode, start: u32, end: u32, target: u32, depth: u32);
     pub fn setae_code_set_name(c: *mut SetaeCode, name: *const c_char);
 
@@ -311,6 +313,11 @@ impl Vm {
             setae_code_set_ndefaults(gc, code.ndefaults);
             setae_code_set_ncells(gc, code.ncells);
             setae_code_set_nfrees(gc, code.nfrees);
+            for name in &code.param_names {
+                let cs = CString::new(name.as_str()).expect("param name has no interior NUL");
+                setae_code_add_param_name(gc, cs.as_ptr());
+            }
+            setae_code_set_variadic(gc, code.varargs as u8, code.kwargs as u8);
             setae_code_set_module_parent(gc, code.parent_module);
             let cs = CString::new(code.name.as_str()).expect("name has no interior NUL");
             setae_code_set_name(gc, cs.as_ptr());
@@ -361,6 +368,9 @@ mod machine_tests {
             ndefaults: 0,
             ncells,
             nfrees,
+            param_names: Vec::new(),
+            varargs: false,
+            kwargs: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,

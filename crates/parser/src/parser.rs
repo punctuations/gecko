@@ -1,6 +1,6 @@
 use ast::{
     Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module,
-    Param, Stmt, UnOp,
+    Param, ParamKind, Stmt, UnOp,
 };
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
@@ -352,13 +352,24 @@ impl Parser {
         self.expect_op(Op::LParen)?;
         let mut params = Vec::new();
         while !self.at_op(Op::RParen) {
+            let kind = if self.eat_op(Op::DoubleStar) {
+                ParamKind::KwArgs
+            } else if self.eat_op(Op::Star) {
+                ParamKind::VarArgs
+            } else {
+                ParamKind::Normal
+            };
             let name = self.expect_name()?;
-            let default = if self.eat_op(Op::Assign) {
+            let default = if kind == ParamKind::Normal && self.eat_op(Op::Assign) {
                 Some(self.test()?)
             } else {
                 None
             };
-            params.push(Param { name, default });
+            params.push(Param {
+                name,
+                default,
+                kind,
+            });
             if !self.eat_op(Op::Comma) {
                 break;
             }
@@ -788,20 +799,27 @@ impl Parser {
         let mut args = Vec::new();
         let mut keywords = Vec::new();
         while !self.at_op(Op::RParen) {
-            if let TokenKind::Name(n) = self.kind() {
+            if self.eat_op(Op::DoubleStar) {
+                let value = self.test()?;
+                keywords.push(KwArg { arg: None, value });
+            } else if self.eat_op(Op::Star) {
+                let value = self.test()?;
+                args.push(Expr::Starred(Box::new(value)));
+            } else if let TokenKind::Name(n) = self.kind().clone() {
                 if matches!(self.kind_at(1), TokenKind::Op(Op::Assign)) {
-                    let arg = n.clone();
                     self.advance();
                     self.advance();
                     let value = self.test()?;
-                    keywords.push(KwArg { arg, value });
-                    if !self.eat_op(Op::Comma) {
-                        break;
-                    }
-                    continue;
+                    keywords.push(KwArg {
+                        arg: Some(n),
+                        value,
+                    });
+                } else {
+                    args.push(self.test()?);
                 }
+            } else {
+                args.push(self.test()?);
             }
-            args.push(self.test()?);
             if !self.eat_op(Op::Comma) {
                 break;
             }

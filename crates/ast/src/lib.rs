@@ -74,6 +74,14 @@ pub struct ExceptHandler {
 pub struct Param {
     pub name: String,
     pub default: Option<Expr>,
+    pub kind: ParamKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    Normal,
+    VarArgs,
+    KwArgs,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +101,7 @@ pub enum Expr {
     Bool(bool),
     None,
     Name(String),
+    Starred(Box<Expr>),
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
@@ -151,7 +160,7 @@ pub struct Comprehension {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Keyword {
-    pub arg: String,
+    pub arg: Option<String>,
     pub value: Expr,
 }
 

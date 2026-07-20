@@ -88,7 +88,8 @@ mod tests {
             params[0],
             Param {
                 name: "a".into(),
-                default: None
+                default: None,
+                kind: ast::ParamKind::Normal,
             }
         );
         assert_eq!(params[1].name, "b");
@@ -129,7 +130,7 @@ mod tests {
         };
         assert_eq!(args, vec![Expr::Name("x".into())]);
         assert_eq!(keywords.len(), 1);
-        assert_eq!(keywords[0].arg, "sep");
+        assert_eq!(keywords[0].arg.as_deref(), Some("sep"));
     }
 
     #[test]
