@@ -183,6 +183,11 @@ void setae_code_set_name(SetaeCode *c, const char *name);
 
 typedef struct SetaeVM SetaeVM;
 
+typedef struct SetaeMsg SetaeMsg;
+SetaeMsg *setae_msg_read(SetaeVM *vm, SetaeValue v);
+SetaeValue setae_msg_write(SetaeVM *vm, const SetaeMsg *m);
+void setae_msg_free(SetaeMsg *m);
+
 SetaeVM *setae_vm_new(SetaeHeap *h);
 void setae_vm_destroy(SetaeVM *vm);
 void setae_vm_register_builtins(SetaeVM *vm);

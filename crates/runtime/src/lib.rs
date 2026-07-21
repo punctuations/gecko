@@ -6,6 +6,7 @@ pub type SetaeValue = u64;
 pub enum SetaeHeap {}
 pub enum SetaeVm {}
 pub enum SetaeCode {}
+pub enum SetaeMsg {}
 
 pub type SandboxHook =
     extern "C" fn(*mut SetaeVm, *const c_char, usize, u64, usize, u64) -> SetaeValue;
@@ -79,6 +80,18 @@ unsafe extern "C" {
     pub fn setae_vm_heap(vm: *mut SetaeVm) -> *mut SetaeHeap;
     pub fn setae_vm_raise_str(vm: *mut SetaeVm, kind: *const c_char, msg: *const c_char);
     pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
+
+    pub fn setae_msg_read(vm: *mut SetaeVm, v: SetaeValue) -> *mut SetaeMsg;
+    pub fn setae_msg_write(vm: *mut SetaeVm, m: *const SetaeMsg) -> SetaeValue;
+    pub fn setae_msg_free(m: *mut SetaeMsg);
+    pub fn setae_value_eq(a: SetaeValue, b: SetaeValue) -> c_int;
+    pub fn setae_list_new(h: *mut SetaeHeap, cap: u32) -> SetaeValue;
+    pub fn setae_list_append(lv: SetaeValue, v: SetaeValue);
+    pub fn setae_list_len(lv: SetaeValue) -> u32;
+    pub fn setae_list_get(lv: SetaeValue, i: u32) -> SetaeValue;
+    pub fn setae_dict_new(h: *mut SetaeHeap) -> SetaeValue;
+    pub fn setae_dict_put(dv: SetaeValue, k: SetaeValue, v: SetaeValue);
+    pub fn setae_tuple_new(h: *mut SetaeHeap, items: *const SetaeValue, len: u32) -> SetaeValue;
 
     pub fn setae_code_new() -> *mut SetaeCode;
     pub fn setae_code_free(c: *mut SetaeCode);
@@ -624,6 +637,55 @@ mod machine_tests {
         assert!(run.error);
         assert!(run.message.contains("time limit"), "{}", run.message);
         assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn transfer_copies_nested_values_across_heaps() {
+        unsafe {
+            let a = Vm::new();
+            let b = Vm::new();
+            let inner = setae_list_new(a.heap, 0);
+            setae_list_append(inner, setae_from_int(2));
+            setae_list_append(inner, setae_from_int(3));
+            let d = setae_dict_new(a.heap);
+            setae_dict_put(
+                d,
+                setae_str_new(a.heap, c"k".as_ptr(), 1),
+                setae_from_int(4),
+            );
+            let top = setae_list_new(a.heap, 0);
+            setae_list_append(top, setae_from_int(1));
+            setae_list_append(top, setae_str_new(a.heap, c"hi".as_ptr(), 2));
+            setae_list_append(top, inner);
+            setae_list_append(top, d);
+            let msg = setae_msg_read(a.vm, top);
+            assert!(!msg.is_null(), "read should succeed");
+            let copy = setae_msg_write(b.vm, msg);
+            setae_msg_free(msg);
+            assert_eq!(
+                setae_value_eq(top, copy),
+                1,
+                "copy equals the original by value"
+            );
+        }
+    }
+
+    #[test]
+    fn transfer_preserves_a_cycle() {
+        unsafe {
+            let a = Vm::new();
+            let b = Vm::new();
+            let l = setae_list_new(a.heap, 0);
+            setae_list_append(l, setae_from_int(7));
+            setae_list_append(l, l);
+            let msg = setae_msg_read(a.vm, l);
+            assert!(!msg.is_null());
+            let copy = setae_msg_write(b.vm, msg);
+            setae_msg_free(msg);
+            assert_eq!(setae_list_len(copy), 2);
+            assert_eq!(setae_to_int(setae_list_get(copy, 0)), 7);
+            assert_eq!(setae_list_get(copy, 1), copy, "the copy references itself");
+        }
     }
 
     #[test]

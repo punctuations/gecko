@@ -39,7 +39,8 @@ void setae_heap_set_limit(SetaeHeap *h, size_t max_objects) {
 }
 
 static void *heap_alloc(SetaeHeap *h, size_t size, SetaeType type) {
-    if (h->vm != NULL && h->vm->depth > 0 && h->count >= h->threshold) {
+    if (h->vm != NULL && h->vm->depth > 0 && h->count >= h->threshold &&
+        !h->vm->gc_disabled) {
         setae_gc_collect(h->vm);
     }
     if (h->limit != 0 && h->count >= h->limit && h->vm != NULL) {

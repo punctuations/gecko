@@ -211,6 +211,7 @@ struct SetaeVM {
     uint64_t time_limit_ns;
     uint64_t deadline_ns;
     int interrupted;
+    int gc_disabled;
     SetaeValue oom;
     SetaeSandboxHook sandbox_hook;
     uint32_t class_version;
