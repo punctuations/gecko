@@ -12,3 +12,7 @@ build = "build.rs"
 
 [dependencies]
 bytecode = { path = "../bytecode" }
+
+[dev-dependencies]
+parser = { path = "../parser" }
+compiler = { path = "../compiler" }

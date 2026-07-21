@@ -157,6 +157,7 @@ fn run_source_base(src: &str, base: Option<std::path::PathBuf>) -> Result<String
 fn run_code(code: &bytecode::Code) -> Result<String, Failure> {
     let mut vm = runtime::Vm::new();
     vm.set_sandbox_hook(sandbox::hook);
+    vm.enable_actors();
     let run = vm.run(code);
     if run.error {
         let message = if run.message.is_empty() {
@@ -218,6 +219,18 @@ mod tests {
             run_source("print(1 and 2)\nprint(0 or 5)\n").unwrap(),
             "2\n5\n"
         );
+    }
+
+    #[test]
+    fn actor_call_replies() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    reply = message[1]\n    reply.send(state + message[0])\n    return state + message[0]\n\ndef build(reply):\n    return [7, reply]\n\ncalc = actor.spawn(0, handle)\nprint(calc.call(build, 1000))\n";
+        assert_eq!(run_source(src).unwrap(), "7\n");
+    }
+
+    #[test]
+    fn actor_counter_casts_then_calls() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == \"add\":\n        return state + message[1]\n    message[1].send(state)\n    return state\n\ndef get(reply):\n    return [\"get\", reply]\n\ncounter = actor.spawn(0, handle)\ncounter.send([\"add\", 5])\ncounter.send([\"add\", 3])\nprint(counter.call(get, 1000))\n";
+        assert_eq!(run_source(src).unwrap(), "8\n");
     }
 
     #[test]

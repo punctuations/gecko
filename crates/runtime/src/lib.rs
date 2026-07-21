@@ -87,6 +87,34 @@ unsafe extern "C" {
     pub fn setae_subject_new(h: *mut SetaeHeap, mailbox: *mut std::ffi::c_void) -> SetaeValue;
     pub fn setae_subject_mailbox(v: SetaeValue) -> *mut std::ffi::c_void;
     pub fn setae_set_subject_drop(f: extern "C" fn(*mut std::ffi::c_void));
+    pub fn setae_code_serialize(c: *const SetaeCode, len_out: *mut usize) -> *mut u8;
+    pub fn setae_func_code(func: SetaeValue) -> *const SetaeCode;
+    pub fn setae_bytes_free(p: *mut u8);
+    pub fn setae_set_subject_clone(
+        f: extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
+    );
+    pub fn setae_set_subject_send(f: extern "C" fn(*mut std::ffi::c_void, *mut SetaeMsg));
+    pub fn setae_set_subject_call(
+        f: extern "C" fn(*mut SetaeVm, SetaeValue, SetaeValue, SetaeValue) -> SetaeValue,
+    );
+    pub fn setae_subject_send_value(
+        vm: *mut SetaeVm,
+        subject: SetaeValue,
+        arg: SetaeValue,
+    ) -> c_int;
+    pub fn setae_vm_push_tmp(vm: *mut SetaeVm, v: SetaeValue);
+    pub fn setae_vm_pop_tmp(vm: *mut SetaeVm);
+    pub fn setae_call(
+        vm: *mut SetaeVm,
+        callee: SetaeValue,
+        args: *mut SetaeValue,
+        nargs: c_int,
+    ) -> SetaeValue;
+    pub fn setae_vm_clear_error(vm: *mut SetaeVm);
+    pub fn setae_gecko_actor_register(vm: *mut SetaeVm, name: *const c_char, value: SetaeValue);
+    pub fn setae_obj_type(v: SetaeValue) -> c_int;
+    pub fn setae_tuple_len(v: SetaeValue) -> u32;
+    pub fn setae_tuple_get(v: SetaeValue, i: u32) -> SetaeValue;
     pub fn setae_value_eq(a: SetaeValue, b: SetaeValue) -> c_int;
     pub fn setae_list_new(h: *mut SetaeHeap, cap: u32) -> SetaeValue;
     pub fn setae_list_append(lv: SetaeValue, v: SetaeValue);
@@ -134,6 +162,218 @@ unsafe impl Send for Envelope {}
 extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
     if !mailbox.is_null() {
         unsafe { drop(Box::from_raw(mailbox as *mut Sender<Envelope>)) };
+    }
+}
+
+extern "C" fn subject_clone(mailbox: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+    let sender = unsafe { &*(mailbox as *const Sender<Envelope>) };
+    Box::into_raw(Box::new(sender.clone())) as *mut std::ffi::c_void
+}
+
+extern "C" fn subject_send(mailbox: *mut std::ffi::c_void, msg: *mut SetaeMsg) {
+    let sender = unsafe { &*(mailbox as *const Sender<Envelope>) };
+    if sender.send(Envelope(msg)).is_err() {
+        unsafe { setae_msg_free(msg) };
+    }
+}
+
+extern "C" fn subject_call(
+    vm: *mut SetaeVm,
+    subject: SetaeValue,
+    build: SetaeValue,
+    timeout: SetaeValue,
+) -> SetaeValue {
+    unsafe {
+        let millis = if setae_is_int(timeout) != 0 {
+            setae_to_int(timeout).max(0) as u64
+        } else {
+            0
+        };
+        let heap = setae_vm_heap(vm);
+        let (tx, rx) = channel::<Envelope>();
+        let boxed = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
+        let reply = setae_subject_new(heap, boxed);
+
+        setae_vm_push_tmp(vm, reply);
+        let mut build_args = [reply];
+        let message = setae_call(vm, build, build_args.as_mut_ptr(), 1);
+        if setae_vm_error(vm) != 0 {
+            setae_vm_pop_tmp(vm);
+            return setae_none();
+        }
+        setae_vm_push_tmp(vm, message);
+        let sent = setae_subject_send_value(vm, subject, message);
+        setae_vm_pop_tmp(vm);
+        setae_vm_pop_tmp(vm);
+        if sent < 0 {
+            return setae_none();
+        }
+
+        match rx.recv_timeout(std::time::Duration::from_millis(millis)) {
+            Ok(env) => {
+                let r = setae_msg_write(vm, env.0);
+                setae_msg_free(env.0);
+                r
+            }
+            Err(_) => {
+                let k = CString::new("TimeoutError").unwrap();
+                let m = CString::new("actor did not reply within the timeout").unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                setae_none()
+            }
+        }
+    }
+}
+
+const T_LIST: c_int = 3;
+const T_TUPLE: c_int = 5;
+const T_FUNCTION: c_int = 6;
+
+unsafe fn set_root(vm: *mut SetaeVm, name: &str, v: SetaeValue) {
+    let c = CString::new(name).expect("root name has no interior NUL");
+    unsafe { setae_vm_set_global(vm, c.as_ptr(), v) };
+}
+
+extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
+    unsafe {
+        if argc != 2 && argc != 3 {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("spawn() takes 2 or 3 arguments").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        let argv = std::slice::from_raw_parts(args, argc as usize);
+        let state = argv[0];
+        let handle = argv[1];
+        if setae_obj_type(handle) != T_FUNCTION {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("spawn() handler must be a function").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+
+        let code = setae_func_code(handle);
+        let mut len = 0usize;
+        let ptr = setae_code_serialize(code, &mut len);
+        let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+        setae_bytes_free(ptr);
+
+        let heap = setae_vm_heap(vm);
+        let extras = setae_list_new(heap, 0);
+        if argc == 3 {
+            let e = argv[2];
+            match setae_obj_type(e) {
+                T_LIST => {
+                    for i in 0..setae_list_len(e) {
+                        setae_list_append(extras, setae_list_get(e, i));
+                    }
+                }
+                T_TUPLE => {
+                    for i in 0..setae_tuple_len(e) {
+                        setae_list_append(extras, setae_tuple_get(e, i));
+                    }
+                }
+                _ => {
+                    let k = CString::new("TypeError").unwrap();
+                    let m = CString::new("spawn() args must be a list or tuple").unwrap();
+                    setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                    return setae_none();
+                }
+            }
+        }
+        let pack = setae_list_new(heap, 2);
+        setae_list_append(pack, state);
+        setae_list_append(pack, extras);
+
+        let init = setae_msg_read(vm, pack);
+        if init.is_null() {
+            return setae_none();
+        }
+
+        let (tx, rx) = channel::<Envelope>();
+        let boxed = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
+        let subject = setae_subject_new(heap, boxed);
+
+        let init = Envelope(init);
+        std::thread::spawn(move || actor_main(bytes, init, rx));
+        subject
+    }
+}
+
+fn actor_main(bytes: Vec<u8>, init: Envelope, rx: Receiver<Envelope>) {
+    let handler = match bytecode::from_bytes(&bytes) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let wrapper = bytecode::Code {
+        name: String::new(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        ops: vec![
+            bytecode::Instr {
+                op: bytecode::Op::MakeFunction,
+                arg: 0,
+            },
+            bytecode::Instr {
+                op: bytecode::Op::Return,
+                arg: 0,
+            },
+        ],
+        excs: Vec::new(),
+        nlocals: 0,
+        nparams: 0,
+        ndefaults: 0,
+        ncells: 0,
+        nfrees: 0,
+        param_names: Vec::new(),
+        varargs: false,
+        kwargs: false,
+        codes: vec![handler],
+        modules: Vec::new(),
+        parent_module: -1,
+    };
+
+    let mut child = Vm::new();
+    let run = child.run(&wrapper);
+    if run.error {
+        return;
+    }
+    let handle = run.result;
+
+    unsafe {
+        set_root(child.vm, "$handle", handle);
+        let pack = setae_msg_write(child.vm, init.0);
+        setae_msg_free(init.0);
+        let mut state = setae_list_get(pack, 0);
+        let extras = setae_list_get(pack, 1);
+        set_root(child.vm, "$state", state);
+        set_root(child.vm, "$extras", extras);
+        let extra_items: Vec<SetaeValue> = (0..setae_list_len(extras))
+            .map(|i| setae_list_get(extras, i))
+            .collect();
+
+        while let Ok(env) = rx.recv() {
+            let message = setae_msg_write(child.vm, env.0);
+            setae_msg_free(env.0);
+            set_root(child.vm, "$msg", message);
+
+            let mut call_args = Vec::with_capacity(2 + extra_items.len());
+            call_args.push(state);
+            call_args.push(message);
+            call_args.extend_from_slice(&extra_items);
+            let next = setae_call(
+                child.vm,
+                handle,
+                call_args.as_mut_ptr(),
+                call_args.len() as c_int,
+            );
+            if setae_vm_error(child.vm) != 0 {
+                setae_vm_clear_error(child.vm);
+            } else {
+                state = next;
+                set_root(child.vm, "$state", state);
+            }
+        }
     }
 }
 
@@ -271,6 +511,9 @@ impl Vm {
             let vm = setae_vm_new(heap);
             setae_vm_register_builtins(vm);
             setae_set_subject_drop(subject_drop);
+            setae_set_subject_clone(subject_clone);
+            setae_set_subject_send(subject_send);
+            setae_set_subject_call(subject_call);
             Vm {
                 heap,
                 vm,
@@ -343,6 +586,15 @@ impl Vm {
 
     pub fn set_sandbox_hook(&mut self, hook: SandboxHook) {
         unsafe { setae_vm_set_sandbox_hook(self.vm, hook) }
+    }
+
+    pub fn enable_actors(&mut self) {
+        let cname = CString::new("spawn").expect("name has no interior NUL");
+        unsafe {
+            let b = setae_builtin_new(self.heap, actor_spawn, cname.as_ptr());
+            setae_gecko_actor_register(self.vm, cname.as_ptr(), b);
+        }
+        std::mem::forget(cname);
     }
 
     pub fn register_fn(&mut self, name: &str, f: HostFn) {
@@ -449,6 +701,40 @@ mod machine_tests {
 
     fn ins(op: Op, arg: u32) -> Instr {
         Instr { op, arg }
+    }
+
+    #[test]
+    fn a_lowered_code_reserializes_to_the_original_bytes() {
+        let mut add = blank(3, 2, 0, 0);
+        add.name = "add".into();
+        add.param_names = vec!["a".into(), "b".into(), "rest".into()];
+        add.varargs = true;
+        add.consts = vec![Const::Str("hi".into()), Const::Float(1.5)];
+        add.names = vec!["print".into()];
+        add.ops = vec![
+            ins(Op::LoadLocal, 0),
+            ins(Op::LoadLocal, 1),
+            ins(Op::BinaryOp, bytecode::BIN_ADD),
+            ins(Op::Return, 0),
+        ];
+        let mut m = blank(0, 0, 0, 0);
+        m.name = String::new();
+        m.consts = vec![Const::Int(2), Const::None, Const::Bool(true)];
+        m.codes = vec![add];
+        m.ops = vec![ins(Op::MakeFunction, 0), ins(Op::Return, 0)];
+
+        let want = bytecode::to_bytes(&m);
+        let mut vm = Vm::new();
+        unsafe {
+            let gc = setae_code_new();
+            vm.lower(gc, &m);
+            let mut len = 0usize;
+            let ptr = setae_code_serialize(gc, &mut len);
+            let got = std::slice::from_raw_parts(ptr, len).to_vec();
+            setae_bytes_free(ptr);
+            setae_code_free(gc);
+            assert_eq!(got, want, "C serialization must match bytecode::to_bytes");
+        }
     }
 
     fn int_result(run: &Run) -> i32 {
@@ -766,10 +1052,51 @@ mod machine_tests {
     }
 
     #[test]
-    fn sending_an_unsendable_value_fails() {
+    fn a_subject_travels_inside_a_message() {
         let b = Vm::new();
-        let (subject, _mailbox) = b.mailbox();
-        assert!(!b.send(subject, subject), "a subject is not sendable yet");
+        let (subject, mailbox) = b.mailbox();
+        assert!(b.send(subject, subject), "a subject is sendable by handle");
+        let got = mailbox.recv(&b).expect("the subject arrives");
+        assert_eq!(
+            unsafe { setae_obj_type(got) },
+            18,
+            "the received value is a subject"
+        );
+    }
+
+    #[test]
+    fn an_actor_processes_messages_and_reports_back() {
+        let src = "def handle(state, message, report):\n    total = state + message\n    report.send(total)\n    return total\n";
+        let module = parser::parse(src).expect("parse");
+        let code = compiler::compile_with_base(&module, None).expect("compile");
+        let bytes = bytecode::to_bytes(&code.codes[0]);
+
+        let driver = Vm::new();
+        let (report_subject, report_mailbox) = driver.mailbox();
+        unsafe {
+            let (actor_tx, actor_rx) = channel::<Envelope>();
+            let boxed = Box::into_raw(Box::new(actor_tx)) as *mut std::ffi::c_void;
+            let actor_subject = setae_subject_new(driver.heap, boxed);
+
+            let extras = setae_list_new(driver.heap, 0);
+            setae_list_append(extras, report_subject);
+            let pack = setae_list_new(driver.heap, 2);
+            setae_list_append(pack, setae_from_int(0));
+            setae_list_append(pack, extras);
+            let init = setae_msg_read(driver.vm, pack);
+            assert!(!init.is_null(), "init pack is sendable");
+            let init = Envelope(init);
+
+            std::thread::spawn(move || actor_main(bytes, init, actor_rx));
+
+            assert!(driver.send(actor_subject, setae_from_int(10)));
+            assert!(driver.send(actor_subject, setae_from_int(5)));
+
+            let r1 = report_mailbox.recv(&driver).expect("first report");
+            let r2 = report_mailbox.recv(&driver).expect("second report");
+            assert_eq!(setae_to_int(r1), 10, "0 + 10");
+            assert_eq!(setae_to_int(r2), 15, "10 + 5");
+        }
     }
 
     #[test]

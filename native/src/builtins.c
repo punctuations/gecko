@@ -394,10 +394,35 @@ static void register_gecko(SetaeVM *vm) {
     SetaeValue sandbox =
         setae_module_new(h, setae_str_new(h, "_gecko.sandbox", 14), sdict);
 
+    SetaeValue adict = setae_dict_new(h);
+    SetaeValue actor = setae_module_new(h, setae_str_new(h, "_gecko.actor", 12), adict);
+
     SetaeValue gdict = setae_dict_new(h);
     setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "sandbox", 7), sandbox);
+    setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "actor", 5), actor);
     SetaeValue gecko = setae_module_new(h, setae_str_new(h, "_gecko", 6), gdict);
     setae_vm_register_builtin(vm, "_gecko", gecko);
+}
+
+void setae_gecko_actor_register(SetaeVM *vm, const char *name, SetaeValue value) {
+    for (size_t i = 0; i < vm->nbuiltins; i++) {
+        if (strcmp(vm->builtins[i].name, "_gecko") != 0) {
+            continue;
+        }
+        SetaeModule *g = setae_to_ptr(vm->builtins[i].value);
+        SetaeDict *gd = setae_to_ptr(g->dict);
+        for (uint32_t j = 0; j < gd->len; j++) {
+            SetaeValue k = gd->entries[j].key;
+            if (setae_is_str(k) && setae_str_len(k) == 5 &&
+                memcmp(setae_str_data(k), "actor", 5) == 0) {
+                SetaeModule *am = setae_to_ptr(gd->entries[j].value);
+                setae_dict_push(setae_to_ptr(am->dict),
+                                setae_str_new(vm->heap, name, strlen(name)), value);
+                return;
+            }
+        }
+        return;
+    }
 }
 
 void setae_vm_register_builtins(SetaeVM *vm) {

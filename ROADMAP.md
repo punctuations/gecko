@@ -17,7 +17,12 @@ it.
   through build-std. Bytecode specialization was tried and dropped, the release
   build already inlines the dispatch, and SSA passes are deferred to their own
   milestone.
-- v0.0.6, multicore. Isolates, actors, channels.
+- v0.0.6, multicore. Isolates, actors, and message passing. The gecko API is
+  `spawn(state, handle, args)`, which returns a Subject; the Subject type with
+  `send` for a cast and `call(build, timeout)` for request-reply; `stop` to end
+  an actor; and a Timeout raised when a `call` outlives its deadline. Messages
+  deep-copy across the heap boundary, subjects travel inside them by handle so a
+  reply routes back.
 - v0.0.7, scheduler. Work stealing, thread pools, timers, message queues.
 - v0.0.8, data engine. Typed arrays, SIMD, shared buffers, parallel map, reduce,
   and filter.
@@ -25,6 +30,10 @@ it.
   aggregation, lazy evaluation.
 - v0.1.0, distribution. `pip install gecko`, a CPython and PyPy compatibility
   layer, native acceleration.
+- v0.1.1, reflection. A `types` module in the spirit of CPython's, naming the
+  runtime type objects (function, module, code, and the concurrency types like
+  Subject) so a program can use them in isinstance checks and annotations and
+  construct them at runtime.
 - v0.2.0, HPy. Universal ABI, extension SDK, native modules.
 - v0.3.0, production runtime.
 

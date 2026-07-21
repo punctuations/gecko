@@ -12,7 +12,41 @@ typedef enum {
     MSG_LIST,
     MSG_TUPLE,
     MSG_DICT,
+    MSG_SUBJECT,
 } SetaeMsgTag;
+
+static void *(*g_subject_clone)(void *) = NULL;
+
+void setae_set_subject_clone(void *(*fn)(void *)) {
+    g_subject_clone = fn;
+}
+
+static void (*g_subject_send)(void *, SetaeMsg *) = NULL;
+
+void setae_set_subject_send(void (*fn)(void *, SetaeMsg *)) {
+    g_subject_send = fn;
+}
+
+int setae_subject_send_value(SetaeVM *vm, SetaeValue subject, SetaeValue arg) {
+    SetaeMsg *msg = setae_msg_read(vm, arg);
+    if (msg == NULL) {
+        return -1;
+    }
+    g_subject_send(setae_subject_mailbox(subject), msg);
+    return 0;
+}
+
+static SetaeValue (*g_subject_call)(SetaeVM *, SetaeValue, SetaeValue, SetaeValue) = NULL;
+
+void setae_set_subject_call(SetaeValue (*fn)(SetaeVM *, SetaeValue, SetaeValue,
+                                             SetaeValue)) {
+    g_subject_call = fn;
+}
+
+SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue build,
+                                    SetaeValue timeout) {
+    return g_subject_call(vm, subject, build, timeout);
+}
 
 typedef struct {
     SetaeMsgTag tag;
@@ -33,6 +67,7 @@ typedef struct {
             uint32_t *vals;
             uint32_t len;
         } dict;
+        void *mailbox;
     } as;
 } SetaeMsgNode;
 
@@ -175,6 +210,13 @@ static int64_t msg_read(SetaeMsg *m, IdMap *map, SetaeVM *vm, SetaeValue v) {
         }
         return n;
     }
+    if (t == SETAE_T_SUBJECT) {
+        uint32_t n = msg_add(m);
+        idmap_put(map, v, n);
+        m->nodes[n].tag = MSG_SUBJECT;
+        m->nodes[n].as.mailbox = g_subject_clone(setae_subject_mailbox(v));
+        return n;
+    }
     setae_vm_raise(vm, "TypeError", "cannot send a %s value across actors",
                    setae_type_name(v));
     return -1;
@@ -236,6 +278,14 @@ static SetaeValue msg_write(const SetaeMsg *m, SetaeValue *built, SetaeVM *vm, u
         }
         return dv;
     }
+    case MSG_SUBJECT: {
+        if (built[idx] != 0) {
+            return built[idx];
+        }
+        SetaeValue sv = setae_subject_new(vm->heap, g_subject_clone(nd->as.mailbox));
+        built[idx] = sv;
+        return sv;
+    }
     }
     return setae_none();
 }
@@ -279,8 +329,149 @@ SetaeValue setae_list_get(SetaeValue lv, uint32_t i) {
     return ((SetaeList *)setae_to_ptr(lv))->items[i];
 }
 
+uint32_t setae_tuple_len(SetaeValue tv) {
+    return ((SetaeTuple *)setae_to_ptr(tv))->len;
+}
+
+SetaeValue setae_tuple_get(SetaeValue tv, uint32_t i) {
+    return ((SetaeTuple *)setae_to_ptr(tv))->items[i];
+}
+
 void setae_dict_put(SetaeValue dv, SetaeValue key, SetaeValue val) {
     setae_dict_push(setae_to_ptr(dv), key, val);
+}
+
+typedef struct {
+    uint8_t *data;
+    size_t len;
+    size_t cap;
+} ByteBuf;
+
+static void bb_bytes(ByteBuf *b, const void *p, size_t n) {
+    if (b->len + n > b->cap) {
+        b->cap = b->cap ? b->cap * 2 : 256;
+        while (b->len + n > b->cap) {
+            b->cap *= 2;
+        }
+        b->data = realloc(b->data, b->cap);
+    }
+    memcpy(b->data + b->len, p, n);
+    b->len += n;
+}
+
+static void bb_u8(ByteBuf *b, uint8_t x) {
+    bb_bytes(b, &x, 1);
+}
+
+static void bb_u32(ByteBuf *b, uint32_t v) {
+    uint8_t le[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+    bb_bytes(b, le, 4);
+}
+
+static void bb_str(ByteBuf *b, const char *s, uint32_t n) {
+    bb_u32(b, n);
+    bb_bytes(b, s, n);
+}
+
+static void ser_code(ByteBuf *b, const SetaeCode *c) {
+    const char *fn = setae_code_fname(c);
+    bb_str(b, fn, (uint32_t)strlen(fn));
+
+    uint32_t nc = setae_code_nconsts(c);
+    const SetaeValue *consts = setae_code_consts(c);
+    bb_u32(b, nc);
+    for (uint32_t i = 0; i < nc; i++) {
+        SetaeValue v = consts[i];
+        if (setae_is_none(v)) {
+            bb_u8(b, 0);
+        } else if (setae_is_bool(v)) {
+            bb_u8(b, 1);
+            bb_u8(b, setae_to_bool(v) ? 1 : 0);
+        } else if (setae_is_int(v)) {
+            bb_u8(b, 2);
+            int32_t x = setae_to_int(v);
+            bb_bytes(b, &x, 4);
+        } else if (setae_is_float(v)) {
+            bb_u8(b, 3);
+            double d = setae_to_float(v);
+            bb_bytes(b, &d, 8);
+        } else {
+            bb_u8(b, 4);
+            bb_str(b, setae_str_data(v), (uint32_t)setae_str_len(v));
+        }
+    }
+
+    uint32_t nn = setae_code_nnames(c);
+    bb_u32(b, nn);
+    for (uint32_t i = 0; i < nn; i++) {
+        const char *nm = setae_code_name(c, i);
+        bb_str(b, nm, (uint32_t)strlen(nm));
+    }
+
+    uint32_t ncode;
+    const uint8_t *code = setae_code_bytes(c, &ncode);
+    uint32_t nops = ncode / 2;
+    bb_u32(b, nops);
+    for (uint32_t i = 0; i < nops; i++) {
+        bb_u8(b, code[2 * i]);
+        bb_u32(b, code[2 * i + 1]);
+    }
+
+    uint32_t nexcs;
+    const SetaeExcEntry *ex = setae_code_excs(c, &nexcs);
+    bb_u32(b, nexcs);
+    for (uint32_t i = 0; i < nexcs; i++) {
+        bb_u32(b, ex[i].start);
+        bb_u32(b, ex[i].end);
+        bb_u32(b, ex[i].target);
+        bb_u32(b, ex[i].depth);
+    }
+
+    bb_u32(b, setae_code_nlocals(c));
+    bb_u32(b, setae_code_nparams(c));
+    bb_u32(b, setae_code_ndefaults(c));
+    bb_u32(b, setae_code_ncells(c));
+    bb_u32(b, setae_code_nfrees(c));
+
+    uint32_t npn = setae_code_nparam_names(c);
+    bb_u32(b, npn);
+    for (uint32_t i = 0; i < npn; i++) {
+        const char *pn = setae_code_param_name(c, i);
+        bb_str(b, pn, (uint32_t)strlen(pn));
+    }
+
+    bb_u8(b, setae_code_varargs(c) ? 1 : 0);
+    bb_u8(b, setae_code_kwargs(c) ? 1 : 0);
+
+    uint32_t nch = setae_code_nchildren(c);
+    bb_u32(b, nch);
+    for (uint32_t i = 0; i < nch; i++) {
+        ser_code(b, setae_code_child(c, i));
+    }
+
+    uint32_t nm = setae_code_nmodules(c);
+    bb_u32(b, nm);
+    for (uint32_t i = 0; i < nm; i++) {
+        ser_code(b, setae_code_module(c, i));
+    }
+
+    bb_u32(b, (uint32_t)setae_code_module_parent(c));
+}
+
+uint8_t *setae_code_serialize(const SetaeCode *c, size_t *len_out) {
+    ByteBuf b = {0};
+    bb_bytes(&b, "GKBC0001", 8);
+    ser_code(&b, c);
+    *len_out = b.len;
+    return b.data;
+}
+
+const SetaeCode *setae_func_code(SetaeValue func) {
+    return ((SetaeFunc *)setae_to_ptr(func))->code;
+}
+
+void setae_bytes_free(uint8_t *p) {
+    free(p);
 }
 
 void setae_msg_free(SetaeMsg *m) {
@@ -296,6 +487,8 @@ void setae_msg_free(SetaeMsg *m) {
         } else if (nd->tag == MSG_DICT) {
             free(nd->as.dict.keys);
             free(nd->as.dict.vals);
+        } else if (nd->tag == MSG_SUBJECT) {
+            setae_subject_drop_handle(nd->as.mailbox);
         }
     }
     free(m->nodes);

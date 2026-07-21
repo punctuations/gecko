@@ -263,6 +263,18 @@ uint32_t setae_code_nmodules(const SetaeCode *c) {
     return c->nmodules;
 }
 
+uint32_t setae_code_nnames(const SetaeCode *c) {
+    return c->nnames;
+}
+
+uint32_t setae_code_nparam_names(const SetaeCode *c) {
+    return c->nparam_names;
+}
+
+uint32_t setae_code_nchildren(const SetaeCode *c) {
+    return c->nchildren;
+}
+
 void setae_code_set_module_parent(SetaeCode *c, int32_t parent) {
     c->module_parent = parent;
 }

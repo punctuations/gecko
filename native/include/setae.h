@@ -192,6 +192,21 @@ void setae_msg_free(SetaeMsg *m);
 SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox);
 void *setae_subject_mailbox(SetaeValue v);
 void setae_set_subject_drop(void (*fn)(void *));
+void setae_subject_drop_handle(void *mailbox);
+void setae_set_subject_clone(void *(*fn)(void *));
+void setae_set_subject_send(void (*fn)(void *, SetaeMsg *));
+int setae_subject_send_value(SetaeVM *vm, SetaeValue subject, SetaeValue arg);
+void setae_set_subject_call(SetaeValue (*fn)(SetaeVM *, SetaeValue, SetaeValue, SetaeValue));
+SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue build,
+                                    SetaeValue timeout);
+void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
+void setae_vm_pop_tmp(SetaeVM *vm);
+
+uint8_t *setae_code_serialize(const SetaeCode *c, size_t *len_out);
+const SetaeCode *setae_func_code(SetaeValue func);
+void setae_bytes_free(uint8_t *p);
+uint32_t setae_tuple_len(SetaeValue tv);
+SetaeValue setae_tuple_get(SetaeValue tv, uint32_t i);
 
 SetaeVM *setae_vm_new(SetaeHeap *h);
 void setae_vm_destroy(SetaeVM *vm);
@@ -202,6 +217,9 @@ typedef SetaeValue (*SetaeSandboxHook)(SetaeVM *vm, const char *src, size_t len,
                                        uint64_t steps, size_t mem, uint64_t millis);
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code);
+SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs);
+void setae_vm_clear_error(SetaeVM *vm);
+void setae_gecko_actor_register(SetaeVM *vm, const char *name, SetaeValue value);
 void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit);
 void setae_vm_set_time_limit(SetaeVM *vm, uint64_t millis);
 void setae_vm_set_sandbox_hook(SetaeVM *vm, SetaeSandboxHook hook);

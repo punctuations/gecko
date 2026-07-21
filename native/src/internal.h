@@ -252,6 +252,9 @@ const char *setae_code_fname(const SetaeCode *c);
 const SetaeCode *setae_code_child(const SetaeCode *c, uint32_t i);
 const SetaeCode *setae_code_module(const SetaeCode *c, uint32_t i);
 uint32_t setae_code_nmodules(const SetaeCode *c);
+uint32_t setae_code_nnames(const SetaeCode *c);
+uint32_t setae_code_nparam_names(const SetaeCode *c);
+uint32_t setae_code_nchildren(const SetaeCode *c);
 int32_t setae_code_module_parent(const SetaeCode *c);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);

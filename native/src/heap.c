@@ -334,6 +334,12 @@ void setae_set_subject_drop(void (*fn)(void *)) {
     g_subject_drop = fn;
 }
 
+void setae_subject_drop_handle(void *mailbox) {
+    if (g_subject_drop != NULL) {
+        g_subject_drop(mailbox);
+    }
+}
+
 SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox) {
     SetaeSubject *s = heap_alloc(h, sizeof(SetaeSubject), SETAE_T_SUBJECT);
     s->mailbox = mailbox;

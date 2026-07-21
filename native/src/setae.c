@@ -190,6 +190,12 @@ const char *setae_vm_error_msg(SetaeVM *vm) {
     return vm->errmsg;
 }
 
+void setae_vm_clear_error(SetaeVM *vm) {
+    vm->error = 0;
+    vm->errmsg[0] = '\0';
+    vm->exc = setae_none();
+}
+
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...) {
     if (vm->error) {
         return;
@@ -1011,6 +1017,10 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
     return setae_none();
 }
 
+SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs) {
+    return call_value(vm, callee, args, nargs, 0);
+}
+
 static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                               SetaeValue *args, int nargs, SetaeInlineCache *c) {
     int t = setae_obj_type(obj);
@@ -1051,6 +1061,27 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         int64_t i = dict_find_cstr(d, name);
         if (i >= 0) {
             return call_value(vm, d->entries[i].value, args, nargs, 0);
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
+    if (t == SETAE_T_SUBJECT) {
+        if (strcmp(name, "send") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "send() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            setae_subject_send_value(vm, obj, args[0]);
+            return setae_none();
+        }
+        if (strcmp(name, "call") == 0) {
+            if (nargs != 2) {
+                setae_vm_raise(vm, "TypeError",
+                               "call() takes exactly two arguments (%d given)", nargs);
+                return setae_none();
+            }
+            return setae_subject_call_value(vm, obj, args[0], args[1]);
         }
         attr_error(vm, obj, name);
         return setae_none();
