@@ -138,6 +138,14 @@ typedef enum {
     OP_CALL_EX,
     OP_LIST_EXTEND,
     OP_DICT_MERGE,
+    OP_DUP_TOP,
+    OP_DELETE_NAME,
+    OP_DELETE_SUBSCR,
+    OP_DELETE_ATTR,
+    OP_DELETE_LOCAL,
+    OP_ROT_TWO,
+    OP_ROT_THREE,
+    OP_DELETE_DEREF,
 } SetaeOp;
 
 typedef enum {

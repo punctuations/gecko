@@ -136,6 +136,8 @@ uint64_t setae_hash_bytes(const char *data, size_t len);
 void setae_dict_index_add(SetaeDict *d, uint32_t entry);
 int64_t setae_dict_index_get(const SetaeDict *d, SetaeValue key);
 int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t len);
+int setae_dict_del(SetaeDict *d, SetaeValue key);
+int setae_dict_del_cstr(SetaeDict *d, const char *name);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,

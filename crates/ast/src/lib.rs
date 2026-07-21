@@ -51,6 +51,16 @@ pub enum Stmt {
         level: u32,
     },
     Nonlocal(Vec<String>),
+    Global(Vec<String>),
+    Assert {
+        test: Expr,
+        msg: Option<Expr>,
+    },
+    Delete(Vec<Expr>),
+    With {
+        items: Vec<WithItem>,
+        body: Vec<Stmt>,
+    },
     Try {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
@@ -61,6 +71,12 @@ pub enum Stmt {
     Pass,
     Break,
     Continue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithItem {
+    pub context: Expr,
+    pub optional_vars: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +118,15 @@ pub enum Expr {
     None,
     Name(String),
     Starred(Box<Expr>),
+    IfExp {
+        test: Box<Expr>,
+        body: Box<Expr>,
+        orelse: Box<Expr>,
+    },
+    Lambda {
+        params: Vec<Param>,
+        body: Box<Expr>,
+    },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),

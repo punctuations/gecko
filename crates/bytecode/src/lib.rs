@@ -86,6 +86,14 @@ pub enum Op {
     CallEx = 39,
     ListExtend = 40,
     DictMerge = 41,
+    DupTop = 42,
+    DeleteName = 43,
+    DeleteSubscr = 44,
+    DeleteAttr = 45,
+    DeleteLocal = 46,
+    RotTwo = 47,
+    RotThree = 48,
+    DeleteDeref = 49,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -360,6 +368,14 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         39 => Op::CallEx,
         40 => Op::ListExtend,
         41 => Op::DictMerge,
+        42 => Op::DupTop,
+        43 => Op::DeleteName,
+        44 => Op::DeleteSubscr,
+        45 => Op::DeleteAttr,
+        46 => Op::DeleteLocal,
+        47 => Op::RotTwo,
+        48 => Op::RotThree,
+        49 => Op::DeleteDeref,
         _ => return Err(format!("bad opcode {v}")),
     })
 }

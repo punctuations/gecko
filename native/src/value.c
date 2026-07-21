@@ -366,3 +366,52 @@ int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t l
     }
     return -1;
 }
+
+static int dict_remove_at(SetaeDict *d, int64_t i) {
+    if (i < 0) {
+        return 0;
+    }
+    for (uint32_t j = (uint32_t)i; j + 1 < d->len; j++) {
+        d->entries[j] = d->entries[j + 1];
+    }
+    d->len--;
+    if (d->index != NULL) {
+        index_build(d, d->index_cap);
+    }
+    return 1;
+}
+
+int setae_dict_del(SetaeDict *d, SetaeValue key) {
+    int64_t i;
+    if (d->index != NULL) {
+        i = setae_dict_index_get(d, key);
+    } else {
+        i = -1;
+        for (uint32_t j = 0; j < d->len; j++) {
+            if (setae_value_eq(d->entries[j].key, key)) {
+                i = j;
+                break;
+            }
+        }
+    }
+    return dict_remove_at(d, i);
+}
+
+int setae_dict_del_cstr(SetaeDict *d, const char *name) {
+    size_t n = strlen(name);
+    int64_t i;
+    if (d->index != NULL) {
+        i = setae_dict_index_get_cstr(d, name, n);
+    } else {
+        i = -1;
+        for (uint32_t j = 0; j < d->len; j++) {
+            SetaeValue k = d->entries[j].key;
+            if (setae_is_str(k) && setae_str_len(k) == n &&
+                memcmp(setae_str_data(k), name, n) == 0) {
+                i = j;
+                break;
+            }
+        }
+    }
+    return dict_remove_at(d, i);
+}

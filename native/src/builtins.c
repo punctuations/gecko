@@ -345,7 +345,8 @@ static const char *const EXC_KINDS[] = {
     "Exception",         "TypeError",     "ValueError",        "KeyError",
     "IndexError",        "NameError",     "UnboundLocalError", "ZeroDivisionError",
     "RuntimeError",      "RecursionError", "AttributeError", "MemoryError",
-    "SandboxError",      "ImportError",
+    "SandboxError",      "ImportError",   "AssertionError",    "TimeoutError",
+    "StopIteration",     "NotImplementedError",
 };
 
 static SetaeValue builtin_sandbox_run(SetaeVM *vm, SetaeValue *args, int nargs) {
@@ -385,6 +386,30 @@ static SetaeValue builtin_sandbox_run(SetaeVM *vm, SetaeValue *args, int nargs) 
     return vm->sandbox_hook(vm, setae_str_data(args[0]), setae_str_len(args[0]), steps,
                             mem, millis);
 }
+
+static SetaeValue builtin_type(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 1) {
+        setae_vm_raise(vm, "TypeError", "type() takes 1 argument (%d given)", nargs);
+        return setae_none();
+    }
+    SetaeValue v = args[0];
+    if (setae_obj_type(v) == SETAE_T_INSTANCE) {
+        return ((SetaeInstance *)setae_to_ptr(v))->cls;
+    }
+    const char *name = setae_type_name(v);
+    for (size_t i = 0; i < vm->nbuiltins; i++) {
+        if (strcmp(vm->builtins[i].name, name) == 0) {
+            return vm->builtins[i].value;
+        }
+    }
+    setae_vm_raise(vm, "TypeError", "type() is not available for '%s'", name);
+    return setae_none();
+}
+
+static const char *const TYPE_NAMES[] = {
+    "int", "float", "str",   "bool",  "NoneType",
+    "list", "dict", "tuple", "range",
+};
 
 static void register_gecko(SetaeVM *vm) {
     SetaeHeap *h = setae_vm_heap(vm);
@@ -452,5 +477,9 @@ void setae_vm_register_builtins(SetaeVM *vm) {
     for (size_t i = 0; i < sizeof(EXC_KINDS) / sizeof(EXC_KINDS[0]); i++) {
         setae_vm_register_builtin(vm, EXC_KINDS[i], setae_exctype_new(h, EXC_KINDS[i]));
     }
+    for (size_t i = 0; i < sizeof(TYPE_NAMES) / sizeof(TYPE_NAMES[0]); i++) {
+        setae_vm_register_builtin(vm, TYPE_NAMES[i], setae_exctype_new(h, TYPE_NAMES[i]));
+    }
+    setae_vm_register_builtin(vm, "type", setae_builtin_new(h, builtin_type, "type"));
     register_gecko(vm);
 }

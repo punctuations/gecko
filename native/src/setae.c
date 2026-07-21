@@ -168,6 +168,27 @@ void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
                   (uint32_t)(vm->nglobals - 1));
 }
 
+int setae_vm_del_global(SetaeVM *vm, const char *name) {
+    int64_t i = tab_find(vm->globals, vm->nglobals, vm->globals_index, vm->globals_index_cap,
+                         name);
+    if (i < 0) {
+        return 0;
+    }
+    free(vm->globals[i].name);
+    for (size_t j = (size_t)i; j + 1 < vm->nglobals; j++) {
+        vm->globals[j] = vm->globals[j + 1];
+    }
+    vm->nglobals--;
+    free(vm->globals_index);
+    vm->globals_index = NULL;
+    vm->globals_index_cap = 0;
+    for (size_t j = 0; j < vm->nglobals; j++) {
+        tab_index_add(vm->globals, j + 1, &vm->globals_index, &vm->globals_index_cap,
+                      (uint32_t)j);
+    }
+    return 1;
+}
+
 void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v) {
     if (vm->nbuiltins == vm->builtins_cap) {
         vm->builtins_cap = vm->builtins_cap ? vm->builtins_cap * 2 : 16;
@@ -838,6 +859,57 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
     }
 }
 
+static void del_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
+    switch (setae_obj_type(obj)) {
+    case SETAE_T_LIST: {
+        SetaeList *l = setae_to_ptr(obj);
+        if (!setae_is_int(idx)) {
+            setae_vm_raise(vm, "TypeError", "list indices must be integers, not %s",
+                           setae_type_name(idx));
+            return;
+        }
+        int64_t i = setae_to_int(idx);
+        if (i < 0) {
+            i += l->len;
+        }
+        if (i < 0 || i >= (int64_t)l->len) {
+            setae_vm_raise(vm, "IndexError", "list assignment index out of range");
+            return;
+        }
+        for (uint32_t j = (uint32_t)i; j + 1 < l->len; j++) {
+            l->items[j] = l->items[j + 1];
+        }
+        l->len--;
+        return;
+    }
+    case SETAE_T_DICT:
+        if (!setae_dict_del(setae_to_ptr(obj), idx)) {
+            setae_vm_raise(vm, "KeyError", "key not found");
+        }
+        return;
+    default:
+        setae_vm_raise(vm, "TypeError", "'%s' object does not support item deletion",
+                       setae_type_name(obj));
+    }
+}
+
+static void del_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
+    if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
+        SetaeInstance *inst = setae_to_ptr(obj);
+        int64_t slot = setae_instance_slot(inst, name);
+        if (slot >= 0 && inst->slots[slot] != 0) {
+            inst->slots[slot] = 0;
+            return;
+        }
+        setae_vm_raise(vm, "AttributeError", "'%.*s' object has no attribute '%s'",
+                       (int)setae_str_len(((SetaeClass *)setae_to_ptr(inst->cls))->name),
+                       setae_str_data(((SetaeClass *)setae_to_ptr(inst->cls))->name), name);
+        return;
+    }
+    setae_vm_raise(vm, "TypeError", "'%s' object does not support attribute deletion",
+                   setae_type_name(obj));
+}
+
 static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeValue val) {
     switch (setae_obj_type(obj)) {
     case SETAE_T_LIST: {
@@ -1380,6 +1452,14 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_CALL_EX] = &&L_OP_CALL_EX,
         [OP_LIST_EXTEND] = &&L_OP_LIST_EXTEND,
         [OP_DICT_MERGE] = &&L_OP_DICT_MERGE,
+        [OP_DUP_TOP] = &&L_OP_DUP_TOP,
+        [OP_DELETE_NAME] = &&L_OP_DELETE_NAME,
+        [OP_DELETE_SUBSCR] = &&L_OP_DELETE_SUBSCR,
+        [OP_DELETE_ATTR] = &&L_OP_DELETE_ATTR,
+        [OP_DELETE_LOCAL] = &&L_OP_DELETE_LOCAL,
+        [OP_ROT_TWO] = &&L_OP_ROT_TWO,
+        [OP_ROT_THREE] = &&L_OP_ROT_THREE,
+        [OP_DELETE_DEREF] = &&L_OP_DELETE_DEREF,
     };
 
 #define DISPATCH()                                                             \
@@ -1511,6 +1591,65 @@ stack_overflow:
         L_OP_POP_TOP:
             sp--;
             DISPATCH();
+        L_OP_DUP_TOP:
+            stack[sp] = stack[sp - 1];
+            sp++;
+            DISPATCH();
+        L_OP_ROT_TWO: {
+            SetaeValue t = stack[sp - 1];
+            stack[sp - 1] = stack[sp - 2];
+            stack[sp - 2] = t;
+            DISPATCH();
+        }
+        L_OP_ROT_THREE: {
+            SetaeValue t = stack[sp - 1];
+            stack[sp - 1] = stack[sp - 2];
+            stack[sp - 2] = stack[sp - 3];
+            stack[sp - 3] = t;
+            DISPATCH();
+        }
+        L_OP_DELETE_DEREF: {
+            SetaeCell *cell = setae_to_ptr(cellbase[arg]);
+            if (cell->value == 0) {
+                setae_vm_raise(vm, "UnboundLocalError",
+                               "variable referenced before assignment");
+                DISPATCH();
+            }
+            cell->value = 0;
+            DISPATCH();
+        }
+        L_OP_DELETE_LOCAL:
+            if (locals[arg] == 0) {
+                setae_vm_raise(vm, "UnboundLocalError",
+                               "local variable referenced before assignment");
+                DISPATCH();
+            }
+            locals[arg] = 0;
+            DISPATCH();
+        L_OP_DELETE_NAME: {
+            const char *name = setae_code_name(code, arg);
+            if (module != 0) {
+                SetaeDict *d = setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict);
+                if (!setae_dict_del_cstr(d, name)) {
+                    setae_vm_raise(vm, "NameError", "name '%s' is not defined", name);
+                }
+            } else if (!setae_vm_del_global(vm, name)) {
+                setae_vm_raise(vm, "NameError", "name '%s' is not defined", name);
+            }
+            DISPATCH();
+        }
+        L_OP_DELETE_SUBSCR: {
+            SetaeValue idx = stack[--sp];
+            SetaeValue obj = stack[--sp];
+            del_subscript(vm, obj, idx);
+            DISPATCH();
+        }
+        L_OP_DELETE_ATTR: {
+            const char *name = setae_code_name(code, arg);
+            SetaeValue obj = stack[--sp];
+            del_attr(vm, obj, name);
+            DISPATCH();
+        }
         L_OP_BINARY_OP: {
             SetaeValue b = stack[--sp];
             SetaeValue a = stack[--sp];
@@ -1612,12 +1751,12 @@ stack_overflow:
             SetaeValue obj = stack[sp - 1];
             if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
                 SetaeInstance *inst = setae_to_ptr(obj);
-                if (ic[unit].shape == inst->shape) {
+                if (ic[unit].shape == inst->shape && inst->slots[ic[unit].slot] != 0) {
                     stack[sp - 1] = inst->slots[ic[unit].slot];
                     DISPATCH();
                 }
                 int64_t slot = setae_instance_slot(inst, setae_code_name(code, arg));
-                if (slot >= 0) {
+                if (slot >= 0 && inst->slots[slot] != 0) {
                     ic[unit].shape = inst->shape;
                     ic[unit].slot = (uint32_t)slot;
                     stack[sp - 1] = inst->slots[slot];

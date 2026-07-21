@@ -1,6 +1,6 @@
 use ast::{
     Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module,
-    Param, ParamKind, Stmt, UnOp,
+    Param, ParamKind, Stmt, UnOp, WithItem,
 };
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
@@ -142,6 +142,7 @@ impl Parser {
             TokenKind::Keyword(Kw::While) => Ok(vec![self.while_stmt()?]),
             TokenKind::Keyword(Kw::For) => Ok(vec![self.for_stmt()?]),
             TokenKind::Keyword(Kw::Try) => Ok(vec![self.try_stmt()?]),
+            TokenKind::Keyword(Kw::With) => Ok(vec![self.with_stmt()?]),
             TokenKind::Keyword(Kw::Class) => Ok(vec![self.class_stmt(Vec::new())?]),
             TokenKind::Op(Op::At) => Ok(vec![self.decorated()?]),
             _ => self.simple_line(),
@@ -193,6 +194,35 @@ impl Parser {
                     names.push(self.expect_name()?);
                 }
                 Ok(Stmt::Nonlocal(names))
+            }
+            TokenKind::Keyword(Kw::Global) => {
+                self.advance();
+                let mut names = vec![self.expect_name()?];
+                while self.eat_op(Op::Comma) {
+                    names.push(self.expect_name()?);
+                }
+                Ok(Stmt::Global(names))
+            }
+            TokenKind::Keyword(Kw::Assert) => {
+                self.advance();
+                let test = self.test()?;
+                let msg = if self.eat_op(Op::Comma) {
+                    Some(self.test()?)
+                } else {
+                    None
+                };
+                Ok(Stmt::Assert { test, msg })
+            }
+            TokenKind::Keyword(Kw::Del) => {
+                self.advance();
+                let mut targets = vec![self.test()?];
+                while self.eat_op(Op::Comma) {
+                    if self.at_testlist_end() {
+                        break;
+                    }
+                    targets.push(self.test()?);
+                }
+                Ok(Stmt::Delete(targets))
             }
             TokenKind::Keyword(Kw::Return) => {
                 self.advance();
@@ -350,30 +380,7 @@ impl Parser {
         self.expect_kw(Kw::Def)?;
         let name = self.expect_name()?;
         self.expect_op(Op::LParen)?;
-        let mut params = Vec::new();
-        while !self.at_op(Op::RParen) {
-            let kind = if self.eat_op(Op::DoubleStar) {
-                ParamKind::KwArgs
-            } else if self.eat_op(Op::Star) {
-                ParamKind::VarArgs
-            } else {
-                ParamKind::Normal
-            };
-            let name = self.expect_name()?;
-            let default = if kind == ParamKind::Normal && self.eat_op(Op::Assign) {
-                Some(self.test()?)
-            } else {
-                None
-            };
-            params.push(Param {
-                name,
-                default,
-                kind,
-            });
-            if !self.eat_op(Op::Comma) {
-                break;
-            }
-        }
+        let params = self.param_list(Op::RParen)?;
         self.expect_op(Op::RParen)?;
         let body = self.suite()?;
         Ok(Stmt::FunctionDef {
@@ -400,6 +407,65 @@ impl Parser {
             Vec::new()
         };
         Ok(Stmt::If { test, body, orelse })
+    }
+
+    fn with_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_kw(Kw::With)?;
+        let mut items = vec![self.with_item()?];
+        while self.eat_op(Op::Comma) {
+            items.push(self.with_item()?);
+        }
+        let body = self.suite()?;
+        Ok(Stmt::With { items, body })
+    }
+
+    fn param_list(&mut self, end: Op) -> Result<Vec<Param>, ParseError> {
+        let mut params = Vec::new();
+        while !self.at_op(end) {
+            let kind = if self.eat_op(Op::DoubleStar) {
+                ParamKind::KwArgs
+            } else if self.eat_op(Op::Star) {
+                ParamKind::VarArgs
+            } else {
+                ParamKind::Normal
+            };
+            let name = self.expect_name()?;
+            let default = if kind == ParamKind::Normal && self.eat_op(Op::Assign) {
+                Some(self.test()?)
+            } else {
+                None
+            };
+            params.push(Param {
+                name,
+                default,
+                kind,
+            });
+            if !self.eat_op(Op::Comma) {
+                break;
+            }
+        }
+        Ok(params)
+    }
+
+    fn lambda(&mut self) -> Result<Expr, ParseError> {
+        self.expect_kw(Kw::Lambda)?;
+        let params = self.param_list(Op::Colon)?;
+        self.expect_op(Op::Colon)?;
+        let body = Box::new(self.test()?);
+        Ok(Expr::Lambda { params, body })
+    }
+
+    fn with_item(&mut self) -> Result<WithItem, ParseError> {
+        let context = self.test()?;
+        let optional_vars = if self.eat_kw(Kw::As) {
+            Some(self.test()?)
+        } else {
+            None
+        };
+        Ok(WithItem {
+            context,
+            optional_vars,
+        })
     }
 
     fn while_stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -572,7 +638,22 @@ impl Parser {
     }
 
     fn test(&mut self) -> Result<Expr, ParseError> {
-        self.or_expr()
+        if self.at_kw(Kw::Lambda) {
+            return self.lambda();
+        }
+        let body = self.or_expr()?;
+        if self.eat_kw(Kw::If) {
+            let test = self.or_expr()?;
+            self.expect_kw(Kw::Else)?;
+            let orelse = self.test()?;
+            Ok(Expr::IfExp {
+                test: Box::new(test),
+                body: Box::new(body),
+                orelse: Box::new(orelse),
+            })
+        } else {
+            Ok(body)
+        }
     }
 
     fn or_expr(&mut self) -> Result<Expr, ParseError> {
@@ -888,10 +969,10 @@ impl Parser {
         while self.eat_kw(Kw::For) {
             let target = self.target_list()?;
             self.expect_kw(Kw::In)?;
-            let iter = self.test()?;
+            let iter = self.or_expr()?;
             let mut ifs = Vec::new();
             while self.eat_kw(Kw::If) {
-                ifs.push(self.test()?);
+                ifs.push(self.or_expr()?);
             }
             out.push(Comprehension { target, iter, ifs });
         }

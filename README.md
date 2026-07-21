@@ -41,8 +41,8 @@ classes, importing modules and packages, including dotted subpackages, with
 dicts, strings, and ranges,
 the methods `append`, `pop`, `get`, `keys`, `values`, and `items`, and the
 builtins `print`, `len`, and `range`. Anything outside that subset (generator
-expressions, ternary expressions, keyword-only parameters, multiple inheritance,
-`super`, bare `raise`) is rejected at compile time. A precise,
+expressions, keyword-only parameters, multiple inheritance, `super`, bare
+`raise`) is rejected at compile time. A precise,
 non-moving mark-sweep collector reclaims garbage when allocation passes a
 threshold that grows with the live size. An embedding host can run many
 isolated VMs and cap each one's steps, wall-clock time, and heap, so untrusted

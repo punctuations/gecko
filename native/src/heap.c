@@ -297,7 +297,7 @@ int64_t setae_instance_slot(const SetaeInstance *inst, const char *name) {
 
 int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *out) {
     int64_t slot = shape_slot(inst->shape, name);
-    if (slot < 0) {
+    if (slot < 0 || inst->slots[slot] == 0) {
         return 0;
     }
     *out = inst->slots[slot];
