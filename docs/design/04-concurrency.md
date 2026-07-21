@@ -108,10 +108,11 @@ answer = counter.call(lambda reply: ("get", reply), 1000)
 `actor.spawn(initial_state, handle)` starts the actor on its own thread and
 returns a subject bound to its mailbox. A third argument, `actor.spawn(state,
 handle, args)`, passes a list or tuple whose items reach the handler as extra
-parameters after `state` and `message`. Returning `actor.stop()` from the
-handler will end the actor; the first cut has no stop sentinel yet, so an actor
-runs until the last sender to its mailbox drops. Otherwise the return is the
-next state.
+parameters after `state` and `message`. Returning `actor.stop()` from the handler
+ends the actor; otherwise the return is the next state. Without a stop an actor
+runs until the last sender to its mailbox drops. A handler runs without its module
+globals (see Function transfer), so the child binds `actor` for it, which is how
+`actor.stop()` resolves inside the handler.
 
 ### Subjects
 
@@ -192,13 +193,13 @@ gone and the mailbox closes.
 
 ### Errors
 
-The intended behavior: a handler that raises during a call sends the failure to
-the pending reply subject so `call` re-raises it at the caller, and a handler
-that raises during a cast stops the actor and closes its mailbox. The first cut
-does neither. It catches the raise, keeps the previous state, and goes on to the
-next message, so a call whose handler raised times out instead of re-raising.
-Routing the failure back through the reply subject is the next step. Supervision,
-restart and failure trees, is deferred.
+A handler that raises stops the actor, and the message that triggered it decides
+what the caller sees. A call carries its reply channel alongside the message, so
+the failure text travels back through that channel and `call` re-raises it at the
+caller as a RuntimeError carrying the handler's error text. A cast has no one
+waiting, so the failure just stops the actor. Preserving the original exception
+type across the boundary, and supervision with restart and failure trees, are
+deferred.
 
 ### Portable API
 

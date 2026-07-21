@@ -346,6 +346,11 @@ SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox) {
     return setae_from_ptr(s);
 }
 
+SetaeValue setae_stop_new(SetaeHeap *h) {
+    SetaeObject *o = heap_alloc(h, sizeof(SetaeObject), SETAE_T_STOP);
+    return setae_from_ptr(o);
+}
+
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {
     SetaeTuple *t =
         heap_alloc(h, sizeof(SetaeTuple) + n * sizeof(SetaeValue), SETAE_T_TUPLE);

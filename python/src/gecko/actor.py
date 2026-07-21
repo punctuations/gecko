@@ -9,3 +9,11 @@ def spawn(state, handle, args=None):
     if args is None:
         return native.actor.spawn(state, handle)
     return native.actor.spawn(state, handle, args)
+
+
+def stop():
+    if native is None:
+        raise NotImplementedError(
+            "actors need the gecko runtime; the CPython fallback is not built yet"
+        )
+    return native.actor.stop()

@@ -51,6 +51,7 @@ typedef enum {
     SETAE_T_INSTANCE,
     SETAE_T_BOUND,
     SETAE_T_SUBJECT,
+    SETAE_T_STOP,
 } SetaeType;
 
 /* One-word header; the payload follows it in memory. */
@@ -190,6 +191,7 @@ SetaeValue setae_msg_write(SetaeVM *vm, const SetaeMsg *m);
 void setae_msg_free(SetaeMsg *m);
 
 SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox);
+SetaeValue setae_stop_new(SetaeHeap *h);
 void *setae_subject_mailbox(SetaeValue v);
 void setae_set_subject_drop(void (*fn)(void *));
 void setae_subject_drop_handle(void *mailbox);
@@ -220,6 +222,7 @@ SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code);
 SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs);
 void setae_vm_clear_error(SetaeVM *vm);
 void setae_gecko_actor_register(SetaeVM *vm, const char *name, SetaeValue value);
+SetaeValue setae_gecko_actor_module(SetaeVM *vm);
 void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit);
 void setae_vm_set_time_limit(SetaeVM *vm, uint64_t millis);
 void setae_vm_set_sandbox_hook(SetaeVM *vm, SetaeSandboxHook hook);

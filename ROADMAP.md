@@ -22,8 +22,9 @@ it.
   handle, args)`, which returns a subject; the subject casts with `send` and does
   request-reply with `call(build, timeout)`, raising TimeoutError past the
   deadline. Messages deep-copy across the heap boundary, subjects travel inside
-  them by handle so a reply routes back. A stop sentinel, routing a handler
-  failure back through a call's reply, and the CPython fallback are deferred.
+  them by handle so a reply routes back. Returning `actor.stop()` ends an actor,
+  and a handler that raises during a call re-raises at the caller. The CPython
+  fallback is deferred.
 - v0.0.7, scheduler. Work stealing, thread pools, timers, message queues.
 - v0.0.8, data engine. Typed arrays, SIMD, shared buffers, parallel map, reduce,
   and filter.

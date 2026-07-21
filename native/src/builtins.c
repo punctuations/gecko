@@ -404,6 +404,25 @@ static void register_gecko(SetaeVM *vm) {
     setae_vm_register_builtin(vm, "_gecko", gecko);
 }
 
+SetaeValue setae_gecko_actor_module(SetaeVM *vm) {
+    for (size_t i = 0; i < vm->nbuiltins; i++) {
+        if (strcmp(vm->builtins[i].name, "_gecko") != 0) {
+            continue;
+        }
+        SetaeModule *g = setae_to_ptr(vm->builtins[i].value);
+        SetaeDict *gd = setae_to_ptr(g->dict);
+        for (uint32_t j = 0; j < gd->len; j++) {
+            SetaeValue k = gd->entries[j].key;
+            if (setae_is_str(k) && setae_str_len(k) == 5 &&
+                memcmp(setae_str_data(k), "actor", 5) == 0) {
+                return gd->entries[j].value;
+            }
+        }
+        break;
+    }
+    return setae_none();
+}
+
 void setae_gecko_actor_register(SetaeVM *vm, const char *name, SetaeValue value) {
     for (size_t i = 0; i < vm->nbuiltins; i++) {
         if (strcmp(vm->builtins[i].name, "_gecko") != 0) {
