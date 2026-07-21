@@ -16,17 +16,19 @@ shape. It holds state and runs the handler once per message, in order, threading
 the state through:
 
 ```python
+from gecko import actor
+
 def handle(state, message):
     return new_state
 
-actor = gecko.spawn(initial_state, handle)
-actor.send(message)                  # cast, fire and forget
-answer = actor.call(build, timeout)  # request-reply, see Subjects
+worker = actor.spawn(initial_state, handle)
+worker.send(message)                  # cast, fire and forget
+answer = worker.call(build, timeout)  # request-reply, see Subjects
 ```
 
 An actor processes one message at a time, so its own state never races, and
 because actors share no mutable objects there are no data races on values.
-`spawn` returns a subject bound to the actor's mailbox.
+`actor.spawn` returns a subject bound to the actor's mailbox.
 
 ## Messages
 
@@ -96,14 +98,20 @@ def handle(state, message):
         return state
     return state
 
-counter = gecko.spawn(0, handle)
+from gecko import actor
+
+counter = actor.spawn(0, handle)
 counter.send(("add", 5))
 answer = counter.call(lambda reply: ("get", reply), 1000)
 ```
 
-`gecko.spawn(initial_state, handle)` starts the actor on its own thread and
-returns a subject bound to its mailbox. Returning `gecko.stop()` from the handler
-ends the actor; otherwise the return is the next state.
+`actor.spawn(initial_state, handle)` starts the actor on its own thread and
+returns a subject bound to its mailbox. A third argument, `actor.spawn(state,
+handle, args)`, passes a list or tuple whose items reach the handler as extra
+parameters after `state` and `message`. Returning `actor.stop()` from the
+handler will end the actor; the first cut has no stop sentinel yet, so an actor
+runs until the last sender to its mailbox drops. Otherwise the return is the
+next state.
 
 ### Subjects
 
@@ -119,15 +127,16 @@ threads, so any isolate holding a subject can send to it.
 
 ### Cast and call
 
-`actor.send(message)` is a cast: it drops the message in the mailbox and returns
-at once.
+`subject.send(message)` is a cast: it drops the message in the mailbox and
+returns at once.
 
-`actor.call(build, timeout)` is request-reply. It makes a fresh one-shot reply
+`subject.call(build, timeout)` is request-reply. It makes a fresh one-shot reply
 subject, calls `build(reply)` so the caller can place that reply subject inside
 the message, sends the message, and blocks on the reply subject until the handler
-answers or the timeout elapses. The handler pulls the reply subject out of the
-message and does `reply.send(result)` before returning its next state, the same
-way a Gleam handler replies to the subject a call passed in.
+answers or the timeout in milliseconds elapses, which raises TimeoutError. The
+handler pulls the reply subject out of the message and does `reply.send(result)`
+before returning its next state, the same way a Gleam handler replies to the
+subject a call passed in.
 
 ### Messages
 
@@ -140,16 +149,21 @@ type, a function, class, instance, module, range, or iterator, raises TypeError
 at the send, naming it. The walk keeps an identity map, so a graph with shared
 sub-objects or a cycle transfers once and rebuilds with the same sharing.
 
-The neutral form is a Rust value tree, not a byte buffer, because it has to hold
-both the copied data and the live senders for any subjects it carries. That tree
-is what the mailbox moves between threads, and it is Send since its leaves are
-scalars, owned strings, and senders.
+The neutral form is a flat node array the transfer allocates outside any heap. It
+holds the copied scalars and owned strings, and for each subject in the graph a
+cloned sender in place of a copy. That array is what the mailbox moves between
+threads, wrapped in a send envelope. It carries no heap pointers, only scalars,
+owned strings, and senders, so moving it across threads is safe.
 
 ### Function transfer
 
-`spawn` serializes the handler's code with the bytecode writer, the same format
-`gecko build` freezes, and the child rebuilds it into its own code tree with a
-fresh, empty cache array, so no code object and no inline cache is shared.
+`spawn` serializes the handler's code to the same bytecode format `gecko build`
+freezes. By spawn time the handler is already a compiled C code object, so a C
+serializer walks that object and emits the format directly, and a round-trip test
+holds it to the Rust writer so the two cannot drift. The child reads the bytes
+back, wraps the handler in a two-instruction module that makes the function and
+returns it, and lowers that into its own code tree with a fresh, empty cache
+array, so no code object and no inline cache is shared.
 
 The first cut requires the handler to be a plain top-level function: no free
 variables to capture, and no module globals beyond its parameters and the
@@ -168,26 +182,30 @@ return as the next state, and repeat, until a stop or the last sender is gone.
 
 ### Native wiring
 
-A spawn hook installs on the VM the way the sandbox hook does: the gecko crate,
-which has both the compiler and the runtime, provides it, and `_gecko.spawn`
-calls through it. A subject is a native object in the heap whose `send` and
-`call` methods push to and wait on its mailbox. It is reference counted, and the
-actor's thread is joined when its subject and every copy of it are gone.
+`spawn` is a builtin in the `_gecko.actor` submodule, sitting beside
+`_gecko.sandbox`; the runtime installs it, since it needs the bytecode reader and
+the thread machinery, and `from gecko import actor` binds that submodule. A
+subject is a native object in the heap whose `send` and `call` methods push to
+and wait on its mailbox. It wraps a sender that drops when the subject is
+collected, so the actor's thread ends once its subject and every copy of it are
+gone and the mailbox closes.
 
 ### Errors
 
-If the handler raises during a call, the failure is sent to the pending reply
-subject and call re-raises it at the caller, so it stays visible at the call
-site. If it raises during a cast there is no one waiting, so the actor stops and
-its mailbox closes, and later sends see a closed mailbox. Supervision, restart
-and failure trees, is deferred.
+The intended behavior: a handler that raises during a call sends the failure to
+the pending reply subject so `call` re-raises it at the caller, and a handler
+that raises during a cast stops the actor and closes its mailbox. The first cut
+does neither. It catches the raise, keeps the previous state, and goes on to the
+next message, so a call whose handler raised times out instead of re-raising.
+Routing the failure back through the reply subject is the next step. Supervision,
+restart and failure trees, is deferred.
 
 ### Portable API
 
-The pure-Python `gecko` package implements the same `spawn`, `send`, and `call`
-on CPython over threads, so a program written against the API runs on both. The
-native path lands first and the fallback follows once its behavior is pinned
-down.
+The `gecko` package exposes `actor.spawn` and bridges to the native
+`_gecko.actor` when it is present. On CPython, where the native module is absent,
+`spawn` raises today; a fallback over processes or threads follows once its
+behavior is pinned down, so a program written against the API will run on both.
 
 ## Open
 

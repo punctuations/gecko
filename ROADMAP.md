@@ -17,12 +17,13 @@ it.
   through build-std. Bytecode specialization was tried and dropped, the release
   build already inlines the dispatch, and SSA passes are deferred to their own
   milestone.
-- v0.0.6, multicore. Isolates, actors, and message passing. The gecko API is
-  `spawn(state, handle, args)`, which returns a Subject; the Subject type with
-  `send` for a cast and `call(build, timeout)` for request-reply; `stop` to end
-  an actor; and a Timeout raised when a `call` outlives its deadline. Messages
-  deep-copy across the heap boundary, subjects travel inside them by handle so a
-  reply routes back.
+- v0.0.6, multicore. Isolates on OS threads, stateful actors in Gleam's shape,
+  and message passing. `from gecko import actor` gives `actor.spawn(state,
+  handle, args)`, which returns a subject; the subject casts with `send` and does
+  request-reply with `call(build, timeout)`, raising TimeoutError past the
+  deadline. Messages deep-copy across the heap boundary, subjects travel inside
+  them by handle so a reply routes back. A stop sentinel, routing a handler
+  failure back through a call's reply, and the CPython fallback are deferred.
 - v0.0.7, scheduler. Work stealing, thread pools, timers, message queues.
 - v0.0.8, data engine. Typed arrays, SIMD, shared buffers, parallel map, reduce,
   and filter.
