@@ -115,6 +115,11 @@ typedef struct SetaeBound {
     SetaeValue self;
 } SetaeBound;
 
+typedef struct SetaeSubject {
+    SetaeObject obj;
+    void *mailbox;
+} SetaeSubject;
+
 typedef struct SetaeExcEntry {
     uint32_t start;
     uint32_t end;

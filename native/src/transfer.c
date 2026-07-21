@@ -267,6 +267,10 @@ void setae_list_append(SetaeValue lv, SetaeValue v) {
     setae_list_push(setae_to_ptr(lv), v);
 }
 
+void *setae_subject_mailbox(SetaeValue v) {
+    return ((SetaeSubject *)setae_to_ptr(v))->mailbox;
+}
+
 uint32_t setae_list_len(SetaeValue lv) {
     return ((SetaeList *)setae_to_ptr(lv))->len;
 }

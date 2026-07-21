@@ -140,6 +140,8 @@ const char *setae_type_name(SetaeValue v) {
         return "instance";
     case SETAE_T_BOUND:
         return "method";
+    case SETAE_T_SUBJECT:
+        return "subject";
     default:
         return "object";
     }

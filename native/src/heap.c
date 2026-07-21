@@ -6,6 +6,7 @@
 #define GC_MIN_THRESHOLD 1024
 
 static void obj_free(SetaeObject *o);
+static void (*g_subject_drop)(void *) = NULL;
 
 struct SetaeHeap {
     SetaeObject **objs;
@@ -91,6 +92,11 @@ static void obj_free(SetaeObject *o) {
         break;
     case SETAE_T_EXCTYPE:
         free(((SetaeExcType *)o)->name);
+        break;
+    case SETAE_T_SUBJECT:
+        if (g_subject_drop != NULL) {
+            g_subject_drop(((SetaeSubject *)o)->mailbox);
+        }
         break;
     case SETAE_T_INSTANCE:
         free(((SetaeInstance *)o)->slots);
@@ -322,6 +328,16 @@ SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self) {
     b->func = func;
     b->self = self;
     return setae_from_ptr(b);
+}
+
+void setae_set_subject_drop(void (*fn)(void *)) {
+    g_subject_drop = fn;
+}
+
+SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox) {
+    SetaeSubject *s = heap_alloc(h, sizeof(SetaeSubject), SETAE_T_SUBJECT);
+    s->mailbox = mailbox;
+    return setae_from_ptr(s);
 }
 
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {

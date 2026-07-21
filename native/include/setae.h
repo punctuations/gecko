@@ -50,6 +50,7 @@ typedef enum {
     SETAE_T_CLASS,
     SETAE_T_INSTANCE,
     SETAE_T_BOUND,
+    SETAE_T_SUBJECT,
 } SetaeType;
 
 /* One-word header; the payload follows it in memory. */
@@ -187,6 +188,10 @@ typedef struct SetaeMsg SetaeMsg;
 SetaeMsg *setae_msg_read(SetaeVM *vm, SetaeValue v);
 SetaeValue setae_msg_write(SetaeVM *vm, const SetaeMsg *m);
 void setae_msg_free(SetaeMsg *m);
+
+SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox);
+void *setae_subject_mailbox(SetaeValue v);
+void setae_set_subject_drop(void (*fn)(void *));
 
 SetaeVM *setae_vm_new(SetaeHeap *h);
 void setae_vm_destroy(SetaeVM *vm);

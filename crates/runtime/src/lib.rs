@@ -84,6 +84,9 @@ unsafe extern "C" {
     pub fn setae_msg_read(vm: *mut SetaeVm, v: SetaeValue) -> *mut SetaeMsg;
     pub fn setae_msg_write(vm: *mut SetaeVm, m: *const SetaeMsg) -> SetaeValue;
     pub fn setae_msg_free(m: *mut SetaeMsg);
+    pub fn setae_subject_new(h: *mut SetaeHeap, mailbox: *mut std::ffi::c_void) -> SetaeValue;
+    pub fn setae_subject_mailbox(v: SetaeValue) -> *mut std::ffi::c_void;
+    pub fn setae_set_subject_drop(f: extern "C" fn(*mut std::ffi::c_void));
     pub fn setae_value_eq(a: SetaeValue, b: SetaeValue) -> c_int;
     pub fn setae_list_new(h: *mut SetaeHeap, cap: u32) -> SetaeValue;
     pub fn setae_list_append(lv: SetaeValue, v: SetaeValue);
@@ -121,6 +124,59 @@ unsafe extern "C" {
     pub fn setae_vm_error(vm: *mut SetaeVm) -> c_int;
     pub fn setae_vm_error_msg(vm: *mut SetaeVm) -> *const c_char;
     pub fn setae_vm_output(vm: *mut SetaeVm, len: *mut usize) -> *const c_char;
+}
+
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+struct Envelope(*mut SetaeMsg);
+unsafe impl Send for Envelope {}
+
+extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
+    if !mailbox.is_null() {
+        unsafe { drop(Box::from_raw(mailbox as *mut Sender<Envelope>)) };
+    }
+}
+
+pub struct Mailbox {
+    rx: Receiver<Envelope>,
+}
+
+impl Mailbox {
+    pub fn recv(&self, vm: &Vm) -> Option<SetaeValue> {
+        let env = self.rx.recv().ok()?;
+        let v = unsafe { setae_msg_write(vm.vm, env.0) };
+        unsafe { setae_msg_free(env.0) };
+        Some(v)
+    }
+
+    pub fn try_recv(&self, vm: &Vm) -> Option<SetaeValue> {
+        let env = self.rx.try_recv().ok()?;
+        let v = unsafe { setae_msg_write(vm.vm, env.0) };
+        unsafe { setae_msg_free(env.0) };
+        Some(v)
+    }
+}
+
+impl Vm {
+    pub fn mailbox(&self) -> (SetaeValue, Mailbox) {
+        let (tx, rx) = channel::<Envelope>();
+        let boxed = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
+        let subject = unsafe { setae_subject_new(self.heap, boxed) };
+        (subject, Mailbox { rx })
+    }
+
+    pub fn send(&self, subject: SetaeValue, value: SetaeValue) -> bool {
+        let msg = unsafe { setae_msg_read(self.vm, value) };
+        if msg.is_null() {
+            return false;
+        }
+        let sender = unsafe { &*(setae_subject_mailbox(subject) as *const Sender<Envelope>) };
+        if sender.send(Envelope(msg)).is_err() {
+            unsafe { setae_msg_free(msg) };
+            return false;
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +270,7 @@ impl Vm {
             let heap = setae_heap_new();
             let vm = setae_vm_new(heap);
             setae_vm_register_builtins(vm);
+            setae_set_subject_drop(subject_drop);
             Vm {
                 heap,
                 vm,
@@ -686,6 +743,33 @@ mod machine_tests {
             assert_eq!(setae_to_int(setae_list_get(copy, 0)), 7);
             assert_eq!(setae_list_get(copy, 1), copy, "the copy references itself");
         }
+    }
+
+    #[test]
+    fn a_mailbox_carries_a_value_between_heaps() {
+        unsafe {
+            let a = Vm::new();
+            let b = Vm::new();
+            let (subject, mailbox) = b.mailbox();
+            let v = setae_list_new(a.heap, 0);
+            setae_list_append(v, setae_from_int(1));
+            setae_list_append(v, setae_from_int(2));
+            setae_list_append(v, setae_from_int(3));
+            assert!(a.send(subject, v), "send should succeed");
+            let got = mailbox.recv(&b).expect("a message arrives");
+            assert_eq!(
+                setae_value_eq(v, got),
+                1,
+                "the received value equals what was sent"
+            );
+        }
+    }
+
+    #[test]
+    fn sending_an_unsendable_value_fails() {
+        let b = Vm::new();
+        let (subject, _mailbox) = b.mailbox();
+        assert!(!b.send(subject, subject), "a subject is not sendable yet");
     }
 
     #[test]
