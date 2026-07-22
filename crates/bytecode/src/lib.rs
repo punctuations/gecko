@@ -94,6 +94,7 @@ pub enum Op {
     RotTwo = 47,
     RotThree = 48,
     DeleteDeref = 49,
+    FormatValue = 50,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -376,6 +377,7 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         47 => Op::RotTwo,
         48 => Op::RotThree,
         49 => Op::DeleteDeref,
+        50 => Op::FormatValue,
         _ => return Err(format!("bad opcode {v}")),
     })
 }

@@ -146,6 +146,7 @@ typedef enum {
     OP_ROT_TWO,
     OP_ROT_THREE,
     OP_DELETE_DEREF,
+    OP_FORMAT_VALUE,
 } SetaeOp;
 
 typedef enum {

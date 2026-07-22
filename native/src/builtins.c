@@ -280,6 +280,22 @@ static SetaeValue builtin_print(SetaeVM *vm, SetaeValue *args, int nargs) {
     return setae_none();
 }
 
+SetaeValue setae_format_value(SetaeVM *vm, SetaeValue v, int repr_mode) {
+    char *saved = vm->out;
+    size_t saved_len = vm->out_len;
+    size_t saved_cap = vm->out_cap;
+    vm->out = NULL;
+    vm->out_len = 0;
+    vm->out_cap = 0;
+    repr(vm, v, repr_mode ? 1 : 0);
+    SetaeValue s = setae_str_new(vm->heap, vm->out ? vm->out : "", vm->out_len);
+    free(vm->out);
+    vm->out = saved;
+    vm->out_len = saved_len;
+    vm->out_cap = saved_cap;
+    return s;
+}
+
 static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (nargs != 1) {
         setae_vm_raise(vm, "TypeError", "len() takes exactly one argument (%d given)",

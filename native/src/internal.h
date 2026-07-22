@@ -260,6 +260,7 @@ uint32_t setae_code_nchildren(const SetaeCode *c);
 int32_t setae_code_module_parent(const SetaeCode *c);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
+SetaeValue setae_format_value(SetaeVM *vm, SetaeValue v, int repr_mode);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);
 void setae_vm_oom(SetaeVM *vm);

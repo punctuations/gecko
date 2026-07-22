@@ -1,4 +1,6 @@
-use ast::{BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Module, Param, Stmt, UnOp, WithItem};
+use ast::{
+    BinOp, BoolOp, CmpOp, ExceptHandler, Expr, FStrPart, Module, Param, Stmt, UnOp, WithItem,
+};
 use bytecode::{Code, Const, Instr, Op};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -387,6 +389,14 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
             desugar_expr(body, hoisted, n);
             desugar_expr(orelse, hoisted, n);
         }
+        Expr::FString(parts) => {
+            for p in parts {
+                if let FStrPart::Expr { value, .. } = p {
+                    desugar_expr(value, hoisted, n);
+                }
+            }
+        }
+        Expr::Named { value, .. } => desugar_expr(value, hoisted, n),
         Expr::Lambda { params, body } => {
             *n += 1;
             let fname = format!("<lambda{}>", *n);
@@ -1001,6 +1011,14 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
             expr_reads(body, out);
             expr_reads(orelse, out);
         }
+        Expr::FString(parts) => {
+            for p in parts {
+                if let FStrPart::Expr { value, .. } = p {
+                    expr_reads(value, out);
+                }
+            }
+        }
+        Expr::Named { value, .. } => expr_reads(value, out),
         Expr::ListComp { .. }
         | Expr::DictComp { .. }
         | Expr::GeneratorExp { .. }
@@ -1131,6 +1149,144 @@ fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<ScopeChild<'a>>) {
     }
 }
 
+fn expr_walrus(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Named { name, value } => {
+            add_unique(out, name);
+            expr_walrus(value, out);
+        }
+        Expr::List(elts) | Expr::Tuple(elts) => {
+            for x in elts {
+                expr_walrus(x, out);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                expr_walrus(k, out);
+                expr_walrus(v, out);
+            }
+        }
+        Expr::Unary { operand, .. } => expr_walrus(operand, out),
+        Expr::Starred(inner) => expr_walrus(inner, out),
+        Expr::Bin { left, right, .. } => {
+            expr_walrus(left, out);
+            expr_walrus(right, out);
+        }
+        Expr::Bool_ { values, .. } => {
+            for v in values {
+                expr_walrus(v, out);
+            }
+        }
+        Expr::Compare {
+            left, comparators, ..
+        } => {
+            expr_walrus(left, out);
+            for c in comparators {
+                expr_walrus(c, out);
+            }
+        }
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_walrus(func, out);
+            for a in args {
+                expr_walrus(a, out);
+            }
+            for k in keywords {
+                expr_walrus(&k.value, out);
+            }
+        }
+        Expr::Attribute { value, .. } => expr_walrus(value, out),
+        Expr::Subscript { value, index } => {
+            expr_walrus(value, out);
+            expr_walrus(index, out);
+        }
+        Expr::IfExp { test, body, orelse } => {
+            expr_walrus(test, out);
+            expr_walrus(body, out);
+            expr_walrus(orelse, out);
+        }
+        Expr::FString(parts) => {
+            for p in parts {
+                if let FStrPart::Expr { value, .. } = p {
+                    expr_walrus(value, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_walrus(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Raise(Some(e)) => expr_walrus(e, out),
+            Stmt::Assign { targets, value } => {
+                expr_walrus(value, out);
+                for t in targets {
+                    expr_walrus(t, out);
+                }
+            }
+            Stmt::AugAssign { target, value, .. } => {
+                expr_walrus(target, out);
+                expr_walrus(value, out);
+            }
+            Stmt::If { test, body, orelse } | Stmt::While { test, body, orelse } => {
+                expr_walrus(test, out);
+                collect_walrus(body, out);
+                collect_walrus(orelse, out);
+            }
+            Stmt::For {
+                target,
+                iter,
+                body,
+                orelse,
+            } => {
+                expr_walrus(target, out);
+                expr_walrus(iter, out);
+                collect_walrus(body, out);
+                collect_walrus(orelse, out);
+            }
+            Stmt::With { items, body } => {
+                for it in items {
+                    expr_walrus(&it.context, out);
+                }
+                collect_walrus(body, out);
+            }
+            Stmt::Assert { test, msg } => {
+                expr_walrus(test, out);
+                if let Some(m) = msg {
+                    expr_walrus(m, out);
+                }
+            }
+            Stmt::Delete(ts) => {
+                for t in ts {
+                    expr_walrus(t, out);
+                }
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                collect_walrus(body, out);
+                for h in handlers {
+                    if let Some(t) = &h.typ {
+                        expr_walrus(t, out);
+                    }
+                    collect_walrus(&h.body, out);
+                }
+                collect_walrus(orelse, out);
+                collect_walrus(finalbody, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn analyze_function(
     params: &[Param],
     body: &[Stmt],
@@ -1164,6 +1320,7 @@ fn analyze_function(
         }
     }
     collect_assigned(body, &mut locals);
+    collect_walrus(body, &mut locals);
     locals.retain(|l| !nonlocals.iter().any(|n| n == l));
     locals.retain(|l| !globals.iter().any(|g| g == l));
 
@@ -2131,6 +2288,28 @@ impl Compiler {
                 self.patch(to_else);
                 self.expr(orelse)?;
                 self.patch(to_end);
+            }
+            Expr::Named { name, value } => {
+                self.expr(value)?;
+                self.emit(Op::DupTop, 0);
+                self.store(name);
+            }
+            Expr::FString(parts) => {
+                if parts.is_empty() {
+                    self.load_const(Const::Str(String::new()));
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    match part {
+                        FStrPart::Lit(s) => self.load_const(Const::Str(s.clone())),
+                        FStrPart::Expr { value, repr } => {
+                            self.expr(value)?;
+                            self.emit(Op::FormatValue, u32::from(*repr));
+                        }
+                    }
+                    if i > 0 {
+                        self.emit(Op::BinaryOp, bin_selector(BinOp::Add)?);
+                    }
+                }
             }
             Expr::ListComp { .. } | Expr::DictComp { .. } | Expr::Lambda { .. } => {
                 return Err(CompileError {

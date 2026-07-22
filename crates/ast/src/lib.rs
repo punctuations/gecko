@@ -118,6 +118,11 @@ pub enum Expr {
     None,
     Name(String),
     Starred(Box<Expr>),
+    Named {
+        name: String,
+        value: Box<Expr>,
+    },
+    FString(Vec<FStrPart>),
     IfExp {
         test: Box<Expr>,
         body: Box<Expr>,
@@ -174,6 +179,12 @@ pub enum Expr {
         elt: Box<Expr>,
         generators: Vec<Comprehension>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FStrPart {
+    Lit(String),
+    Expr { value: Box<Expr>, repr: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,6 +1,6 @@
 use ast::{
-    Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, Keyword as KwArg, Module,
-    Param, ParamKind, Stmt, UnOp, WithItem,
+    Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, FStrPart, Keyword as KwArg,
+    Module, Param, ParamKind, Stmt, UnOp, WithItem,
 };
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
@@ -641,6 +641,14 @@ impl Parser {
         if self.at_kw(Kw::Lambda) {
             return self.lambda();
         }
+        if let TokenKind::Name(name) = self.kind().clone() {
+            if matches!(self.kind_at(1), TokenKind::Op(Op::Walrus)) {
+                self.advance();
+                self.advance();
+                let value = Box::new(self.test()?);
+                return Ok(Expr::Named { name, value });
+            }
+        }
         let body = self.or_expr()?;
         if self.eat_kw(Kw::If) {
             let test = self.or_expr()?;
@@ -913,6 +921,104 @@ impl Parser {
         })
     }
 
+    fn parse_fstring(&self, body: &str, out: &mut Vec<FStrPart>) -> Result<(), ParseError> {
+        let chars: Vec<char> = body.chars().collect();
+        let mut i = 0;
+        let mut lit = String::new();
+        while i < chars.len() {
+            match chars[i] {
+                '{' if chars.get(i + 1) == Some(&'{') => {
+                    lit.push('{');
+                    i += 2;
+                }
+                '}' if chars.get(i + 1) == Some(&'}') => {
+                    lit.push('}');
+                    i += 2;
+                }
+                '}' => return self.error("single '}' is not allowed in an f-string"),
+                '{' => {
+                    if !lit.is_empty() {
+                        out.push(FStrPart::Lit(std::mem::take(&mut lit)));
+                    }
+                    i += 1;
+                    let start = i;
+                    let mut depth = 1;
+                    while i < chars.len() {
+                        match chars[i] {
+                            '{' | '(' | '[' => depth += 1,
+                            ')' | ']' => depth -= 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    if i >= chars.len() {
+                        return self.error("unterminated f-string expression");
+                    }
+                    let field: String = chars[start..i].iter().collect();
+                    i += 1;
+                    let (src, repr) = self.split_fstring_field(&field)?;
+                    let value = self.parse_embedded_expr(&src)?;
+                    out.push(FStrPart::Expr {
+                        value: Box::new(value),
+                        repr,
+                    });
+                }
+                c => {
+                    lit.push(c);
+                    i += 1;
+                }
+            }
+        }
+        if !lit.is_empty() {
+            out.push(FStrPart::Lit(lit));
+        }
+        Ok(())
+    }
+
+    fn split_fstring_field(&self, field: &str) -> Result<(String, bool), ParseError> {
+        let mut depth = 0;
+        for c in field.chars() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ':' if depth == 0 => {
+                    return self.error("f-string format specifiers are not supported yet");
+                }
+                _ => {}
+            }
+        }
+        let trimmed = field.trim_end();
+        if let Some(rest) = trimmed.strip_suffix("!r") {
+            return Ok((rest.to_string(), true));
+        }
+        if let Some(rest) = trimmed.strip_suffix("!s") {
+            return Ok((rest.to_string(), false));
+        }
+        Ok((field.to_string(), false))
+    }
+
+    fn parse_embedded_expr(&self, src: &str) -> Result<Expr, ParseError> {
+        let tokens = lexer::tokenize(src).map_err(|_| ParseError {
+            message: "invalid f-string expression".into(),
+            span: self.span(),
+        })?;
+        let mut sub = Parser { tokens, pos: 0 };
+        let expr = sub.testlist()?;
+        while matches!(sub.kind(), TokenKind::Newline) {
+            sub.advance();
+        }
+        if !sub.at_eof() {
+            return self.error("unexpected token in f-string expression");
+        }
+        Ok(expr)
+    }
+
     fn atom(&mut self) -> Result<Expr, ParseError> {
         match self.kind().clone() {
             TokenKind::Int { digits, radix } => {
@@ -923,14 +1029,30 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Float(f))
             }
-            TokenKind::Str { value, .. } => {
+            TokenKind::Str { value, prefix } => {
                 self.advance();
-                let mut s = value;
-                while let TokenKind::Str { value: next, .. } = self.kind().clone() {
+                let mut chunks = vec![(value, prefix.fstring)];
+                while let TokenKind::Str {
+                    value: next,
+                    prefix: p,
+                } = self.kind().clone()
+                {
                     self.advance();
-                    s.push_str(&next);
+                    chunks.push((next, p.fstring));
                 }
-                Ok(Expr::Str(s))
+                if chunks.iter().any(|(_, f)| *f) {
+                    let mut parts = Vec::new();
+                    for (v, is_f) in chunks {
+                        if is_f {
+                            self.parse_fstring(&v, &mut parts)?;
+                        } else {
+                            parts.push(FStrPart::Lit(v));
+                        }
+                    }
+                    Ok(Expr::FString(parts))
+                } else {
+                    Ok(Expr::Str(chunks.into_iter().map(|(v, _)| v).collect()))
+                }
             }
             TokenKind::Keyword(Kw::True) => {
                 self.advance();

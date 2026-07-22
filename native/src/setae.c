@@ -1460,6 +1460,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_ROT_TWO] = &&L_OP_ROT_TWO,
         [OP_ROT_THREE] = &&L_OP_ROT_THREE,
         [OP_DELETE_DEREF] = &&L_OP_DELETE_DEREF,
+        [OP_FORMAT_VALUE] = &&L_OP_FORMAT_VALUE,
     };
 
 #define DISPATCH()                                                             \
@@ -1618,6 +1619,9 @@ stack_overflow:
             cell->value = 0;
             DISPATCH();
         }
+        L_OP_FORMAT_VALUE:
+            stack[sp - 1] = setae_format_value(vm, stack[sp - 1], (int)arg);
+            DISPATCH();
         L_OP_DELETE_LOCAL:
             if (locals[arg] == 0) {
                 setae_vm_raise(vm, "UnboundLocalError",

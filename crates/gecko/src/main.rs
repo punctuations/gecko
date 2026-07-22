@@ -918,6 +918,21 @@ mod tests {
     }
 
     #[test]
+    fn fstrings() {
+        let src = "name = \"gecko\"\nn = 3\nprint(f\"{name} has {n + 1} legs\")\nprint(f\"{name!r}\")\nprint(f\"{{esc}} {name}\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "gecko has 4 legs\n'gecko'\n{esc} gecko\n"
+        );
+    }
+
+    #[test]
+    fn walrus() {
+        let src = "if (n := len([1, 2, 3])) > 2:\n    print(n)\ndef f(x):\n    if (d := x * 2) > 5:\n        return d\n    return 0\nprint(f(4))\n";
+        assert_eq!(run_source(src).unwrap(), "3\n8\n");
+    }
+
+    #[test]
     fn type_builtin() {
         let src = "print(type(5) is int)\nprint(type(\"a\") is str)\nprint(type([]) is list)\n";
         assert_eq!(run_source(src).unwrap(), "True\nTrue\nTrue\n");
