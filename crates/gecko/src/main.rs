@@ -927,6 +927,12 @@ mod tests {
     }
 
     #[test]
+    fn async_await_composition() {
+        let src = "async def add(a, b):\n    return a + b\nasync def compute():\n    x = await add(2, 3)\n    return await add(x, 10)\ndef drive(coro):\n    try:\n        while True:\n            next(coro)\n    except StopIteration:\n        pass\nc = compute()\ndrive(c)\nprint(\"ran\")\n";
+        assert_eq!(run_source(src).unwrap(), "ran\n");
+    }
+
+    #[test]
     fn generators() {
         let src = "def count(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\nprint([x for x in count(4)])\ng = count(2)\nprint(next(g))\nprint(next(g))\ntry:\n    next(g)\nexcept StopIteration:\n    print(\"done\")\n";
         assert_eq!(run_source(src).unwrap(), "[0, 1, 2, 3]\n0\n1\ndone\n");

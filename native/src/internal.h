@@ -129,6 +129,7 @@ typedef struct SetaeGen {
     int sp;
     uint32_t ip;
     SetaeValue module;
+    SetaeValue retval;
     int resumed;
     int done;
 } SetaeGen;

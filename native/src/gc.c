@@ -65,6 +65,7 @@ static void mark(SetaeValue v) {
     case SETAE_T_GEN: {
         SetaeGen *g = (SetaeGen *)o;
         mark(g->module);
+        mark(g->retval);
         if (g->frame != NULL) {
             for (uint32_t i = 0; i < g->fixed + (uint32_t)g->sp; i++) {
                 mark(g->frame[i]);

@@ -149,6 +149,7 @@ typedef enum {
     OP_DELETE_DEREF,
     OP_FORMAT_VALUE,
     OP_YIELD_VALUE,
+    OP_AWAIT,
 } SetaeOp;
 
 typedef enum {

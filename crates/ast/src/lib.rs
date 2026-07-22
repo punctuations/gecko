@@ -10,6 +10,7 @@ pub enum Stmt {
         params: Vec<Param>,
         body: Vec<Stmt>,
         decorators: Vec<Expr>,
+        is_async: bool,
     },
     ClassDef {
         name: String,
@@ -141,6 +142,7 @@ pub enum Expr {
     Name(String),
     Starred(Box<Expr>),
     Yield(Option<Box<Expr>>),
+    Await(Box<Expr>),
     Named {
         name: String,
         value: Box<Expr>,

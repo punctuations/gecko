@@ -1487,6 +1487,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_DELETE_DEREF] = &&L_OP_DELETE_DEREF,
         [OP_FORMAT_VALUE] = &&L_OP_FORMAT_VALUE,
         [OP_YIELD_VALUE] = &&L_OP_YIELD_VALUE,
+        [OP_AWAIT] = &&L_OP_AWAIT,
     };
 
 #define DISPATCH()                                                             \
@@ -1655,6 +1656,27 @@ stack_overflow:
             vm->frames = fr.parent;
             vm->depth--;
             return result;
+        L_OP_AWAIT: {
+            SetaeValue awaitable = stack[sp - 1];
+            if (setae_obj_type(awaitable) != SETAE_T_GEN) {
+                setae_vm_raise(vm, "TypeError", "object '%s' is not awaitable",
+                               setae_type_name(awaitable));
+                DISPATCH();
+            }
+            SetaeGen *sub = setae_to_ptr(awaitable);
+            while (!sub->done) {
+                int stopped;
+                gen_resume(vm, sub, setae_none(), &stopped);
+                if (vm->error) {
+                    break;
+                }
+            }
+            if (vm->error) {
+                DISPATCH();
+            }
+            stack[sp - 1] = sub->retval;
+            DISPATCH();
+        }
         L_OP_DELETE_LOCAL:
             if (locals[arg] == 0) {
                 setae_vm_raise(vm, "UnboundLocalError",
@@ -2162,6 +2184,7 @@ loop_done:
     vm->frames = fr.parent;
     if (gen != NULL) {
         gen->done = 1;
+        gen->retval = result;
     } else {
         frame_release(vm, frame, frame_cap);
     }

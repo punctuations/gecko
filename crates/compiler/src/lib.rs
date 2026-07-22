@@ -410,6 +410,7 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
         }
         Expr::Named { value, .. } => desugar_expr(value, hoisted, n),
         Expr::Yield(Some(value)) => desugar_expr(value, hoisted, n),
+        Expr::Await(value) => desugar_expr(value, hoisted, n),
         Expr::Lambda { params, body } => {
             *n += 1;
             let fname = format!("<lambda{}>", *n);
@@ -430,6 +431,7 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
                 params: std::mem::take(params),
                 body: fbody,
                 decorators: Vec::new(),
+                is_async: false,
             };
             hoisted.push(func);
             *e = Expr::Name(fname);
@@ -520,6 +522,7 @@ fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
         }],
         body,
         decorators: Vec::new(),
+        is_async: false,
     });
     desugar_expr(&mut outer_iter, hoisted, n);
     Expr::Call {
@@ -1149,6 +1152,7 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
                 expr_reads(v, out);
             }
         }
+        Expr::Await(v) => expr_reads(v, out),
         Expr::ListComp { .. }
         | Expr::DictComp { .. }
         | Expr::GeneratorExp { .. }
@@ -1595,6 +1599,7 @@ impl Compiler {
         params: &[Param],
         body: &[Stmt],
         decorators: &[Expr],
+        is_async: bool,
     ) -> Result<(), CompileError> {
         let mut seen_star = false;
         let mut seen_dstar = false;
@@ -1661,7 +1666,7 @@ impl Compiler {
         child.ndefaults = ndefaults;
         child.varargs = seen_star;
         child.kwargs = seen_dstar;
-        child.generator = body_has_yield(body);
+        child.generator = is_async || body_has_yield(body);
         child.param_names = params[..k].iter().map(|p| p.name.clone()).collect();
         let mut sub = Compiler {
             code: child,
@@ -1940,7 +1945,8 @@ impl Compiler {
                 params,
                 body,
                 decorators,
-            } => self.funcdef(name, params, body, decorators),
+                is_async,
+            } => self.funcdef(name, params, body, decorators, *is_async),
             Stmt::ClassDef {
                 name,
                 bases,
@@ -2523,6 +2529,10 @@ impl Compiler {
                     None => self.load_const(Const::None),
                 }
                 self.emit(Op::YieldValue, 0);
+            }
+            Expr::Await(value) => {
+                self.expr(value)?;
+                self.emit(Op::Await, 0);
             }
             Expr::FString(parts) => {
                 if parts.is_empty() {

@@ -97,6 +97,7 @@ pub enum Op {
     DeleteDeref = 49,
     FormatValue = 50,
     YieldValue = 51,
+    Await = 52,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -384,6 +385,7 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         49 => Op::DeleteDeref,
         50 => Op::FormatValue,
         51 => Op::YieldValue,
+        52 => Op::Await,
         _ => return Err(format!("bad opcode {v}")),
     })
 }

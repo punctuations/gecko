@@ -358,6 +358,7 @@ SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module)
     SetaeGen *g = heap_alloc(h, sizeof(SetaeGen), SETAE_T_GEN);
     g->code = code;
     g->module = module;
+    g->retval = setae_none();
     g->frame = NULL;
     g->frame_cap = 0;
     g->fixed = 0;
