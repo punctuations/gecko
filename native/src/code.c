@@ -42,6 +42,7 @@ struct SetaeCode {
     uint32_t nfrees;
     int varargs;
     int kwargs;
+    int generator;
     int32_t module_parent;
 };
 
@@ -174,6 +175,14 @@ void setae_code_add_param_name(SetaeCode *c, const char *name) {
 void setae_code_set_variadic(SetaeCode *c, uint8_t varargs, uint8_t kwargs) {
     c->varargs = varargs;
     c->kwargs = kwargs;
+}
+
+void setae_code_set_generator(SetaeCode *c, uint8_t generator) {
+    c->generator = generator;
+}
+
+int setae_code_generator(const SetaeCode *c) {
+    return c->generator;
 }
 
 const char *setae_code_param_name(const SetaeCode *c, uint32_t i) {

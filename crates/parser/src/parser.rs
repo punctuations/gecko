@@ -1,6 +1,6 @@
 use ast::{
     Alias, BinOp, BoolOp, CmpOp, Comprehension, ExceptHandler, Expr, FStrPart, Keyword as KwArg,
-    Module, Param, ParamKind, Stmt, UnOp, WithItem,
+    MatchCase, Module, Param, ParamKind, Pattern, Stmt, UnOp, WithItem,
 };
 use lexer::{Keyword as Kw, LexError, Op, Span, Token, TokenKind};
 
@@ -145,6 +145,16 @@ impl Parser {
             TokenKind::Keyword(Kw::With) => Ok(vec![self.with_stmt()?]),
             TokenKind::Keyword(Kw::Class) => Ok(vec![self.class_stmt(Vec::new())?]),
             TokenKind::Op(Op::At) => Ok(vec![self.decorated()?]),
+            TokenKind::Name(n) if n == "match" => {
+                let save = self.pos;
+                match self.match_stmt() {
+                    Ok(s) => Ok(vec![s]),
+                    Err(_) => {
+                        self.pos = save;
+                        self.simple_line()
+                    }
+                }
+            }
             _ => self.simple_line(),
         }
     }
@@ -409,6 +419,133 @@ impl Parser {
         Ok(Stmt::If { test, body, orelse })
     }
 
+    fn match_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.advance();
+        let subject = self.testlist()?;
+        self.expect_op(Op::Colon)?;
+        self.expect_newline()?;
+        if !matches!(self.kind(), TokenKind::Indent) {
+            return self.error("expected an indented block of case clauses");
+        }
+        self.advance();
+        let mut cases = Vec::new();
+        while matches!(self.kind(), TokenKind::Name(n) if n == "case") {
+            cases.push(self.case_block()?);
+        }
+        if cases.is_empty() {
+            return self.error("a match statement needs at least one case");
+        }
+        if !matches!(self.kind(), TokenKind::Dedent) {
+            return self.error("expected a case clause");
+        }
+        self.advance();
+        Ok(Stmt::Match { subject, cases })
+    }
+
+    fn case_block(&mut self) -> Result<MatchCase, ParseError> {
+        self.advance();
+        let pattern = self.pattern()?;
+        let guard = if self.eat_kw(Kw::If) {
+            Some(self.test()?)
+        } else {
+            None
+        };
+        let body = self.suite()?;
+        Ok(MatchCase {
+            pattern,
+            guard,
+            body,
+        })
+    }
+
+    fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        let p = self.or_pattern()?;
+        if self.eat_kw(Kw::As) {
+            let name = self.expect_name()?;
+            Ok(Pattern::As {
+                pattern: Box::new(p),
+                name,
+            })
+        } else {
+            Ok(p)
+        }
+    }
+
+    fn or_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let first = self.closed_pattern()?;
+        if self.at_op(Op::Pipe) {
+            let mut alts = vec![first];
+            while self.eat_op(Op::Pipe) {
+                alts.push(self.closed_pattern()?);
+            }
+            Ok(Pattern::Or(alts))
+        } else {
+            Ok(first)
+        }
+    }
+
+    fn closed_pattern(&mut self) -> Result<Pattern, ParseError> {
+        match self.kind().clone() {
+            TokenKind::Name(n) if n == "_" => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            TokenKind::Name(n) => {
+                self.advance();
+                if self.at_op(Op::Dot) {
+                    let mut e = Expr::Name(n);
+                    while self.eat_op(Op::Dot) {
+                        let attr = self.expect_name()?;
+                        e = Expr::Attribute {
+                            value: Box::new(e),
+                            attr,
+                        };
+                    }
+                    Ok(Pattern::Value(e))
+                } else {
+                    Ok(Pattern::Capture(n))
+                }
+            }
+            TokenKind::Int { .. } | TokenKind::Float(_) | TokenKind::Str { .. } => {
+                Ok(Pattern::Literal(self.atom()?))
+            }
+            TokenKind::Keyword(Kw::None | Kw::True | Kw::False) => {
+                Ok(Pattern::Literal(self.atom()?))
+            }
+            TokenKind::Op(Op::Minus) => {
+                self.advance();
+                let e = self.atom()?;
+                Ok(Pattern::Literal(Expr::Unary {
+                    op: UnOp::Neg,
+                    operand: Box::new(e),
+                }))
+            }
+            TokenKind::Op(Op::LBracket) => self.sequence_pattern(Op::RBracket, false),
+            TokenKind::Op(Op::LParen) => self.sequence_pattern(Op::RParen, true),
+            _ => self.error("unsupported match pattern"),
+        }
+    }
+
+    fn sequence_pattern(&mut self, close: Op, is_paren: bool) -> Result<Pattern, ParseError> {
+        self.advance();
+        let mut pats = Vec::new();
+        let mut had_comma = false;
+        while !self.at_op(close) {
+            pats.push(self.pattern()?);
+            if self.eat_op(Op::Comma) {
+                had_comma = true;
+            } else {
+                break;
+            }
+        }
+        self.expect_op(close)?;
+        if is_paren && pats.len() == 1 && !had_comma {
+            Ok(pats.pop().unwrap())
+        } else {
+            Ok(Pattern::Sequence(pats))
+        }
+    }
+
     fn with_stmt(&mut self) -> Result<Stmt, ParseError> {
         self.expect_kw(Kw::With)?;
         let mut items = vec![self.with_item()?];
@@ -638,6 +775,13 @@ impl Parser {
     }
 
     fn test(&mut self) -> Result<Expr, ParseError> {
+        if self.at_kw(Kw::Yield) {
+            self.advance();
+            if self.at_testlist_end() || matches!(self.kind(), TokenKind::Newline) {
+                return Ok(Expr::Yield(None));
+            }
+            return Ok(Expr::Yield(Some(Box::new(self.testlist()?))));
+        }
         if self.at_kw(Kw::Lambda) {
             return self.lambda();
         }

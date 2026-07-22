@@ -98,6 +98,9 @@ static void obj_free(SetaeObject *o) {
             g_subject_drop(((SetaeSubject *)o)->mailbox);
         }
         break;
+    case SETAE_T_GEN:
+        free(((SetaeGen *)o)->frame);
+        break;
     case SETAE_T_INSTANCE:
         free(((SetaeInstance *)o)->slots);
         break;
@@ -349,6 +352,20 @@ SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox) {
 SetaeValue setae_stop_new(SetaeHeap *h) {
     SetaeObject *o = heap_alloc(h, sizeof(SetaeObject), SETAE_T_STOP);
     return setae_from_ptr(o);
+}
+
+SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module) {
+    SetaeGen *g = heap_alloc(h, sizeof(SetaeGen), SETAE_T_GEN);
+    g->code = code;
+    g->module = module;
+    g->frame = NULL;
+    g->frame_cap = 0;
+    g->fixed = 0;
+    g->sp = 0;
+    g->ip = 0;
+    g->resumed = 0;
+    g->done = 0;
+    return setae_from_ptr(g);
 }
 
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {

@@ -68,9 +68,31 @@ pub enum Stmt {
         finalbody: Vec<Stmt>,
     },
     Raise(Option<Expr>),
+    Match {
+        subject: Expr,
+        cases: Vec<MatchCase>,
+    },
     Pass,
     Break,
     Continue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchCase {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Wildcard,
+    Capture(String),
+    Value(Expr),
+    Literal(Expr),
+    Or(Vec<Pattern>),
+    Sequence(Vec<Pattern>),
+    As { pattern: Box<Pattern>, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +140,7 @@ pub enum Expr {
     None,
     Name(String),
     Starred(Box<Expr>),
+    Yield(Option<Box<Expr>>),
     Named {
         name: String,
         value: Box<Expr>,

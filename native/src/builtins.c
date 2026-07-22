@@ -403,6 +403,30 @@ static SetaeValue builtin_sandbox_run(SetaeVM *vm, SetaeValue *args, int nargs) 
                             mem, millis);
 }
 
+static SetaeValue builtin_next(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs < 1 || nargs > 2) {
+        setae_vm_raise(vm, "TypeError", "next() takes 1 or 2 arguments (%d given)", nargs);
+        return setae_none();
+    }
+    if (setae_obj_type(args[0]) != SETAE_T_GEN) {
+        setae_vm_raise(vm, "TypeError", "'%s' object is not an iterator",
+                       setae_type_name(args[0]));
+        return setae_none();
+    }
+    SetaeValue out;
+    if (setae_gen_next(vm, args[0], setae_none(), &out)) {
+        return out;
+    }
+    if (vm->error) {
+        return setae_none();
+    }
+    if (nargs == 2) {
+        return args[1];
+    }
+    setae_vm_raise(vm, "StopIteration", "");
+    return setae_none();
+}
+
 static SetaeValue builtin_type(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (nargs != 1) {
         setae_vm_raise(vm, "TypeError", "type() takes 1 argument (%d given)", nargs);
@@ -497,5 +521,6 @@ void setae_vm_register_builtins(SetaeVM *vm) {
         setae_vm_register_builtin(vm, TYPE_NAMES[i], setae_exctype_new(h, TYPE_NAMES[i]));
     }
     setae_vm_register_builtin(vm, "type", setae_builtin_new(h, builtin_type, "type"));
+    setae_vm_register_builtin(vm, "next", setae_builtin_new(h, builtin_next, "next"));
     register_gecko(vm);
 }

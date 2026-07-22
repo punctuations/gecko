@@ -52,6 +52,7 @@ typedef enum {
     SETAE_T_BOUND,
     SETAE_T_SUBJECT,
     SETAE_T_STOP,
+    SETAE_T_GEN,
 } SetaeType;
 
 /* One-word header; the payload follows it in memory. */
@@ -147,6 +148,7 @@ typedef enum {
     OP_ROT_THREE,
     OP_DELETE_DEREF,
     OP_FORMAT_VALUE,
+    OP_YIELD_VALUE,
 } SetaeOp;
 
 typedef enum {
@@ -186,6 +188,7 @@ void setae_code_set_nparams(SetaeCode *c, uint32_t n);
 void setae_code_set_ndefaults(SetaeCode *c, uint32_t n);
 void setae_code_add_param_name(SetaeCode *c, const char *name);
 void setae_code_set_variadic(SetaeCode *c, uint8_t varargs, uint8_t kwargs);
+void setae_code_set_generator(SetaeCode *c, uint8_t generator);
 void setae_code_set_ncells(SetaeCode *c, uint32_t n);
 void setae_code_set_nfrees(SetaeCode *c, uint32_t n);
 void setae_code_add_exc(SetaeCode *c, uint32_t start, uint32_t end, uint32_t target,

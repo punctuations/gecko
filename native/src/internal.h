@@ -120,6 +120,19 @@ typedef struct SetaeSubject {
     void *mailbox;
 } SetaeSubject;
 
+typedef struct SetaeGen {
+    SetaeObject obj;
+    const SetaeCode *code;
+    SetaeValue *frame;
+    uint32_t frame_cap;
+    uint32_t fixed;
+    int sp;
+    uint32_t ip;
+    SetaeValue module;
+    int resumed;
+    int done;
+} SetaeGen;
+
 typedef struct SetaeExcEntry {
     uint32_t start;
     uint32_t end;
@@ -155,6 +168,8 @@ int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *
 int64_t setae_instance_slot(const SetaeInstance *inst, const char *name);
 void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v);
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
+SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module);
+int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *out);
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
 void setae_vm_pop_tmp(SetaeVM *vm);
@@ -247,6 +262,7 @@ uint32_t setae_code_ndefaults(const SetaeCode *c);
 const char *setae_code_param_name(const SetaeCode *c, uint32_t i);
 int setae_code_varargs(const SetaeCode *c);
 int setae_code_kwargs(const SetaeCode *c);
+int setae_code_generator(const SetaeCode *c);
 uint32_t setae_code_ncells(const SetaeCode *c);
 uint32_t setae_code_nfrees(const SetaeCode *c);
 const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n);

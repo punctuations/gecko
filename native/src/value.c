@@ -144,6 +144,8 @@ const char *setae_type_name(SetaeValue v) {
         return "subject";
     case SETAE_T_STOP:
         return "StopSignal";
+    case SETAE_T_GEN:
+        return "generator";
     default:
         return "object";
     }

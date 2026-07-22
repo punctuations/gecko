@@ -927,6 +927,18 @@ mod tests {
     }
 
     #[test]
+    fn generators() {
+        let src = "def count(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\nprint([x for x in count(4)])\ng = count(2)\nprint(next(g))\nprint(next(g))\ntry:\n    next(g)\nexcept StopIteration:\n    print(\"done\")\n";
+        assert_eq!(run_source(src).unwrap(), "[0, 1, 2, 3]\n0\n1\ndone\n");
+    }
+
+    #[test]
+    fn match_statement() {
+        let src = "def d(x):\n    match x:\n        case 0:\n            return \"zero\"\n        case 1 | 2 | 3:\n            return \"small\"\n        case n if n > 100:\n            return \"huge\"\n        case n:\n            return \"other\"\nprint(d(0), d(2), d(200), d(50))\nmatch \"hi\":\n    case \"hi\" as g:\n        print(g)\n";
+        assert_eq!(run_source(src).unwrap(), "zero small huge other\nhi\n");
+    }
+
+    #[test]
     fn walrus() {
         let src = "if (n := len([1, 2, 3])) > 2:\n    print(n)\ndef f(x):\n    if (d := x * 2) > 5:\n        return d\n    return 0\nprint(f(4))\n";
         assert_eq!(run_source(src).unwrap(), "3\n8\n");

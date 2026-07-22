@@ -13,6 +13,7 @@ pub struct Code {
     pub param_names: Vec<String>,
     pub varargs: bool,
     pub kwargs: bool,
+    pub generator: bool,
     pub codes: Vec<Code>,
     pub modules: Vec<Code>,
     pub parent_module: i32,
@@ -95,6 +96,7 @@ pub enum Op {
     RotThree = 48,
     DeleteDeref = 49,
     FormatValue = 50,
+    YieldValue = 51,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -200,6 +202,7 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     }
     out.push(c.varargs as u8);
     out.push(c.kwargs as u8);
+    out.push(c.generator as u8);
     w32(out, c.codes.len() as u32);
     for child in &c.codes {
         write_code(out, child);
@@ -295,6 +298,7 @@ impl Reader<'_> {
         }
         let varargs = self.u8()? != 0;
         let kwargs = self.u8()? != 0;
+        let generator = self.u8()? != 0;
         let mut codes = Vec::new();
         for _ in 0..self.u32()? {
             codes.push(self.code()?);
@@ -318,6 +322,7 @@ impl Reader<'_> {
             param_names,
             varargs,
             kwargs,
+            generator,
             codes,
             modules,
             parent_module,
@@ -378,6 +383,7 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         48 => Op::RotThree,
         49 => Op::DeleteDeref,
         50 => Op::FormatValue,
+        51 => Op::YieldValue,
         _ => return Err(format!("bad opcode {v}")),
     })
 }
@@ -422,6 +428,7 @@ mod tests {
             param_names: Vec::new(),
             varargs: false,
             kwargs: false,
+            generator: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,
@@ -449,6 +456,7 @@ mod tests {
             param_names: Vec::new(),
             varargs: false,
             kwargs: false,
+            generator: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: 3,
@@ -489,6 +497,7 @@ mod tests {
             param_names: Vec::new(),
             varargs: false,
             kwargs: false,
+            generator: false,
             codes: vec![inner],
             modules: vec![submodule],
             parent_module: -1,
@@ -515,6 +524,7 @@ mod tests {
             param_names: Vec::new(),
             varargs: false,
             kwargs: false,
+            generator: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,

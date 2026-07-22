@@ -1004,7 +1004,12 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
-                           SetaeValue kwargs, SetaeValue module);
+                           SetaeValue kwargs, SetaeValue module, SetaeGen *gen);
+
+static SetaeValue make_generator(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int nargs,
+                                 const SetaeValue *captured, const SetaeValue *defaults,
+                                 uint32_t ndefaults, SetaeValue kwargs, SetaeValue module);
+static SetaeValue gen_resume(SetaeVM *vm, SetaeGen *g, SetaeValue sent, int *stopped);
 
 static int has_kwargs_given(SetaeValue kwargs) {
     return kwargs != 0 && ((SetaeDict *)setae_to_ptr(kwargs))->len > 0;
@@ -1024,7 +1029,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
     if (t == SETAE_T_FUNCTION) {
         SetaeFunc *f = setae_to_ptr(callee);
         return run_code(vm, f->code, args, nargs, f->cells, f->defaults, f->ndefaults, kwargs,
-                        f->module);
+                        f->module, NULL);
     }
     if (t == SETAE_T_EXCTYPE) {
         SetaeExcType *et = setae_to_ptr(callee);
@@ -1059,7 +1064,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                 argv[i + 1] = args[i];
             }
             run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults, kwargs,
-                     f->module);
+                     f->module, NULL);
             if (vm->error) {
                 return setae_none();
             }
@@ -1083,7 +1088,7 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
             argv[i + 1] = args[i];
         }
         return run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
-                        kwargs, f->module);
+                        kwargs, f->module, NULL);
     }
     setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
@@ -1112,7 +1117,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                 c->method = v;
                 c->guard = vm->class_version;
                 return run_code(vm, f->code, args - 1, nargs + 1, f->cells, f->defaults,
-                                f->ndefaults, 0, f->module);
+                                f->ndefaults, 0, f->module, NULL);
             }
             return call_value(vm, v, args, nargs, 0);
         }
@@ -1258,7 +1263,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
-                           SetaeValue kwargs, SetaeValue module);
+                           SetaeValue kwargs, SetaeValue module, SetaeGen *gen);
 
 static int bind_args(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int nargs,
                      const SetaeValue *defaults, uint32_t ndefaults, SetaeValue kwargs,
@@ -1360,7 +1365,11 @@ static int bind_args(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int n
 static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
-                           SetaeValue kwargs, SetaeValue module) {
+                           SetaeValue kwargs, SetaeValue module, SetaeGen *gen) {
+    if (gen == NULL && setae_code_generator(code)) {
+        return make_generator(vm, code, args, nargs, captured, defaults, ndefaults, kwargs,
+                              module);
+    }
     if (vm->depth >= MAX_DEPTH) {
         setae_vm_raise(vm, "RecursionError", "maximum recursion depth exceeded");
         return setae_none();
@@ -1377,33 +1386,49 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     uint32_t fixed = nlocals + ncells + nfrees;
 
     uint32_t frame_cap;
-    SetaeValue *frame = frame_alloc(vm, fixed + STACK_MAX, &frame_cap);
-    memset(frame, 0, fixed * sizeof(SetaeValue));
+    SetaeValue *frame;
+    int sp;
+    uint32_t ip;
+    if (gen != NULL) {
+        frame = gen->frame;
+        frame_cap = gen->frame_cap;
+        sp = gen->sp;
+        ip = gen->ip;
+    } else {
+        frame = frame_alloc(vm, fixed + STACK_MAX, &frame_cap);
+        memset(frame, 0, fixed * sizeof(SetaeValue));
+        sp = 0;
+        ip = 0;
+    }
     SetaeValue *locals = frame;
     SetaeValue *cellbase = frame + nlocals;
     SetaeValue *stack = frame + fixed;
-    int sp = 0;
 
-    SetaeFrame fr = {frame, fixed, 0, module, vm->frames};
+    SetaeFrame fr = {frame, fixed, sp, module, vm->frames};
     vm->frames = &fr;
 
-    if (!bind_args(vm, code, args, nargs, defaults, ndefaults, kwargs, locals)) {
-        vm->frames = fr.parent;
-        frame_release(vm, frame, frame_cap);
-        vm->depth--;
-        return setae_none();
-    }
-
-    for (uint32_t i = 0; i < ncells; i++) {
-        cellbase[i] = setae_cell_new(vm->heap);
-    }
-    for (uint32_t i = 0; i < nfrees; i++) {
-        cellbase[ncells + i] = captured[i];
+    if (gen != NULL) {
+        if (gen->resumed) {
+            stack[sp++] = kwargs;
+        }
+        gen->resumed = 1;
+    } else {
+        if (!bind_args(vm, code, args, nargs, defaults, ndefaults, kwargs, locals)) {
+            vm->frames = fr.parent;
+            frame_release(vm, frame, frame_cap);
+            vm->depth--;
+            return setae_none();
+        }
+        for (uint32_t i = 0; i < ncells; i++) {
+            cellbase[i] = setae_cell_new(vm->heap);
+        }
+        for (uint32_t i = 0; i < nfrees; i++) {
+            cellbase[ncells + i] = captured[i];
+        }
     }
 
     int limited = vm->step_limit != 0 || vm->deadline_ns != 0;
     SetaeValue result = setae_none();
-    uint32_t ip = 0;
     uint32_t ext = 0;
     uint32_t unit = 0;
     uint32_t arg = 0;
@@ -1461,6 +1486,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_ROT_THREE] = &&L_OP_ROT_THREE,
         [OP_DELETE_DEREF] = &&L_OP_DELETE_DEREF,
         [OP_FORMAT_VALUE] = &&L_OP_FORMAT_VALUE,
+        [OP_YIELD_VALUE] = &&L_OP_YIELD_VALUE,
     };
 
 #define DISPATCH()                                                             \
@@ -1622,6 +1648,13 @@ stack_overflow:
         L_OP_FORMAT_VALUE:
             stack[sp - 1] = setae_format_value(vm, stack[sp - 1], (int)arg);
             DISPATCH();
+        L_OP_YIELD_VALUE:
+            gen->ip = ip;
+            gen->sp = sp - 1;
+            result = stack[sp - 1];
+            vm->frames = fr.parent;
+            vm->depth--;
+            return result;
         L_OP_DELETE_LOCAL:
             if (locals[arg] == 0) {
                 setae_vm_raise(vm, "UnboundLocalError",
@@ -1867,7 +1900,7 @@ stack_overflow:
                 SetaeValue key = setae_str_new(vm->heap, leaf, strlen(leaf));
                 dict_set(setae_to_ptr(pm->dict), key, mod);
             }
-            run_code(vm, mcode, NULL, 0, NULL, NULL, 0, 0, mod);
+            run_code(vm, mcode, NULL, 0, NULL, NULL, 0, 0, mod, NULL);
             if (vm->error) {
                 DISPATCH();
             }
@@ -2024,6 +2057,9 @@ stack_overflow:
         L_OP_GET_ITER: {
             SetaeValue v = stack[sp - 1];
             int t = setae_obj_type(v);
+            if (t == SETAE_T_GEN) {
+                DISPATCH();
+            }
             if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
                 t != SETAE_T_STR && t != SETAE_T_RANGE) {
                 setae_vm_raise(vm, "TypeError", "'%s' object is not iterable",
@@ -2034,7 +2070,22 @@ stack_overflow:
             DISPATCH();
         }
         L_OP_FOR_ITER: {
-            SetaeIter *it = setae_to_ptr(stack[sp - 1]);
+            SetaeValue itv = stack[sp - 1];
+            if (setae_obj_type(itv) == SETAE_T_GEN) {
+                int stopped;
+                SetaeValue v = gen_resume(vm, setae_to_ptr(itv), setae_none(), &stopped);
+                if (vm->error) {
+                    DISPATCH();
+                }
+                if (stopped) {
+                    sp--;
+                    ip = arg * 2;
+                } else {
+                    stack[sp++] = v;
+                }
+                DISPATCH();
+            }
+            SetaeIter *it = setae_to_ptr(itv);
             SetaeValue next;
             if (iter_next(vm, it, &next)) {
                 stack[sp++] = next;
@@ -2065,7 +2116,7 @@ stack_overflow:
                         r = setae_none();
                     } else {
                         r = run_code(vm, f->code, argv - 1, n + 1, f->cells, f->defaults,
-                                     f->ndefaults, 0, f->module);
+                                     f->ndefaults, 0, f->module, NULL);
                     }
                     sp -= n + 1;
                     stack[sp++] = r;
@@ -2109,9 +2160,67 @@ loop_done:
 #undef DISPATCH
 
     vm->frames = fr.parent;
-    frame_release(vm, frame, frame_cap);
+    if (gen != NULL) {
+        gen->done = 1;
+    } else {
+        frame_release(vm, frame, frame_cap);
+    }
     vm->depth--;
     return result;
+}
+
+static SetaeValue make_generator(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int nargs,
+                                 const SetaeValue *captured, const SetaeValue *defaults,
+                                 uint32_t ndefaults, SetaeValue kwargs, SetaeValue module) {
+    uint32_t nlocals = setae_code_nlocals(code);
+    uint32_t ncells = setae_code_ncells(code);
+    uint32_t nfrees = setae_code_nfrees(code);
+    uint32_t fixed = nlocals + ncells + nfrees;
+    SetaeValue genv = setae_gen_new(vm->heap, code, module);
+    SetaeGen *g = setae_to_ptr(genv);
+    g->fixed = fixed;
+    g->frame_cap = fixed + STACK_MAX;
+    g->frame = calloc(g->frame_cap, sizeof(SetaeValue));
+    setae_vm_push_tmp(vm, genv);
+    SetaeValue *locals = g->frame;
+    SetaeValue *cellbase = g->frame + nlocals;
+    if (!bind_args(vm, code, args, nargs, defaults, ndefaults, kwargs, locals)) {
+        g->done = 1;
+        setae_vm_pop_tmp(vm);
+        return setae_none();
+    }
+    for (uint32_t i = 0; i < ncells; i++) {
+        cellbase[i] = setae_cell_new(vm->heap);
+    }
+    for (uint32_t i = 0; i < nfrees; i++) {
+        cellbase[ncells + i] = captured[i];
+    }
+    setae_vm_pop_tmp(vm);
+    return genv;
+}
+
+static SetaeValue gen_resume(SetaeVM *vm, SetaeGen *g, SetaeValue sent, int *stopped) {
+    if (g->done) {
+        *stopped = 1;
+        return setae_none();
+    }
+    SetaeValue r = run_code(vm, g->code, NULL, 0, NULL, NULL, 0, sent, g->module, g);
+    if (g->done) {
+        *stopped = 1;
+        return setae_none();
+    }
+    *stopped = 0;
+    return r;
+}
+
+int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *out) {
+    int stopped;
+    SetaeValue v = gen_resume(vm, setae_to_ptr(genv), sent, &stopped);
+    if (stopped) {
+        return 0;
+    }
+    *out = v;
+    return 1;
 }
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
@@ -2131,5 +2240,5 @@ SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
     if (vm->oom == 0) {
         vm->oom = setae_exc_new(vm->heap, "MemoryError", setae_none());
     }
-    return run_code(vm, code, NULL, 0, NULL, NULL, 0, 0, 0);
+    return run_code(vm, code, NULL, 0, NULL, NULL, 0, 0, 0, NULL);
 }

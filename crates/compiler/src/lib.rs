@@ -1,5 +1,6 @@
 use ast::{
-    BinOp, BoolOp, CmpOp, ExceptHandler, Expr, FStrPart, Module, Param, Stmt, UnOp, WithItem,
+    BinOp, BoolOp, CmpOp, ExceptHandler, Expr, FStrPart, MatchCase, Module, Param, Pattern, Stmt,
+    UnOp, WithItem,
 };
 use bytecode::{Code, Const, Instr, Op};
 use std::cell::RefCell;
@@ -131,6 +132,11 @@ fn lower_with(stmts: &mut Vec<Stmt>, n: &mut u32) {
                 lower_with(orelse, n);
                 lower_with(finalbody, n);
             }
+            Stmt::Match { cases, .. } => {
+                for c in cases.iter_mut() {
+                    lower_with(&mut c.body, n);
+                }
+            }
             _ => {}
         }
         if matches!(stmts[i], Stmt::With { .. }) {
@@ -243,6 +249,11 @@ fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
                 desugar_block(orelse, n);
             }
             Stmt::With { body, .. } => desugar_block(body, n),
+            Stmt::Match { cases, .. } => {
+                for c in cases.iter_mut() {
+                    desugar_block(&mut c.body, n);
+                }
+            }
             Stmt::Try {
                 body,
                 handlers,
@@ -304,6 +315,7 @@ fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
         }
         Stmt::Return(Some(e)) => desugar_expr(e, hoisted, n),
         Stmt::Raise(Some(e)) => desugar_expr(e, hoisted, n),
+        Stmt::Match { subject, .. } => desugar_expr(subject, hoisted, n),
         Stmt::Try { handlers, .. } => {
             for h in handlers.iter_mut() {
                 if let Some(t) = &mut h.typ {
@@ -397,6 +409,7 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
             }
         }
         Expr::Named { value, .. } => desugar_expr(value, hoisted, n),
+        Expr::Yield(Some(value)) => desugar_expr(value, hoisted, n),
         Expr::Lambda { params, body } => {
             *n += 1;
             let fname = format!("<lambda{}>", *n);
@@ -531,6 +544,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         param_names: Vec::new(),
         varargs: false,
         kwargs: false,
+        generator: false,
         codes: Vec::new(),
         modules: Vec::new(),
         parent_module: -1,
@@ -814,6 +828,101 @@ fn target_names(target: &Expr, out: &mut Vec<String>) {
     }
 }
 
+fn expr_has_yield(e: &Expr) -> bool {
+    match e {
+        Expr::Yield(_) => true,
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_has_yield),
+        Expr::Dict(pairs) => pairs
+            .iter()
+            .any(|(k, v)| expr_has_yield(k) || expr_has_yield(v)),
+        Expr::Unary { operand, .. } => expr_has_yield(operand),
+        Expr::Starred(inner) | Expr::Named { value: inner, .. } => expr_has_yield(inner),
+        Expr::Bin { left, right, .. } => expr_has_yield(left) || expr_has_yield(right),
+        Expr::Bool_ { values, .. } => values.iter().any(expr_has_yield),
+        Expr::Compare {
+            left, comparators, ..
+        } => expr_has_yield(left) || comparators.iter().any(expr_has_yield),
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_has_yield(func)
+                || args.iter().any(expr_has_yield)
+                || keywords.iter().any(|k| expr_has_yield(&k.value))
+        }
+        Expr::Attribute { value, .. } => expr_has_yield(value),
+        Expr::Subscript { value, index } => expr_has_yield(value) || expr_has_yield(index),
+        Expr::IfExp { test, body, orelse } => {
+            expr_has_yield(test) || expr_has_yield(body) || expr_has_yield(orelse)
+        }
+        _ => false,
+    }
+}
+
+fn body_has_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Expr(e) | Stmt::Return(Some(e)) | Stmt::Raise(Some(e)) => expr_has_yield(e),
+        Stmt::Assign { targets, value } => {
+            expr_has_yield(value) || targets.iter().any(expr_has_yield)
+        }
+        Stmt::AugAssign { target, value, .. } => expr_has_yield(target) || expr_has_yield(value),
+        Stmt::If { test, body, orelse } | Stmt::While { test, body, orelse } => {
+            expr_has_yield(test) || body_has_yield(body) || body_has_yield(orelse)
+        }
+        Stmt::For {
+            iter, body, orelse, ..
+        } => expr_has_yield(iter) || body_has_yield(body) || body_has_yield(orelse),
+        Stmt::With { items, body } => {
+            items.iter().any(|it| expr_has_yield(&it.context)) || body_has_yield(body)
+        }
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+        } => {
+            body_has_yield(body)
+                || handlers.iter().any(|h| body_has_yield(&h.body))
+                || body_has_yield(orelse)
+                || body_has_yield(finalbody)
+        }
+        Stmt::Match { subject, cases } => {
+            expr_has_yield(subject) || cases.iter().any(|c| body_has_yield(&c.body))
+        }
+        _ => false,
+    })
+}
+
+fn pattern_names(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Capture(name) => add_unique(out, name),
+        Pattern::As { pattern, name } => {
+            add_unique(out, name);
+            pattern_names(pattern, out);
+        }
+        Pattern::Or(alts) | Pattern::Sequence(alts) => {
+            for p in alts {
+                pattern_names(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pattern_reads(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Value(e) => expr_reads(e, out),
+        Pattern::As { pattern, .. } => pattern_reads(pattern, out),
+        Pattern::Or(alts) | Pattern::Sequence(alts) => {
+            for p in alts {
+                pattern_reads(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
     for s in stmts {
         match s {
@@ -879,6 +988,12 @@ fn collect_assigned(stmts: &[Stmt], out: &mut Vec<String>) {
                     add_unique(out, a.asname.as_deref().unwrap_or(&a.name));
                 }
             }
+            Stmt::Match { cases, .. } => {
+                for c in cases {
+                    pattern_names(&c.pattern, out);
+                    collect_assigned(&c.body, out);
+                }
+            }
             _ => {}
         }
     }
@@ -901,6 +1016,11 @@ fn collect_nonlocals(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_nonlocals(orelse, out);
             }
             Stmt::With { body, .. } => collect_nonlocals(body, out),
+            Stmt::Match { cases, .. } => {
+                for c in cases {
+                    collect_nonlocals(&c.body, out);
+                }
+            }
             Stmt::Try {
                 body,
                 handlers,
@@ -936,6 +1056,11 @@ fn collect_globals(stmts: &[Stmt], out: &mut Vec<String>) {
                 collect_globals(orelse, out);
             }
             Stmt::With { body, .. } => collect_globals(body, out),
+            Stmt::Match { cases, .. } => {
+                for c in cases {
+                    collect_globals(&c.body, out);
+                }
+            }
             Stmt::Try {
                 body,
                 handlers,
@@ -1019,6 +1144,11 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Named { value, .. } => expr_reads(value, out),
+        Expr::Yield(value) => {
+            if let Some(v) = value {
+                expr_reads(v, out);
+            }
+        }
         Expr::ListComp { .. }
         | Expr::DictComp { .. }
         | Expr::GeneratorExp { .. }
@@ -1107,6 +1237,16 @@ fn collect_reads(stmts: &[Stmt], out: &mut Vec<String>) {
                 }
                 collect_reads(body, out);
             }
+            Stmt::Match { subject, cases } => {
+                expr_reads(subject, out);
+                for c in cases {
+                    if let Some(g) = &c.guard {
+                        expr_reads(g, out);
+                    }
+                    pattern_reads(&c.pattern, out);
+                    collect_reads(&c.body, out);
+                }
+            }
             _ => {}
         }
     }
@@ -1131,6 +1271,11 @@ fn for_each_def<'a>(stmts: &'a [Stmt], out: &mut Vec<ScopeChild<'a>>) {
                 for_each_def(orelse, out);
             }
             Stmt::With { body, .. } => for_each_def(body, out),
+            Stmt::Match { cases, .. } => {
+                for c in cases {
+                    for_each_def(&c.body, out);
+                }
+            }
             Stmt::Try {
                 body,
                 handlers,
@@ -1281,6 +1426,15 @@ fn collect_walrus(stmts: &[Stmt], out: &mut Vec<String>) {
                 }
                 collect_walrus(orelse, out);
                 collect_walrus(finalbody, out);
+            }
+            Stmt::Match { subject, cases } => {
+                expr_walrus(subject, out);
+                for c in cases {
+                    if let Some(g) = &c.guard {
+                        expr_walrus(g, out);
+                    }
+                    collect_walrus(&c.body, out);
+                }
             }
             _ => {}
         }
@@ -1507,6 +1661,7 @@ impl Compiler {
         child.ndefaults = ndefaults;
         child.varargs = seen_star;
         child.kwargs = seen_dstar;
+        child.generator = body_has_yield(body);
         child.param_names = params[..k].iter().map(|p| p.name.clone()).collect();
         let mut sub = Compiler {
             code: child,
@@ -1810,6 +1965,7 @@ impl Compiler {
                 orelse,
                 finalbody,
             } => self.try_stmt(body, handlers, orelse, finalbody),
+            Stmt::Match { subject, cases } => self.match_stmt(subject, cases),
             Stmt::Raise(value) => {
                 let Some(e) = value else {
                     return unsupported("bare raise");
@@ -1970,6 +2126,73 @@ impl Compiler {
                 Ok(())
             }
         }
+    }
+
+    fn match_stmt(&mut self, subject: &Expr, cases: &[MatchCase]) -> Result<(), CompileError> {
+        self.expr(subject)?;
+        let mut end_jumps = Vec::new();
+        for case in cases {
+            self.emit(Op::DupTop, 0);
+            let mut fails = Vec::new();
+            self.match_pattern(&case.pattern, &mut fails)?;
+            if let Some(g) = &case.guard {
+                self.expr(g)?;
+                fails.push(self.emit_jump(Op::PopJumpIfFalse));
+            }
+            self.emit(Op::PopTop, 0);
+            for s in &case.body {
+                self.stmt(s)?;
+            }
+            end_jumps.push(self.emit_jump(Op::Jump));
+            for f in fails {
+                self.patch(f);
+            }
+        }
+        self.emit(Op::PopTop, 0);
+        for j in end_jumps {
+            self.patch(j);
+        }
+        Ok(())
+    }
+
+    fn match_pattern(&mut self, pat: &Pattern, fails: &mut Vec<usize>) -> Result<(), CompileError> {
+        match pat {
+            Pattern::Wildcard => self.emit(Op::PopTop, 0),
+            Pattern::Capture(name) => self.store(name),
+            Pattern::Value(e) | Pattern::Literal(e) => {
+                self.expr(e)?;
+                self.emit(Op::CompareOp, cmp_selector(CmpOp::Eq));
+                fails.push(self.emit_jump(Op::PopJumpIfFalse));
+            }
+            Pattern::As { pattern, name } => {
+                self.emit(Op::DupTop, 0);
+                self.store(name);
+                self.match_pattern(pattern, fails)?;
+            }
+            Pattern::Or(alts) => {
+                let last = alts.len() - 1;
+                let mut succ = Vec::new();
+                for (i, alt) in alts.iter().enumerate() {
+                    if i < last {
+                        self.emit(Op::DupTop, 0);
+                        let mut alt_fails = Vec::new();
+                        self.match_pattern(alt, &mut alt_fails)?;
+                        self.emit(Op::PopTop, 0);
+                        succ.push(self.emit_jump(Op::Jump));
+                        for f in alt_fails {
+                            self.patch(f);
+                        }
+                    } else {
+                        self.match_pattern(alt, fails)?;
+                    }
+                }
+                for s in succ {
+                    self.patch(s);
+                }
+            }
+            Pattern::Sequence(_) => return unsupported("sequence patterns in match"),
+        }
+        Ok(())
     }
 
     fn emit_exit_finallies(&mut self, min_loops: usize) -> Result<(), CompileError> {
@@ -2293,6 +2516,13 @@ impl Compiler {
                 self.expr(value)?;
                 self.emit(Op::DupTop, 0);
                 self.store(name);
+            }
+            Expr::Yield(value) => {
+                match value {
+                    Some(v) => self.expr(v)?,
+                    None => self.load_const(Const::None),
+                }
+                self.emit(Op::YieldValue, 0);
             }
             Expr::FString(parts) => {
                 if parts.is_empty() {
