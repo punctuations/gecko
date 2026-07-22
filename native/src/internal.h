@@ -130,6 +130,7 @@ typedef struct SetaeGen {
     uint32_t ip;
     SetaeValue module;
     SetaeValue retval;
+    int coroutine;
     int resumed;
     int done;
 } SetaeGen;
@@ -264,6 +265,7 @@ const char *setae_code_param_name(const SetaeCode *c, uint32_t i);
 int setae_code_varargs(const SetaeCode *c);
 int setae_code_kwargs(const SetaeCode *c);
 int setae_code_generator(const SetaeCode *c);
+int setae_code_coroutine(const SetaeCode *c);
 uint32_t setae_code_ncells(const SetaeCode *c);
 uint32_t setae_code_nfrees(const SetaeCode *c);
 const SetaeExcEntry *setae_code_excs(const SetaeCode *c, uint32_t *n);

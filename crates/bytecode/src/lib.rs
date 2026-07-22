@@ -14,6 +14,7 @@ pub struct Code {
     pub varargs: bool,
     pub kwargs: bool,
     pub generator: bool,
+    pub coroutine: bool,
     pub codes: Vec<Code>,
     pub modules: Vec<Code>,
     pub parent_module: i32,
@@ -204,6 +205,7 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
     out.push(c.varargs as u8);
     out.push(c.kwargs as u8);
     out.push(c.generator as u8);
+    out.push(c.coroutine as u8);
     w32(out, c.codes.len() as u32);
     for child in &c.codes {
         write_code(out, child);
@@ -300,6 +302,7 @@ impl Reader<'_> {
         let varargs = self.u8()? != 0;
         let kwargs = self.u8()? != 0;
         let generator = self.u8()? != 0;
+        let coroutine = self.u8()? != 0;
         let mut codes = Vec::new();
         for _ in 0..self.u32()? {
             codes.push(self.code()?);
@@ -324,6 +327,7 @@ impl Reader<'_> {
             varargs,
             kwargs,
             generator,
+            coroutine,
             codes,
             modules,
             parent_module,
@@ -431,6 +435,7 @@ mod tests {
             varargs: false,
             kwargs: false,
             generator: false,
+            coroutine: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,
@@ -459,6 +464,7 @@ mod tests {
             varargs: false,
             kwargs: false,
             generator: false,
+            coroutine: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: 3,
@@ -500,6 +506,7 @@ mod tests {
             varargs: false,
             kwargs: false,
             generator: false,
+            coroutine: false,
             codes: vec![inner],
             modules: vec![submodule],
             parent_module: -1,
@@ -527,6 +534,7 @@ mod tests {
             varargs: false,
             kwargs: false,
             generator: false,
+            coroutine: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,

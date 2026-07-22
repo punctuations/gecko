@@ -548,6 +548,7 @@ fn new_code(name: &str, nlocals: u32, nparams: u32, ncells: u32, nfrees: u32) ->
         varargs: false,
         kwargs: false,
         generator: false,
+        coroutine: false,
         codes: Vec::new(),
         modules: Vec::new(),
         parent_module: -1,
@@ -1667,6 +1668,7 @@ impl Compiler {
         child.varargs = seen_star;
         child.kwargs = seen_dstar;
         child.generator = is_async || body_has_yield(body);
+        child.coroutine = is_async;
         child.param_names = params[..k].iter().map(|p| p.name.clone()).collect();
         let mut sub = Compiler {
             code: child,
@@ -2532,6 +2534,7 @@ impl Compiler {
             }
             Expr::Await(value) => {
                 self.expr(value)?;
+                self.load_const(Const::None);
                 self.emit(Op::Await, 0);
             }
             Expr::FString(parts) => {

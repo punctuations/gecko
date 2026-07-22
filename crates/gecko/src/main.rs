@@ -928,8 +928,23 @@ mod tests {
 
     #[test]
     fn async_await_composition() {
-        let src = "async def add(a, b):\n    return a + b\nasync def compute():\n    x = await add(2, 3)\n    return await add(x, 10)\ndef drive(coro):\n    try:\n        while True:\n            next(coro)\n    except StopIteration:\n        pass\nc = compute()\ndrive(c)\nprint(\"ran\")\n";
+        let src = "async def add(a, b):\n    return a + b\nasync def compute():\n    x = await add(2, 3)\n    return await add(x, 10)\ndef drive(coro):\n    try:\n        while True:\n            coro.send(None)\n    except StopIteration:\n        pass\ndrive(compute())\nprint(\"ran\")\n";
         assert_eq!(run_source(src).unwrap(), "ran\n");
+    }
+
+    #[test]
+    fn async_cooperative_concurrency() {
+        let src = "class Suspend:\n    def __await__(self):\n        yield\nasync def worker(name, n):\n    i = 0\n    while i < n:\n        await Suspend()\n        print(name, i)\n        i = i + 1\ndef run_all(active):\n    while active:\n        still = []\n        for c in active:\n            try:\n                c.send(None)\n                still.append(c)\n            except StopIteration:\n                pass\n        active = still\nrun_all([worker(\"A\", 3), worker(\"B\", 2)])\n";
+        assert_eq!(run_source(src).unwrap(), "A 0\nB 0\nA 1\nB 1\nA 2\n");
+    }
+
+    #[test]
+    fn coroutine_is_not_an_iterator() {
+        let src = "async def c():\n    return 1\ntry:\n    next(c())\nexcept TypeError as e:\n    print(e)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "'coroutine' object is not an iterator\n"
+        );
     }
 
     #[test]

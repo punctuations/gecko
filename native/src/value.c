@@ -145,7 +145,7 @@ const char *setae_type_name(SetaeValue v) {
     case SETAE_T_STOP:
         return "StopSignal";
     case SETAE_T_GEN:
-        return "generator";
+        return ((SetaeGen *)setae_to_ptr(v))->coroutine ? "coroutine" : "generator";
     default:
         return "object";
     }

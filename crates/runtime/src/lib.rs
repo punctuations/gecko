@@ -142,6 +142,7 @@ unsafe extern "C" {
     pub fn setae_code_add_param_name(c: *mut SetaeCode, name: *const c_char);
     pub fn setae_code_set_variadic(c: *mut SetaeCode, varargs: u8, kwargs: u8);
     pub fn setae_code_set_generator(c: *mut SetaeCode, generator: u8);
+    pub fn setae_code_set_coroutine(c: *mut SetaeCode, coroutine: u8);
     pub fn setae_code_add_exc(c: *mut SetaeCode, start: u32, end: u32, target: u32, depth: u32);
     pub fn setae_code_set_name(c: *mut SetaeCode, name: *const c_char);
 
@@ -375,6 +376,7 @@ fn actor_main(bytes: Vec<u8>, init: Envelope, rx: Receiver<Envelope>) {
         varargs: false,
         kwargs: false,
         generator: false,
+        coroutine: false,
         codes: vec![handler],
         modules: Vec::new(),
         parent_module: -1,
@@ -713,6 +715,7 @@ impl Vm {
             }
             setae_code_set_variadic(gc, code.varargs as u8, code.kwargs as u8);
             setae_code_set_generator(gc, code.generator as u8);
+            setae_code_set_coroutine(gc, code.coroutine as u8);
             setae_code_set_module_parent(gc, code.parent_module);
             let cs = CString::new(code.name.as_str()).expect("name has no interior NUL");
             setae_code_set_name(gc, cs.as_ptr());
@@ -767,6 +770,7 @@ mod machine_tests {
             varargs: false,
             kwargs: false,
             generator: false,
+            coroutine: false,
             codes: Vec::new(),
             modules: Vec::new(),
             parent_module: -1,

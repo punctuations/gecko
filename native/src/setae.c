@@ -1163,6 +1163,22 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         attr_error(vm, obj, name);
         return setae_none();
     }
+    if (t == SETAE_T_GEN) {
+        if (strcmp(name, "send") == 0) {
+            SetaeValue sent = nargs >= 1 ? args[0] : setae_none();
+            SetaeValue out;
+            if (setae_gen_next(vm, obj, sent, &out)) {
+                return out;
+            }
+            if (vm->error) {
+                return setae_none();
+            }
+            setae_vm_raise(vm, "StopIteration", "");
+            return setae_none();
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
     if (t == SETAE_T_LIST) {
         SetaeList *l = setae_to_ptr(obj);
         if (strcmp(name, "append") == 0) {
@@ -1657,25 +1673,58 @@ stack_overflow:
             vm->depth--;
             return result;
         L_OP_AWAIT: {
-            SetaeValue awaitable = stack[sp - 1];
-            if (setae_obj_type(awaitable) != SETAE_T_GEN) {
+            SetaeValue sendval = stack[sp - 1];
+            SetaeValue awaitable = stack[sp - 2];
+            int at = setae_obj_type(awaitable);
+            if (at == SETAE_T_GEN) {
+                SetaeGen *g = setae_to_ptr(awaitable);
+                if (!g->coroutine && !g->resumed) {
+                    setae_vm_raise(vm, "TypeError", "object '%s' is not awaitable",
+                                   setae_type_name(awaitable));
+                    DISPATCH();
+                }
+            } else if (at == SETAE_T_INSTANCE) {
+                SetaeValue m = load_attr(vm, awaitable, "__await__");
+                if (vm->error) {
+                    DISPATCH();
+                }
+                SetaeValue it = call_value(vm, m, NULL, 0, 0);
+                if (vm->error) {
+                    DISPATCH();
+                }
+                if (setae_obj_type(it) != SETAE_T_GEN) {
+                    setae_vm_raise(vm, "TypeError", "__await__ must return an iterator");
+                    DISPATCH();
+                }
+                stack[sp - 2] = it;
+                awaitable = it;
+            } else {
                 setae_vm_raise(vm, "TypeError", "object '%s' is not awaitable",
                                setae_type_name(awaitable));
                 DISPATCH();
             }
             SetaeGen *sub = setae_to_ptr(awaitable);
-            while (!sub->done) {
-                int stopped;
-                gen_resume(vm, sub, setae_none(), &stopped);
-                if (vm->error) {
-                    break;
-                }
-            }
+            int stopped;
+            SetaeValue y = gen_resume(vm, sub, sendval, &stopped);
             if (vm->error) {
                 DISPATCH();
             }
-            stack[sp - 1] = sub->retval;
-            DISPATCH();
+            if (stopped) {
+                sp -= 2;
+                stack[sp++] = sub->retval;
+                DISPATCH();
+            }
+            if (gen == NULL) {
+                stack[sp - 1] = setae_none();
+                DISPATCH();
+            }
+            sp--;
+            gen->ip = ip - 2;
+            gen->sp = sp;
+            result = y;
+            vm->frames = fr.parent;
+            vm->depth--;
+            return result;
         }
         L_OP_DELETE_LOCAL:
             if (locals[arg] == 0) {
@@ -2080,6 +2129,10 @@ stack_overflow:
             SetaeValue v = stack[sp - 1];
             int t = setae_obj_type(v);
             if (t == SETAE_T_GEN) {
+                if (((SetaeGen *)setae_to_ptr(v))->coroutine) {
+                    setae_vm_raise(vm, "TypeError", "'coroutine' object is not iterable");
+                    DISPATCH();
+                }
                 DISPATCH();
             }
             if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
@@ -2201,6 +2254,7 @@ static SetaeValue make_generator(SetaeVM *vm, const SetaeCode *code, SetaeValue 
     uint32_t fixed = nlocals + ncells + nfrees;
     SetaeValue genv = setae_gen_new(vm->heap, code, module);
     SetaeGen *g = setae_to_ptr(genv);
+    g->coroutine = setae_code_coroutine(code);
     g->fixed = fixed;
     g->frame_cap = fixed + STACK_MAX;
     g->frame = calloc(g->frame_cap, sizeof(SetaeValue));

@@ -443,6 +443,7 @@ static void ser_code(ByteBuf *b, const SetaeCode *c) {
     bb_u8(b, setae_code_varargs(c) ? 1 : 0);
     bb_u8(b, setae_code_kwargs(c) ? 1 : 0);
     bb_u8(b, setae_code_generator(c) ? 1 : 0);
+    bb_u8(b, setae_code_coroutine(c) ? 1 : 0);
 
     uint32_t nch = setae_code_nchildren(c);
     bb_u32(b, nch);

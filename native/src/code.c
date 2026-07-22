@@ -43,6 +43,7 @@ struct SetaeCode {
     int varargs;
     int kwargs;
     int generator;
+    int coroutine;
     int32_t module_parent;
 };
 
@@ -183,6 +184,14 @@ void setae_code_set_generator(SetaeCode *c, uint8_t generator) {
 
 int setae_code_generator(const SetaeCode *c) {
     return c->generator;
+}
+
+void setae_code_set_coroutine(SetaeCode *c, uint8_t coroutine) {
+    c->coroutine = coroutine;
+}
+
+int setae_code_coroutine(const SetaeCode *c) {
+    return c->coroutine;
 }
 
 const char *setae_code_param_name(const SetaeCode *c, uint32_t i) {

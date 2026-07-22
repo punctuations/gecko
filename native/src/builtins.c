@@ -408,7 +408,8 @@ static SetaeValue builtin_next(SetaeVM *vm, SetaeValue *args, int nargs) {
         setae_vm_raise(vm, "TypeError", "next() takes 1 or 2 arguments (%d given)", nargs);
         return setae_none();
     }
-    if (setae_obj_type(args[0]) != SETAE_T_GEN) {
+    if (setae_obj_type(args[0]) != SETAE_T_GEN ||
+        ((SetaeGen *)setae_to_ptr(args[0]))->coroutine) {
         setae_vm_raise(vm, "TypeError", "'%s' object is not an iterator",
                        setae_type_name(args[0]));
         return setae_none();
