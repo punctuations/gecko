@@ -943,9 +943,10 @@ fn expr_has_yield(e: &Expr) -> bool {
         }
         Expr::Attribute { value, .. } => expr_has_yield(value),
         Expr::Subscript { value, index } => expr_has_yield(value) || expr_has_yield(index),
-        Expr::Slice { lower, upper, step } => {
-            [lower, upper, step].into_iter().flatten().any(|e| expr_has_yield(e))
-        }
+        Expr::Slice { lower, upper, step } => [lower, upper, step]
+            .into_iter()
+            .flatten()
+            .any(|e| expr_has_yield(e)),
         Expr::IfExp { test, body, orelse } => {
             expr_has_yield(test) || expr_has_yield(body) || expr_has_yield(orelse)
         }
@@ -2557,9 +2558,7 @@ impl Compiler {
                         }
                         self.emit(Op::Call, args.len() as u32);
                     }
-                } else if let (Expr::Attribute { value, attr }, false) =
-                    (func.as_ref(), has_star)
-                {
+                } else if let (Expr::Attribute { value, attr }, false) = (func.as_ref(), has_star) {
                     if args.len() > 255 {
                         return unsupported("more than 255 arguments");
                     }

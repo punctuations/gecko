@@ -1013,7 +1013,10 @@ mod tests {
     #[test]
     fn generator_expressions() {
         let src = "print(\",\".join(str(x) for x in range(4)))\nprint(sum(x * x for x in range(5)))\nprint(list(x for x in range(3)))\ng = (x + 1 for x in [10, 20])\nprint(next(g), next(g))\nprint(sum(i for i in range(10) if i % 2 == 0))\n";
-        assert_eq!(run_source(src).unwrap(), "0,1,2,3\n30\n[0, 1, 2]\n11 21\n20\n");
+        assert_eq!(
+            run_source(src).unwrap(),
+            "0,1,2,3\n30\n[0, 1, 2]\n11 21\n20\n"
+        );
     }
 
     #[test]
@@ -1046,7 +1049,10 @@ mod tests {
     #[test]
     fn method_keyword_args() {
         let src = "l = [3, 1, 2]\nl.sort(key=lambda x: -x)\nprint(l)\nw = [\"bb\", \"a\", \"ccc\"]\nw.sort(key=len, reverse=True)\nprint(w)\nclass G:\n    def hi(self, name, punct=\"!\"):\n        return name + punct\nprint(G().hi(\"a\"), G().hi(\"b\", punct=\"?\"))\n";
-        assert_eq!(run_source(src).unwrap(), "[3, 2, 1]\n['ccc', 'bb', 'a']\na! b?\n");
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[3, 2, 1]\n['ccc', 'bb', 'a']\na! b?\n"
+        );
     }
 
     #[test]
@@ -1079,10 +1085,7 @@ mod tests {
     #[test]
     fn bare_raise_reraises() {
         let src = "def f(x):\n    try:\n        if x < 0:\n            raise ValueError(\"neg\")\n        return x\n    except ValueError:\n        print(\"log\")\n        raise\nfor v in [2, -1]:\n    try:\n        print(f(v))\n    except ValueError as e:\n        print(\"caught\", e)\ntry:\n    try:\n        raise KeyError(\"a\")\n    except KeyError:\n        raise\nexcept KeyError:\n    print(\"reraised\")\n";
-        assert_eq!(
-            run_source(src).unwrap(),
-            "2\nlog\ncaught neg\nreraised\n"
-        );
+        assert_eq!(run_source(src).unwrap(), "2\nlog\ncaught neg\nreraised\n");
     }
 
     #[test]

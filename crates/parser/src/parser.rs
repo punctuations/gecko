@@ -1188,7 +1188,10 @@ impl Parser {
         Ok(())
     }
 
-    fn split_fstring_field(&self, field: &str) -> Result<(String, bool, Option<String>), ParseError> {
+    fn split_fstring_field(
+        &self,
+        field: &str,
+    ) -> Result<(String, bool, Option<String>), ParseError> {
         let mut depth = 0;
         let mut split = None;
         for (idx, c) in field.char_indices() {
