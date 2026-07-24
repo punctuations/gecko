@@ -72,6 +72,7 @@ void setae_vm_destroy(SetaeVM *vm) {
     }
     free(vm->frame_pool);
     free(vm->frame_pool_caps);
+    free(vm->tmp_roots);
     free(vm);
 }
 
@@ -347,6 +348,10 @@ SetaeHeap *setae_vm_heap(SetaeVM *vm) {
 }
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v) {
+    if (vm->ntmp == vm->tmp_cap) {
+        vm->tmp_cap = vm->tmp_cap ? vm->tmp_cap * 2 : 16;
+        vm->tmp_roots = realloc(vm->tmp_roots, (size_t)vm->tmp_cap * sizeof(SetaeValue));
+    }
     vm->tmp_roots[vm->ntmp++] = v;
 }
 
@@ -3527,9 +3532,9 @@ SetaeValue setae_iter_collect(SetaeVM *vm, SetaeValue v) {
     if (vm->error) {
         return setae_none();
     }
+    setae_vm_push_tmp(vm, itv);
     SetaeValue lst = setae_list_new(vm->heap, 0);
     setae_vm_push_tmp(vm, lst);
-    setae_vm_push_tmp(vm, itv);
     SetaeValue out;
     while (setae_iter_advance(vm, itv, &out)) {
         if (vm->error) {

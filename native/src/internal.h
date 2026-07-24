@@ -319,8 +319,9 @@ struct SetaeVM {
     SetaeValue *module_cache;
     uint32_t nmodules;
 
-    SetaeValue tmp_roots[8];
+    SetaeValue *tmp_roots;
     int ntmp;
+    int tmp_cap;
 
     uint64_t steps;
     uint64_t step_limit;
