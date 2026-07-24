@@ -164,7 +164,12 @@ unsafe extern "C" {
     pub fn setae_vm_output(vm: *mut SetaeVm, len: *mut usize) -> *const c_char;
 }
 
+use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 struct Envelope {
     msg: *mut SetaeMsg,
@@ -181,23 +186,268 @@ impl Envelope {
             err: None,
         }
     }
-}
 
-extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
-    if !mailbox.is_null() {
-        unsafe { drop(Box::from_raw(mailbox as *mut Sender<Envelope>)) };
+    fn fail(text: String) -> Self {
+        Envelope {
+            msg: std::ptr::null_mut(),
+            reply: None,
+            err: Some(text),
+        }
     }
 }
 
+// A subject is a handle to some mailbox. An actor subject schedules the actor
+// when a message arrives; a reply subject is a one-shot channel a blocked
+// caller waits on. Both are boxed behind the subject's opaque pointer.
+enum Handle {
+    Actor(Arc<Actor>),
+    Reply(Sender<Envelope>),
+}
+
+// The mutable run state of an actor: its VM and heap, the handler, the threaded
+// state, and the extra handler arguments. Only the worker that currently owns
+// the actor (holds the scheduled slot) touches this, so access through the
+// UnsafeCell is exclusive.
+struct ActorRun {
+    vm: Vm,
+    handle: SetaeValue,
+    state: SetaeValue,
+    extras: Vec<SetaeValue>,
+}
+
+struct Actor {
+    inbox: Mutex<VecDeque<Envelope>>,
+    scheduled: AtomicBool,
+    closed: AtomicBool,
+    senders: AtomicUsize,
+    run: std::cell::UnsafeCell<ActorRun>,
+    sched: Arc<SchedInner>,
+}
+// The scheduled flag serializes which worker touches `run`, and `scheduled` is
+// only mutated under the inbox lock, so no two threads run one actor at once.
+unsafe impl Send for Actor {}
+unsafe impl Sync for Actor {}
+
+enum Outcome {
+    Continue,
+    Stop,
+}
+
+impl Actor {
+    // Drop a message onto the actor and schedule it if it was idle. Called from
+    // any thread that holds a subject.
+    fn deliver(self: &Arc<Actor>, env: Envelope) {
+        if self.closed.load(Ordering::Acquire) {
+            reject(env);
+            return;
+        }
+        let mut q = self.inbox.lock().unwrap();
+        q.push_back(env);
+        let was = self.scheduled.swap(true, Ordering::AcqRel);
+        drop(q);
+        if !was {
+            self.sched.inject(self.clone());
+        }
+    }
+
+    // Mark the actor closed and fail every queued message so waiting calls do
+    // not hang.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let mut q = self.inbox.lock().unwrap();
+        for env in q.drain(..) {
+            reject(env);
+        }
+    }
+}
+
+fn reject(env: Envelope) {
+    unsafe {
+        if !env.msg.is_null() {
+            setae_msg_free(env.msg);
+        }
+    }
+    if let Some(reply) = env.reply {
+        let _ = reply.send(Envelope::fail("the actor is no longer running".into()));
+    }
+}
+
+struct SchedInner {
+    injector: Injector<Arc<Actor>>,
+    stealers: Vec<Stealer<Arc<Actor>>>,
+    idle: Mutex<()>,
+    wake: Condvar,
+}
+
+impl SchedInner {
+    fn inject(&self, actor: Arc<Actor>) {
+        self.injector.push(actor);
+        self.wake.notify_one();
+    }
+
+    fn park(&self) {
+        let guard = self.idle.lock().unwrap();
+        if !self.injector.is_empty() {
+            return;
+        }
+        let _ = self.wake.wait_timeout(guard, Duration::from_millis(50));
+    }
+}
+
+fn scheduler() -> Arc<SchedInner> {
+    static SCHED: OnceLock<Arc<SchedInner>> = OnceLock::new();
+    SCHED
+        .get_or_init(|| {
+            let n = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let workers: Vec<Worker<Arc<Actor>>> = (0..n).map(|_| Worker::new_fifo()).collect();
+            let stealers = workers.iter().map(|w| w.stealer()).collect();
+            let inner = Arc::new(SchedInner {
+                injector: Injector::new(),
+                stealers,
+                idle: Mutex::new(()),
+                wake: Condvar::new(),
+            });
+            for w in workers {
+                let sched = inner.clone();
+                std::thread::spawn(move || worker_loop(w, sched));
+            }
+            inner
+        })
+        .clone()
+}
+
+fn find_task(
+    local: &Worker<Arc<Actor>>,
+    injector: &Injector<Arc<Actor>>,
+    stealers: &[Stealer<Arc<Actor>>],
+) -> Option<Arc<Actor>> {
+    local.pop().or_else(|| {
+        std::iter::repeat_with(|| {
+            injector
+                .steal_batch_and_pop(local)
+                .or_else(|| stealers.iter().map(|s| s.steal()).collect())
+        })
+        .find(|s| !s.is_retry())
+        .and_then(Steal::success)
+    })
+}
+
+fn worker_loop(local: Worker<Arc<Actor>>, sched: Arc<SchedInner>) {
+    loop {
+        match find_task(&local, &sched.injector, &sched.stealers) {
+            Some(actor) => run_actor(&actor),
+            None => sched.park(),
+        }
+    }
+}
+
+// Drain the actor's mailbox on this worker, running the handler per message and
+// threading its state, then park the actor when the mailbox empties.
+fn run_actor(actor: &Arc<Actor>) {
+    let run = unsafe { &mut *actor.run.get() };
+    loop {
+        let env = actor.inbox.lock().unwrap().pop_front();
+        match env {
+            Some(env) => {
+                if actor.closed.load(Ordering::Acquire) {
+                    reject(env);
+                    continue;
+                }
+                if let Outcome::Stop = run_message(run, env) {
+                    actor.close();
+                    return;
+                }
+            }
+            None => {
+                let q = actor.inbox.lock().unwrap();
+                if q.is_empty() {
+                    actor.scheduled.store(false, Ordering::Release);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn run_message(run: &mut ActorRun, env: Envelope) -> Outcome {
+    unsafe {
+        let message = setae_msg_write(run.vm.vm, env.msg);
+        setae_msg_free(env.msg);
+        set_root(run.vm.vm, "$msg", message);
+
+        let mut call_args = Vec::with_capacity(2 + run.extras.len());
+        call_args.push(run.state);
+        call_args.push(message);
+        call_args.extend_from_slice(&run.extras);
+        let next = setae_call(
+            run.vm.vm,
+            run.handle,
+            call_args.as_mut_ptr(),
+            call_args.len() as c_int,
+        );
+
+        if setae_vm_error(run.vm.vm) != 0 {
+            let text = CStr::from_ptr(setae_vm_error_msg(run.vm.vm))
+                .to_string_lossy()
+                .into_owned();
+            setae_vm_clear_error(run.vm.vm);
+            if let Some(reply) = env.reply {
+                let _ = reply.send(Envelope::fail(text));
+            }
+            return Outcome::Stop;
+        }
+        if setae_obj_type(next) == T_STOP {
+            return Outcome::Stop;
+        }
+        run.state = next;
+        set_root(run.vm.vm, "$state", run.state);
+        Outcome::Continue
+    }
+}
+
+extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
+    if mailbox.is_null() {
+        return;
+    }
+    let handle = unsafe { Box::from_raw(mailbox as *mut Handle) };
+    if let Handle::Actor(actor) = &*handle {
+        if actor.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // The last sender is gone: wake the actor once so it can drain any
+            // queued messages and then be dropped.
+            let guard = actor.inbox.lock().unwrap();
+            let was = actor.scheduled.swap(true, Ordering::AcqRel);
+            drop(guard);
+            if !was {
+                actor.sched.inject(actor.clone());
+            }
+        }
+    }
+    drop(handle);
+}
+
 extern "C" fn subject_clone(mailbox: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
-    let sender = unsafe { &*(mailbox as *const Sender<Envelope>) };
-    Box::into_raw(Box::new(sender.clone())) as *mut std::ffi::c_void
+    let handle = unsafe { &*(mailbox as *const Handle) };
+    let cloned = match handle {
+        Handle::Actor(actor) => {
+            actor.senders.fetch_add(1, Ordering::AcqRel);
+            Handle::Actor(actor.clone())
+        }
+        Handle::Reply(tx) => Handle::Reply(tx.clone()),
+    };
+    Box::into_raw(Box::new(cloned)) as *mut std::ffi::c_void
 }
 
 extern "C" fn subject_send(mailbox: *mut std::ffi::c_void, msg: *mut SetaeMsg) {
-    let sender = unsafe { &*(mailbox as *const Sender<Envelope>) };
-    if sender.send(Envelope::value(msg)).is_err() {
-        unsafe { setae_msg_free(msg) };
+    let handle = unsafe { &*(mailbox as *const Handle) };
+    match handle {
+        Handle::Actor(actor) => actor.deliver(Envelope::value(msg)),
+        Handle::Reply(tx) => {
+            if tx.send(Envelope::value(msg)).is_err() {
+                unsafe { setae_msg_free(msg) };
+            }
+        }
     }
 }
 
@@ -217,7 +467,7 @@ extern "C" fn subject_call(
         let (tx, rx) = channel::<Envelope>();
         let reply = setae_subject_new(
             heap,
-            Box::into_raw(Box::new(tx.clone())) as *mut std::ffi::c_void,
+            Box::into_raw(Box::new(Handle::Reply(tx.clone()))) as *mut std::ffi::c_void,
         );
 
         setae_vm_push_tmp(vm, reply);
@@ -235,21 +485,21 @@ extern "C" fn subject_call(
             return setae_none();
         }
 
-        let actor_sender = &*(setae_subject_mailbox(subject) as *const Sender<Envelope>);
-        let inbound = Envelope {
-            msg,
-            reply: Some(tx),
-            err: None,
-        };
-        if actor_sender.send(inbound).is_err() {
-            setae_msg_free(msg);
-            let k = CString::new("RuntimeError").unwrap();
-            let m = CString::new("the actor is no longer running").unwrap();
-            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
-            return setae_none();
+        let handle = &*(setae_subject_mailbox(subject) as *const Handle);
+        match handle {
+            Handle::Actor(actor) => actor.deliver(Envelope {
+                msg,
+                reply: Some(tx),
+                err: None,
+            }),
+            Handle::Reply(rtx) => {
+                if rtx.send(Envelope::value(msg)).is_err() {
+                    setae_msg_free(msg);
+                }
+            }
         }
 
-        match rx.recv_timeout(std::time::Duration::from_millis(millis)) {
+        match rx.recv_timeout(Duration::from_millis(millis)) {
             Ok(env) => {
                 if let Some(text) = env.err {
                     let k = CString::new("RuntimeError").unwrap();
@@ -343,21 +593,35 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             return setae_none();
         }
 
-        let (tx, rx) = channel::<Envelope>();
-        let boxed = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
-        let subject = setae_subject_new(heap, boxed);
-
-        let init = Envelope::value(init);
-        std::thread::spawn(move || actor_main(bytes, init, rx));
-        subject
+        let run = match build_actor(bytes, init) {
+            Some(r) => r,
+            None => {
+                let k = CString::new("RuntimeError").unwrap();
+                let m = CString::new("failed to start actor").unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                return setae_none();
+            }
+        };
+        let actor = Arc::new(Actor {
+            inbox: Mutex::new(VecDeque::new()),
+            scheduled: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            senders: AtomicUsize::new(1),
+            run: std::cell::UnsafeCell::new(run),
+            sched: scheduler(),
+        });
+        setae_subject_new(
+            heap,
+            Box::into_raw(Box::new(Handle::Actor(actor))) as *mut std::ffi::c_void,
+        )
     }
 }
 
-fn actor_main(bytes: Vec<u8>, init: Envelope, rx: Receiver<Envelope>) {
-    let handler = match bytecode::from_bytes(&bytes) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+// Build an actor's run state on the calling thread: deserialize the handler,
+// make it in a fresh isolate, and rebuild the initial state and extras there.
+// The isolate then moves to whichever worker handles its first message.
+fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg) -> Option<ActorRun> {
+    let handler = bytecode::from_bytes(&bytes).ok()?;
     let wrapper = bytecode::Code {
         name: String::new(),
         consts: Vec::new(),
@@ -392,58 +656,29 @@ fn actor_main(bytes: Vec<u8>, init: Envelope, rx: Receiver<Envelope>) {
     child.enable_actors();
     let run = child.run(&wrapper);
     if run.error {
-        return;
+        unsafe { setae_msg_free(init) };
+        return None;
     }
     let handle = run.result;
 
     unsafe {
         set_root(child.vm, "actor", setae_gecko_actor_module(child.vm));
         set_root(child.vm, "$handle", handle);
-        let pack = setae_msg_write(child.vm, init.msg);
-        setae_msg_free(init.msg);
-        let mut state = setae_list_get(pack, 0);
+        let pack = setae_msg_write(child.vm, init);
+        setae_msg_free(init);
+        let state = setae_list_get(pack, 0);
         let extras = setae_list_get(pack, 1);
         set_root(child.vm, "$state", state);
         set_root(child.vm, "$extras", extras);
         let extra_items: Vec<SetaeValue> = (0..setae_list_len(extras))
             .map(|i| setae_list_get(extras, i))
             .collect();
-
-        while let Ok(env) = rx.recv() {
-            let message = setae_msg_write(child.vm, env.msg);
-            setae_msg_free(env.msg);
-            set_root(child.vm, "$msg", message);
-
-            let mut call_args = Vec::with_capacity(2 + extra_items.len());
-            call_args.push(state);
-            call_args.push(message);
-            call_args.extend_from_slice(&extra_items);
-            let next = setae_call(
-                child.vm,
-                handle,
-                call_args.as_mut_ptr(),
-                call_args.len() as c_int,
-            );
-            if setae_vm_error(child.vm) != 0 {
-                let text = CStr::from_ptr(setae_vm_error_msg(child.vm))
-                    .to_string_lossy()
-                    .into_owned();
-                setae_vm_clear_error(child.vm);
-                if let Some(reply) = env.reply {
-                    let _ = reply.send(Envelope {
-                        msg: std::ptr::null_mut(),
-                        reply: None,
-                        err: Some(text),
-                    });
-                }
-                break;
-            }
-            if setae_obj_type(next) == T_STOP {
-                break;
-            }
-            state = next;
-            set_root(child.vm, "$state", state);
-        }
+        Some(ActorRun {
+            vm: child,
+            handle,
+            state,
+            extras: extra_items,
+        })
     }
 }
 
@@ -476,7 +711,7 @@ impl Mailbox {
 impl Vm {
     pub fn mailbox(&self) -> (SetaeValue, Mailbox) {
         let (tx, rx) = channel::<Envelope>();
-        let boxed = Box::into_raw(Box::new(tx)) as *mut std::ffi::c_void;
+        let boxed = Box::into_raw(Box::new(Handle::Reply(tx))) as *mut std::ffi::c_void;
         let subject = unsafe { setae_subject_new(self.heap, boxed) };
         (subject, Mailbox { rx })
     }
@@ -486,10 +721,15 @@ impl Vm {
         if msg.is_null() {
             return false;
         }
-        let sender = unsafe { &*(setae_subject_mailbox(subject) as *const Sender<Envelope>) };
-        if sender.send(Envelope::value(msg)).is_err() {
-            unsafe { setae_msg_free(msg) };
-            return false;
+        let handle = unsafe { &*(setae_subject_mailbox(subject) as *const Handle) };
+        match handle {
+            Handle::Actor(actor) => actor.deliver(Envelope::value(msg)),
+            Handle::Reply(tx) => {
+                if tx.send(Envelope::value(msg)).is_err() {
+                    unsafe { setae_msg_free(msg) };
+                    return false;
+                }
+            }
         }
         true
     }
@@ -1161,10 +1401,6 @@ mod machine_tests {
         let driver = Vm::new();
         let (report_subject, report_mailbox) = driver.mailbox();
         unsafe {
-            let (actor_tx, actor_rx) = channel::<Envelope>();
-            let boxed = Box::into_raw(Box::new(actor_tx)) as *mut std::ffi::c_void;
-            let actor_subject = setae_subject_new(driver.heap, boxed);
-
             let extras = setae_list_new(driver.heap, 0);
             setae_list_append(extras, report_subject);
             let pack = setae_list_new(driver.heap, 2);
@@ -1172,9 +1408,20 @@ mod machine_tests {
             setae_list_append(pack, extras);
             let init = setae_msg_read(driver.vm, pack);
             assert!(!init.is_null(), "init pack is sendable");
-            let init = Envelope::value(init);
 
-            std::thread::spawn(move || actor_main(bytes, init, actor_rx));
+            let run = build_actor(bytes, init).expect("actor built");
+            let actor = Arc::new(Actor {
+                inbox: Mutex::new(VecDeque::new()),
+                scheduled: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
+                senders: AtomicUsize::new(1),
+                run: std::cell::UnsafeCell::new(run),
+                sched: scheduler(),
+            });
+            let actor_subject = setae_subject_new(
+                driver.heap,
+                Box::into_raw(Box::new(Handle::Actor(actor))) as *mut std::ffi::c_void,
+            );
 
             assert!(driver.send(actor_subject, setae_from_int(10)));
             assert!(driver.send(actor_subject, setae_from_int(5)));

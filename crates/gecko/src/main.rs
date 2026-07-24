@@ -303,6 +303,12 @@ mod tests {
     }
 
     #[test]
+    fn many_actors_share_the_pool() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    message[1].send(state + message[0])\n    return state\n\ndef ask(n):\n    def build(reply):\n        return [n, reply]\n    return build\n\nactors = [actor.spawn(i, handle) for i in range(64)]\ntotal = 0\nfor a in actors:\n    total += a.call(ask(1), 2000)\nprint(total)\n";
+        assert_eq!(run_source(src).unwrap(), "2080\n");
+    }
+
+    #[test]
     fn floats_print_shortest_repr() {
         let src = "print(100.0)\nprint(2.5)\nprint(340.0 / 9.0)\nprint(0.0001)\nprint(1e16)\n";
         assert_eq!(

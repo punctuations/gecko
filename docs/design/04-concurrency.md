@@ -51,10 +51,10 @@ actor has, and an explicit channel generalizes that for fan-in and fan-out.
 
 ## Scheduling
 
-v0.0.6 brings in isolates, actors, and channels, running on a thread per actor
-or on a small fixed pool. v0.0.7 replaces that with an M:N work-stealing
-scheduler, where many actors run over a pool of OS threads and an actor is
-pinned to one thread only while it handles a message.
+v0.0.6 brought in isolates, actors, and channels on a thread per actor. v0.0.7
+replaces that with an M:N work-stealing scheduler: a fixed pool of worker threads
+(one per core) runs many actors, and an actor is pinned to one worker only while
+it handles a message. See "Scheduler for v0.0.7" below.
 
 ## Portable API
 
@@ -105,8 +105,9 @@ counter.send(("add", 5))
 answer = counter.call(lambda reply: ("get", reply), 1000)
 ```
 
-`actor.spawn(initial_state, handle)` starts the actor on its own thread and
-returns a subject bound to its mailbox. A third argument, `actor.spawn(state,
+`actor.spawn(initial_state, handle)` registers the actor with the scheduler and
+returns a subject bound to its mailbox; the actor runs on a pool worker whenever
+it has a message. A third argument, `actor.spawn(state,
 handle, args)`, passes a list or tuple whose items reach the handler as extra
 parameters after `state` and `message`. Returning `actor.stop()` from the handler
 ends the actor; otherwise the return is the next state. Without a stop an actor
@@ -122,9 +123,10 @@ mailbox. A subject is the one value that crosses an isolate boundary by handle:
 put a subject in a message and the receiver gets a handle to the same mailbox,
 not a copy, which is what lets a reply find its way back.
 
-Underneath, a subject wraps a multi-producer sender for a mailbox and the owning
-actor holds the single receiver. A sender is safe to move and clone across
-threads, so any isolate holding a subject can send to it.
+Underneath, an actor subject is a reference-counted handle to the actor and its
+mailbox, so any isolate holding one can push a message and schedule the actor. A
+reply subject is instead a one-shot sender that a blocked `call` waits on. Both
+are safe to move and clone across threads.
 
 ### Cast and call
 
@@ -175,11 +177,46 @@ access are a later step that transfers more of the surrounding code.
 
 ### Isolates on threads
 
-An actor is one OS thread that creates its own VM and heap inside the thread, so
-no VM ever moves between threads. Thread per actor is the v0.0.6 model; v0.0.7
-puts many actors on a fixed pool. The loop is: block on the mailbox receiver,
-rebuild the message in the local heap, run `handle(state, message)`, take its
-return as the next state, and repeat, until a stop or the last sender is gone.
+In v0.0.6 an actor was one OS thread that created its own VM and heap and blocked
+on its mailbox. v0.0.7 detaches the isolate from the thread: an actor is a
+heap-allocated object that holds its VM, heap, handler, and threaded state, and
+it is handed to a worker only while there is a message to process. A worker owns
+the actor's run state exclusively for that time, so the heap is still touched by
+one thread at a time and needs no locks; between messages the isolate sits idle,
+owned by no thread. The loop a worker runs on an actor is: pop a message, rebuild
+it in the actor's heap, run `handle(state, message)`, take its return as the next
+state, and repeat until the mailbox empties, a stop, or an error.
+
+## Scheduler for v0.0.7
+
+The scheduler is a fixed pool of worker threads, one per core, over a
+work-stealing set of deques (crossbeam-deque: a global injector and a per-worker
+deque with stealers). It lives once per process, started the first time an actor
+is spawned.
+
+An actor's mailbox is a queue plus a `scheduled` flag. The flag is only changed
+while holding the mailbox lock, so it serializes cleanly. A `send` locks the
+mailbox, pushes the message, and swaps `scheduled` to true; if it was false, the
+actor was idle and the sender injects it into the pool and wakes a worker. A
+worker that picks up an actor drains its mailbox message by message; when the
+mailbox is empty it clears `scheduled` under the lock and stops touching the
+actor. Because the flag flips to scheduled exactly once per idle-to-busy edge,
+an actor is in the pool at most once and runs on one worker at a time, which is
+what makes exclusive access to its VM sound.
+
+An actor stays alive while a subject to it exists or while the pool holds it. A
+subject is a reference-counted handle; the actor tracks how many subjects exist,
+and when the last one drops it is scheduled one final time so it can drain any
+queued messages and then be freed with its isolate. Returning `actor.stop()`, or
+a handler that raises, closes the actor: it fails every queued message so waiting
+calls do not hang, and rejects later sends.
+
+A `call` still blocks the calling thread on a one-shot reply channel until the
+reply or the timeout. When the caller is itself an actor handler, that blocks its
+worker for the duration, since the VM cannot suspend mid-handler; a pool sized to
+the cores tolerates this, and cooperative suspension is left for later. Bounded
+mailbox backpressure, timers for delayed sends, and per-worker fairness tuning
+are the open items on top of this first cut.
 
 ### Native wiring
 
@@ -187,9 +224,9 @@ return as the next state, and repeat, until a stop or the last sender is gone.
 `_gecko.sandbox`; the runtime installs it, since it needs the bytecode reader and
 the thread machinery, and `from gecko import actor` binds that submodule. A
 subject is a native object in the heap whose `send` and `call` methods push to
-and wait on its mailbox. It wraps a sender that drops when the subject is
-collected, so the actor's thread ends once its subject and every copy of it are
-gone and the mailbox closes.
+and wait on its mailbox. It holds a reference-counted handle that drops when the
+subject is collected, so the actor is freed with its isolate once the last
+subject to it is gone and its mailbox has drained.
 
 ### Errors
 

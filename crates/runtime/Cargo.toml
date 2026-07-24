@@ -12,6 +12,7 @@ build = "build.rs"
 
 [dependencies]
 bytecode = { path = "../bytecode" }
+crossbeam-deque = "0.8"
 
 [dev-dependencies]
 parser = { path = "../parser" }
