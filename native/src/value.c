@@ -185,6 +185,9 @@ static int str_eq(SetaeValue a, SetaeValue b) {
 }
 
 int setae_value_eq(SetaeValue a, SetaeValue b) {
+    if (setae_is_int(a) && setae_is_int(b)) {
+        return setae_to_int(a) == setae_to_int(b);
+    }
     int ai = setae_is_integer(a);
     int bi = setae_is_integer(b);
     if (ai && bi) {

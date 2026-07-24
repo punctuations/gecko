@@ -661,6 +661,49 @@ static SetaeValue coerce_to_set(SetaeVM *vm, SetaeValue v) {
 
 static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
                             SetaeValue b) {
+    if (setae_is_int(a) && setae_is_int(b)) {
+        int64_t x = setae_to_int(a);
+        int64_t y = setae_to_int(b);
+        int64_t r;
+        switch (op) {
+        case BIN_ADD:
+            return from_i64(vm, x + y);
+        case BIN_SUB:
+            return from_i64(vm, x - y);
+        case BIN_MUL:
+            return from_i64(vm, x * y);
+        case BIN_MOD:
+        case BIN_FLOORDIV:
+            if (y != 0) {
+                if (op == BIN_MOD) {
+                    r = x % y;
+                    if (r != 0 && (r < 0) != (y < 0)) {
+                        r += y;
+                    }
+                    return from_i64(vm, r);
+                }
+                r = x / y;
+                if (x % y != 0 && (x < 0) != (y < 0)) {
+                    r--;
+                }
+                return from_i64(vm, r);
+            }
+            break;
+        case BIN_BITAND:
+            return from_i64(vm, x & y);
+        case BIN_BITOR:
+            return from_i64(vm, x | y);
+        case BIN_BITXOR:
+            return from_i64(vm, x ^ y);
+        case BIN_RSHIFT:
+            if (y >= 0) {
+                return from_i64(vm, y >= 63 ? (x < 0 ? -1 : 0) : (x >> y));
+            }
+            break;
+        default:
+            break;
+        }
+    }
     if (op == BIN_ADD && setae_is_str(a) && setae_is_str(b)) {
         size_t na = setae_str_len(a);
         size_t nb = setae_str_len(b);
@@ -1045,6 +1088,16 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
     if (op == CMP_EQ || op == CMP_NE) {
         int eq = setae_value_eq(a, b);
         return setae_bool(op == CMP_EQ ? eq : !eq);
+    }
+    if (setae_is_int(a) && setae_is_int(b)) {
+        int32_t x = setae_to_int(a);
+        int32_t y = setae_to_int(b);
+        int fc = x < y ? -1 : x > y ? 1 : 0;
+        int fr = op == CMP_LT   ? fc < 0
+                 : op == CMP_LE ? fc <= 0
+                 : op == CMP_GT ? fc > 0
+                                : fc >= 0;
+        return setae_bool(fr);
     }
     int a_int = setae_is_integer(a);
     int b_int = setae_is_integer(b);
