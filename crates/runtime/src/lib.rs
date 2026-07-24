@@ -724,7 +724,7 @@ unsafe fn set_root(vm: *mut SetaeVm, name: &str, v: SetaeValue) {
 
 extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
     unsafe {
-        if argc < 2 || argc > 4 {
+        if !(2..=4).contains(&argc) {
             let k = CString::new("TypeError").unwrap();
             let m = CString::new("spawn() takes 2 to 4 arguments").unwrap();
             setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
