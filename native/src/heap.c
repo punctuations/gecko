@@ -83,6 +83,12 @@ static void obj_free(SetaeObject *o) {
         free(((SetaeDict *)o)->entries);
         free(((SetaeDict *)o)->index);
         break;
+    case SETAE_T_SET:
+        free(((SetaeSet *)o)->table);
+        break;
+    case SETAE_T_BIGINT:
+        free(((SetaeBigInt *)o)->limbs);
+        break;
     case SETAE_T_FUNCTION:
         free(((SetaeFunc *)o)->cells);
         free(((SetaeFunc *)o)->defaults);
@@ -136,6 +142,8 @@ SetaeValue setae_builtin_new(SetaeHeap *h, SetaeCFunc fn, const char *name) {
     SetaeBuiltin *b = heap_alloc(h, sizeof(SetaeBuiltin), SETAE_T_BUILTIN);
     b->fn = fn;
     b->name = name;
+    b->kwargs_ok = 0;
+    b->is_type = 0;
     return setae_from_ptr(b);
 }
 
@@ -170,6 +178,29 @@ void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value) {
     d->entries[d->len].value = value;
     d->len++;
     setae_dict_index_add(d, d->len - 1);
+}
+
+SetaeValue setae_bigint_alloc(SetaeHeap *h, int32_t sign, uint32_t len) {
+    SetaeBigInt *b = heap_alloc(h, sizeof(SetaeBigInt), SETAE_T_BIGINT);
+    b->sign = sign;
+    b->len = len;
+    b->limbs = len ? calloc(len, sizeof(uint32_t)) : NULL;
+    return setae_from_ptr(b);
+}
+
+SetaeValue setae_slice_new(SetaeHeap *h, SetaeValue lower, SetaeValue upper, SetaeValue step) {
+    SetaeSlice *s = heap_alloc(h, sizeof(SetaeSlice), SETAE_T_SLICE);
+    s->lower = lower;
+    s->upper = upper;
+    s->step = step;
+    return setae_from_ptr(s);
+}
+
+SetaeValue setae_set_new(SetaeHeap *h) {
+    SetaeSet *s = heap_alloc(h, sizeof(SetaeSet), SETAE_T_SET);
+    s->mask = 7;
+    s->table = calloc(8, sizeof(SetaeSetEntry));
+    return setae_from_ptr(s);
 }
 
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step) {
@@ -352,6 +383,15 @@ SetaeValue setae_subject_new(SetaeHeap *h, void *mailbox) {
 SetaeValue setae_stop_new(SetaeHeap *h) {
     SetaeObject *o = heap_alloc(h, sizeof(SetaeObject), SETAE_T_STOP);
     return setae_from_ptr(o);
+}
+
+SetaeValue setae_iterop_new(SetaeHeap *h, uint8_t kind, SetaeValue func, SetaeValue sources) {
+    SetaeIterOp *op = heap_alloc(h, sizeof(SetaeIterOp), SETAE_T_ITEROP);
+    op->kind = kind;
+    op->func = func;
+    op->sources = sources;
+    op->index = 0;
+    return setae_from_ptr(op);
 }
 
 SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module) {

@@ -687,8 +687,8 @@ mod tests {
             ("7 % 3", "1"),
             ("-7 % 3", "2"),
             ("6 / 2", "3.0"),
-            ("2000000000 + 2000000000", "4000000000.0"),
-            ("1000000 * 1000000", "1000000000000.0"),
+            ("2000000000 + 2000000000", "4000000000"),
+            ("1000000 * 1000000", "1000000000000"),
             ("2.5 * 4", "10.0"),
             ("- -5", "5"),
             ("not 0", "True"),
@@ -944,6 +944,195 @@ mod tests {
         assert_eq!(
             run_source(src).unwrap(),
             "'coroutine' object is not an iterator\n"
+        );
+    }
+
+    #[test]
+    fn core_builtins() {
+        let src = "print(str(42), int(\"17\"), float(\"2.5\"), bool([]))\nprint(list(range(3)), tuple([1, 2]))\nprint(sum([1, 2, 3]), min(4, 1, 7), max([4, 1, 7]), abs(-9))\nprint(sorted([3, 1, 2]))\nprint(list(map(lambda n: n * 2, [1, 2, 3])))\nprint(list(filter(lambda n: n > 1, [0, 1, 2, 3])))\nprint(any([0, 1]), all([1, 1]))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "42 17 2.5 False\n[0, 1, 2] (1, 2)\n6 1 7 9\n[1, 2, 3]\n[2, 4, 6]\n[2, 3]\nTrue True\n"
+        );
+    }
+
+    #[test]
+    fn lazy_iterators() {
+        let src = "m = map(lambda x: x * 2, [1, 2, 3])\nprint(next(m))\nprint(list(m))\nprint(list(filter(lambda x: x % 2 == 0, range(6))))\nprint(list(zip([1, 2], \"ab\")))\nprint(list(enumerate(\"xy\", start=1)))\nprint(list(reversed([1, 2, 3])))\nprint(sum(map(lambda x: x + 1, range(4))))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "2\n[4, 6]\n[0, 2, 4]\n[(1, 'a'), (2, 'b')]\n[(1, 'x'), (2, 'y')]\n[3, 2, 1]\n10\n"
+        );
+    }
+
+    #[test]
+    fn type_repr_is_class() {
+        let src = "print(type(5))\nprint(type(\"x\"))\nprint(int)\nprint(list)\nprint(set)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "<class 'int'>\n<class 'str'>\n<class 'int'>\n<class 'list'>\n<class 'set'>\n"
+        );
+    }
+
+    #[test]
+    fn sort_min_max_kwargs() {
+        let src = "print(sorted([3, 1, 2], reverse=True))\nprint(sorted([\"bb\", \"a\", \"ccc\"], key=len))\nprint(min([], default=9))\nprint(max([\"a\", \"bbb\", \"cc\"], key=len))\nprint(min([3, 1, 2], key=lambda x: -x))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[3, 2, 1]\n['a', 'bb', 'ccc']\n9\nbbb\n3\n"
+        );
+    }
+
+    #[test]
+    fn dict_variants() {
+        let src = "print(dict([(\"a\", 1), (\"b\", 2)]))\nprint(dict(x=1, y=2))\nd = {\"a\": 1}\nprint(dict(d, b=2))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "{'a': 1, 'b': 2}\n{'x': 1, 'y': 2}\n{'a': 1, 'b': 2}\n"
+        );
+    }
+
+    #[test]
+    fn sets() {
+        let src = "print(sorted({1, 2, 2, 3}))\nprint(len({1, 2, 3}))\nprint(2 in {1, 2, 3})\nprint(sorted({x * 2 for x in range(4)}))\ns = {1, 2}\ns.add(3)\ns.add(1)\ns.discard(2)\nprint(sorted(s))\nprint(set())\nprint(sorted(set([1, 1, 2, 3, 3])))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[1, 2, 3]\n3\nTrue\n[0, 2, 4, 6]\n[1, 3]\nset()\n[1, 2, 3]\n"
+        );
+    }
+
+    #[test]
+    fn string_methods() {
+        let src = "print(\"a,b,c\".split(\",\"))\nprint(\"a b  c\".split())\nprint(\"-\".join([\"a\", \"b\"]))\nprint(\"  hi  \".strip(), \"xxhi\".strip(\"x\"))\nprint(\"Hi\".upper(), \"Hi\".lower(), \"hi there\".title())\nprint(\"hello\".replace(\"l\", \"L\"))\nprint(\"hello\".startswith(\"he\"), \"hello\".endswith(\"lo\"))\nprint(\"hello\".find(\"l\"), \"hello\".count(\"l\"))\nprint(\"5\".zfill(3), \"hi\".center(6) + \"|\")\nprint(\"abc\".isalpha(), \"123\".isdigit())\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "['a', 'b', 'c']\n['a', 'b', 'c']\na-b\nhi hi\nHI hi Hi There\nheLLo\nTrue True\n2 2\n005   hi  |\nTrue True\n"
+        );
+    }
+
+    #[test]
+    fn generator_expressions() {
+        let src = "print(\",\".join(str(x) for x in range(4)))\nprint(sum(x * x for x in range(5)))\nprint(list(x for x in range(3)))\ng = (x + 1 for x in [10, 20])\nprint(next(g), next(g))\nprint(sum(i for i in range(10) if i % 2 == 0))\n";
+        assert_eq!(run_source(src).unwrap(), "0,1,2,3\n30\n[0, 1, 2]\n11 21\n20\n");
+    }
+
+    #[test]
+    fn slicing() {
+        let src = "s = \"hello world\"\nprint(s[1:3], s[:5], s[6:], s[::-1], s[::2])\nl = [0, 1, 2, 3, 4, 5]\nprint(l[2:5], l[::-1], l[1:5:2], l[-3:])\nt = (1, 2, 3, 4)\nprint(t[1:3], t[::-1])\nprint(l[100:], l[3:3])\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "el hello world dlrow olleh hlowrd\n[2, 3, 4] [5, 4, 3, 2, 1, 0] [1, 3] [3, 4, 5]\n(2, 3) (4, 3, 2, 1)\n[] []\n"
+        );
+    }
+
+    #[test]
+    fn big_integers() {
+        let src = "print(2 ** 100)\ndef fact(n):\n    r = 1\n    for i in range(1, n + 1):\n        r *= i\n    return r\nprint(fact(25))\nprint(10 ** 30 + 1)\nprint(2 ** 100 // 7, 2 ** 100 % 7)\nprint(-(2 ** 70))\nprint(2 ** 100 == 2 ** 100, 2 ** 100 > 2 ** 99)\nx = 123456789012345678901234567890\nprint(x + x)\nprint(x * 1000000)\nprint(divmod(x, 7))\nprint(abs(-x), x > 0)\nprint(1000000 * 1000000)\nprint(type(2 ** 100) is int, isinstance(2 ** 100, int))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "1267650600228229401496703205376\n15511210043330985984000000\n1000000000000000000000000000001\n181092942889747057356671886482 2\n-1180591620717411303424\nTrue True\n246913578024691357802469135780\n123456789012345678901234567890000000\n(17636684144620811271604938270, 0)\n123456789012345678901234567890 True\n1000000000000\nTrue True\n"
+        );
+    }
+
+    #[test]
+    fn dict_methods_and_attr_builtins() {
+        let src = "d = {\"a\": 1, \"b\": 2}\nprint(d.setdefault(\"a\", 9), d.setdefault(\"c\", 3))\nprint(d.pop(\"b\"), d.pop(\"z\", -1))\nprint(d.popitem())\nd.update([(\"x\", 10)])\nprint(d)\nprint(pow(2, 10), pow(2, 10, 1000), issubclass(bool, int))\nclass A: pass\nclass B(A): pass\nprint(issubclass(B, A), issubclass(A, B))\no = B()\nsetattr(o, \"n\", 5)\nprint(getattr(o, \"n\"), getattr(o, \"z\", 0), hasattr(o, \"n\"), hasattr(o, \"z\"))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "1 3\n2 -1\n('c', 3)\n{'a': 1, 'x': 10}\n1024 24 True\nTrue False\n5 0 True False\n"
+        );
+    }
+
+    #[test]
+    fn method_keyword_args() {
+        let src = "l = [3, 1, 2]\nl.sort(key=lambda x: -x)\nprint(l)\nw = [\"bb\", \"a\", \"ccc\"]\nw.sort(key=len, reverse=True)\nprint(w)\nclass G:\n    def hi(self, name, punct=\"!\"):\n        return name + punct\nprint(G().hi(\"a\"), G().hi(\"b\", punct=\"?\"))\n";
+        assert_eq!(run_source(src).unwrap(), "[3, 2, 1]\n['ccc', 'bb', 'a']\na! b?\n");
+    }
+
+    #[test]
+    fn fstring_format_specs() {
+        let src = "print(f\"{3.14159:.2f}\")\nprint(f\"{42:>6}|{42:<6}|{42:^6}|\")\nprint(f\"{42:06}\", f\"{-42:06}\")\nprint(f\"{255:x}\", f\"{255:#x}\", f\"{10:b}\", f\"{64:o}\")\nprint(f\"{1234567:,}\", f\"{1234.5:,.2f}\")\nprint(f\"{5:+}\", f\"{0.1234:.1%}\")\nprint(f\"{'hi':>5}|\", f\"{'x':*^7}\")\nprint(f\"{len('abc'):03}\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "3.14\n    42|42    |  42  |\n000042 -00042\nff 0xff 1010 100\n1,234,567 1,234.50\n+5 12.3%\n   hi| ***x***\n003\n"
+        );
+    }
+
+    #[test]
+    fn list_methods_and_ordering() {
+        let src = "l = [3, 1, 2]\nl.append(4)\nl.extend([5, 6])\nl.insert(0, 0)\nprint(l)\nl.remove(3)\nprint(l, l.index(4), l.count(2))\nl.sort()\nprint(l)\nl.reverse()\nprint(l)\nprint([3, 1, 2] < [3, 1, 3], (1, 2) < (1, 2, 0))\nprint(sorted([(2, \"b\"), (1, \"z\"), (1, \"a\")]))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[0, 3, 1, 2, 4, 5, 6]\n[0, 1, 2, 4, 5, 6] 3 1\n[0, 1, 2, 4, 5, 6]\n[6, 5, 4, 2, 1, 0]\nTrue True\n[(1, 'a'), (1, 'z'), (2, 'b')]\n"
+        );
+    }
+
+    #[test]
+    fn more_builtins() {
+        let src = "print(round(2.5), round(3.5), round(3.14159, 2), round(1234, -2))\nprint(divmod(17, 5), divmod(-17, 5))\nprint(ord(\"A\"), chr(97))\nprint(hex(255), oct(64), bin(10), hex(-255))\nprint(repr(\"hi\"), repr([1, 2]))\nprint(isinstance(5, int), isinstance(True, bool), isinstance(5, bool), isinstance(5, (str, int)))\nprint(callable(print), callable(5))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "2 4 3.14 1200\n(3, 2) (-4, 3)\n65 a\n0xff 0o100 0b1010 -0xff\n'hi' [1, 2]\nTrue True False True\nTrue False\n"
+        );
+    }
+
+    #[test]
+    fn bare_raise_reraises() {
+        let src = "def f(x):\n    try:\n        if x < 0:\n            raise ValueError(\"neg\")\n        return x\n    except ValueError:\n        print(\"log\")\n        raise\nfor v in [2, -1]:\n    try:\n        print(f(v))\n    except ValueError as e:\n        print(\"caught\", e)\ntry:\n    try:\n        raise KeyError(\"a\")\n    except KeyError:\n        raise\nexcept KeyError:\n    print(\"reraised\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "2\nlog\ncaught neg\nreraised\n"
+        );
+    }
+
+    #[test]
+    fn unary_invert() {
+        let src = "print(~5, ~0, ~-1)\nx = 12\nprint(~x & 255)\n";
+        assert_eq!(run_source(src).unwrap(), "-6 -1 0\n243\n");
+    }
+
+    #[test]
+    fn numeric_operators() {
+        let src = "print(2 ** 10, 2 ** -1, 2.0 ** 3)\nprint(6 & 3, 6 | 1, 6 ^ 3, 1 << 4, 255 >> 2)\nprint(True | False, True & True, True ^ True)\nx = 5\nx **= 2\nx |= 2\nprint(x)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "1024 0.5 8.0\n2 7 5 16 63\nTrue True False\n27\n"
+        );
+    }
+
+    #[test]
+    fn set_operations() {
+        let src = "a = {1, 2, 3, 4}\nb = {3, 4, 5, 6}\nprint(sorted(a | b))\nprint(sorted(a & b))\nprint(sorted(a - b))\nprint(sorted(a ^ b))\nprint({1, 2} <= a, a <= {1, 2}, a >= {1, 2}, {1, 2} < a)\nprint({1, 2}.issubset(a), a.isdisjoint({9, 10}))\nprint(sorted(a.union([7]).intersection({2, 7})))\nc = {1, 2}\nc.update([3], {4})\nprint(sorted(c))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[1, 2, 3, 4, 5, 6]\n[3, 4]\n[1, 2]\n[1, 2, 5, 6]\nTrue False True True\nTrue True\n[2, 7]\n[1, 2, 3, 4]\n"
+        );
+    }
+
+    #[test]
+    fn frozensets() {
+        let src = "f = frozenset([1, 2, 3, 2])\nprint(sorted(f), len(f), 2 in f)\nprint(f == {1, 2, 3})\nd = {f: \"y\", frozenset([9]): \"n\"}\nprint(d[frozenset([1, 2, 3])])\nprint(len({frozenset([1]), frozenset([1]), frozenset([2])}))\nprint(type(f | {4}) is frozenset, type({4} | f) is set)\ntry:\n    f.add(9)\nexcept AttributeError:\n    print(\"immutable\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "[1, 2, 3] 3 True\nTrue\ny\n2\nTrue True\nimmutable\n"
+        );
+    }
+
+    #[test]
+    fn dict_fromkeys() {
+        let src = "print(dict.fromkeys([1, 2, 3]))\nprint(dict.fromkeys(\"ab\", 0))\nprint(dict.fromkeys(range(2), []))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "{1: None, 2: None, 3: None}\n{'a': 0, 'b': 0}\n{0: [], 1: []}\n"
+        );
+    }
+
+    #[test]
+    fn set_order_matches_cpython() {
+        let src = "print({7, 15, 23, 31, 39})\nprint({100, 1, 50, 8, 200, 7})\ns = set()\nfor x in [7, 15, 23, 31, 39]:\n    s.add(x)\nprint(s)\nprint(set([100, 1, 50, 8, 200, 7]))\nprint({3, 4, 5, 6})\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "{7, 23, 39, 31, 15}\n{1, 50, 100, 7, 8, 200}\n{39, 7, 15, 23, 31}\n{1, 100, 7, 8, 200, 50}\n{3, 4, 5, 6}\n"
         );
     }
 

@@ -355,20 +355,29 @@ void setae_vm_pop_tmp(SetaeVM *vm) {
 }
 
 static double as_number(SetaeValue v) {
+    if (setae_obj_type(v) == SETAE_T_BIGINT) {
+        return setae_int_to_double(v);
+    }
+    if (setae_is_bool(v)) {
+        return setae_to_bool(v) ? 1.0 : 0.0;
+    }
     return setae_is_int(v) ? (double)setae_to_int(v) : setae_to_float(v);
 }
 
-static SetaeValue from_i64(int64_t i) {
+static SetaeValue from_i64(SetaeVM *vm, int64_t i) {
     if (i >= INT32_MIN && i <= INT32_MAX) {
         return setae_from_int((int32_t)i);
     }
-    return setae_from_float((double)i);
+    return setae_int_from_i64(vm->heap, i);
 }
 
 static int hashable(SetaeValue v) {
     int t = setae_obj_type(v);
     if (t == SETAE_T_LIST || t == SETAE_T_DICT) {
         return 0;
+    }
+    if (t == SETAE_T_SET) {
+        return ((SetaeSet *)setae_to_ptr(v))->frozen;
     }
     if (t == SETAE_T_TUPLE) {
         SetaeTuple *tup = setae_to_ptr(v);
@@ -393,7 +402,7 @@ static int64_t dict_find(const SetaeDict *d, SetaeValue key) {
     return -1;
 }
 
-static void dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
+void setae_dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
     int64_t i = dict_find(d, key);
     if (i >= 0) {
         d->entries[i].value = value;
@@ -486,10 +495,163 @@ static SetaeValue load_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
     return setae_none();
 }
 
+static int attr_name_cstr(SetaeVM *vm, SetaeValue v, char *buf, size_t cap) {
+    if (!setae_is_str(v)) {
+        setae_vm_raise(vm, "TypeError", "attribute name must be string, not '%s'",
+                       setae_type_name(v));
+        return 0;
+    }
+    size_t n = setae_str_len(v);
+    if (n >= cap) {
+        setae_vm_raise(vm, "AttributeError", "attribute name too long");
+        return 0;
+    }
+    memcpy(buf, setae_str_data(v), n);
+    buf[n] = '\0';
+    return 1;
+}
+
+SetaeValue setae_builtin_getattr(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs < 2 || nargs > 3) {
+        setae_vm_raise(vm, "TypeError", "getattr expected 2 or 3 arguments, got %d", nargs);
+        return setae_none();
+    }
+    char buf[256];
+    if (!attr_name_cstr(vm, args[1], buf, sizeof(buf))) {
+        return setae_none();
+    }
+    SetaeValue r = load_attr(vm, args[0], buf);
+    if (vm->error && nargs == 3) {
+        vm->error = 0;
+        vm->errmsg[0] = '\0';
+        vm->exc = setae_none();
+        return args[2];
+    }
+    return r;
+}
+
+SetaeValue setae_builtin_hasattr(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 2) {
+        setae_vm_raise(vm, "TypeError", "hasattr expected 2 arguments, got %d", nargs);
+        return setae_none();
+    }
+    char buf[256];
+    if (!attr_name_cstr(vm, args[1], buf, sizeof(buf))) {
+        return setae_none();
+    }
+    load_attr(vm, args[0], buf);
+    if (vm->error) {
+        vm->error = 0;
+        vm->errmsg[0] = '\0';
+        vm->exc = setae_none();
+        return setae_bool(0);
+    }
+    return setae_bool(1);
+}
+
+SetaeValue setae_builtin_setattr(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 3) {
+        setae_vm_raise(vm, "TypeError", "setattr expected 3 arguments, got %d", nargs);
+        return setae_none();
+    }
+    char buf[256];
+    if (!attr_name_cstr(vm, args[1], buf, sizeof(buf))) {
+        return setae_none();
+    }
+    int t = setae_obj_type(args[0]);
+    if (t == SETAE_T_INSTANCE) {
+        setae_instance_set(vm->heap, setae_to_ptr(args[0]), buf, args[2]);
+        return setae_none();
+    }
+    if (t == SETAE_T_CLASS) {
+        SetaeValue dv = ((SetaeClass *)setae_to_ptr(args[0]))->dict;
+        SetaeValue key = setae_str_new(vm->heap, buf, strlen(buf));
+        setae_dict_set(setae_to_ptr(dv), key, args[2]);
+        return setae_none();
+    }
+    setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
+                   setae_type_name(args[0]), buf);
+    return setae_none();
+}
+
 static const char *bin_symbol(SetaeBinOp op, int aug) {
-    static const char *const plain[] = {"+", "-", "*", "/", "%", "//"};
-    static const char *const augmented[] = {"+=", "-=", "*=", "/=", "%=", "//="};
+    static const char *const plain[] = {"+", "-",  "*",  "/",  "%",  "//",
+                                        "**", "&", "|", "^", "<<", ">>"};
+    static const char *const augmented[] = {"+=", "-=",  "*=", "/=", "%=",  "//=",
+                                            "**=", "&=", "|=", "^=", "<<=", ">>="};
     return aug ? augmented[op] : plain[op];
+}
+
+static SetaeValue set_binop(SetaeVM *vm, SetaeBinOp op, SetaeSet *a, SetaeSet *b) {
+    uint8_t frozen = a->frozen;
+    SetaeValue rv = setae_set_new(vm->heap);
+    setae_vm_push_tmp(vm, rv);
+    SetaeSet *r = setae_to_ptr(rv);
+    if (op == BIN_BITOR) {
+        setae_set_merge(r, a);
+        setae_set_merge(r, b);
+    } else if (op == BIN_BITAND) {
+        SetaeSet *small = a->used <= b->used ? a : b;
+        SetaeSet *big = a->used <= b->used ? b : a;
+        for (uint32_t i = 0; i <= small->mask; i++) {
+            if (small->table[i].state == SET_ACTIVE &&
+                setae_set_contains(big, small->table[i].key)) {
+                setae_set_add(r, small->table[i].key);
+            }
+        }
+    } else if (op == BIN_SUB) {
+        if ((a->used >> 2) > b->used) {
+            setae_set_merge(r, a);
+            for (uint32_t i = 0; i <= b->mask; i++) {
+                if (b->table[i].state == SET_ACTIVE) {
+                    setae_set_discard(r, b->table[i].key);
+                }
+            }
+        } else {
+            for (uint32_t i = 0; i <= a->mask; i++) {
+                if (a->table[i].state == SET_ACTIVE &&
+                    !setae_set_contains(b, a->table[i].key)) {
+                    setae_set_add(r, a->table[i].key);
+                }
+            }
+        }
+    } else {
+        setae_set_merge(r, b);
+        for (uint32_t i = 0; i <= a->mask; i++) {
+            if (a->table[i].state == SET_ACTIVE) {
+                if (!setae_set_discard(r, a->table[i].key)) {
+                    setae_set_add(r, a->table[i].key);
+                }
+            }
+        }
+    }
+    r->frozen = frozen;
+    setae_vm_pop_tmp(vm);
+    return rv;
+}
+
+static SetaeValue coerce_to_set(SetaeVM *vm, SetaeValue v) {
+    if (setae_obj_type(v) == SETAE_T_SET) {
+        return v;
+    }
+    SetaeValue sv = setae_set_new(vm->heap);
+    setae_vm_push_tmp(vm, sv);
+    SetaeValue it = setae_make_iter(vm, v);
+    if (vm->error) {
+        setae_vm_pop_tmp(vm);
+        return setae_none();
+    }
+    setae_vm_push_tmp(vm, it);
+    SetaeValue x;
+    while (setae_iter_advance(vm, it, &x)) {
+        if (vm->error) {
+            break;
+        }
+        setae_set_add(setae_to_ptr(sv), x);
+    }
+    setae_vm_pop_tmp(vm);
+    setae_vm_pop_tmp(vm);
+    return vm->error ? setae_none() : sv;
 }
 
 static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
@@ -528,36 +690,152 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         }
         return rv;
     }
-    int numeric =
-        (setae_is_int(a) || setae_is_float(a)) && (setae_is_int(b) || setae_is_float(b));
-    if (!numeric) {
+    if ((op == BIN_BITOR || op == BIN_BITAND || op == BIN_SUB || op == BIN_BITXOR) &&
+        setae_obj_type(a) == SETAE_T_SET && setae_obj_type(b) == SETAE_T_SET) {
+        return set_binop(vm, op, setae_to_ptr(a), setae_to_ptr(b));
+    }
+    int a_int = setae_is_integer(a);
+    int b_int = setae_is_integer(b);
+    int is_bitwise = op == BIN_BITAND || op == BIN_BITOR || op == BIN_BITXOR ||
+                     op == BIN_LSHIFT || op == BIN_RSHIFT;
+    int numeric = (a_int || setae_is_float(a)) && (b_int || setae_is_float(b));
+    if (!numeric || (is_bitwise && !(a_int && b_int))) {
         setae_vm_raise(vm, "TypeError", "unsupported operand type(s) for %s: '%s' and '%s'",
                        bin_symbol(op, aug), setae_type_name(a), setae_type_name(b));
         return setae_none();
     }
-    if (setae_is_int(a) && setae_is_int(b) && op != BIN_DIV) {
-        int64_t x = setae_to_int(a);
-        int64_t y = setae_to_int(b);
-        if (op == BIN_MOD || op == BIN_FLOORDIV) {
-            if (y == 0) {
+    if (a_int && b_int && op != BIN_DIV) {
+        SetaeHeap *h = vm->heap;
+        int a_big = setae_obj_type(a) == SETAE_T_BIGINT;
+        int b_big = setae_obj_type(b) == SETAE_T_BIGINT;
+        if (!a_big && !b_big) {
+            int64_t x = setae_is_bool(a) ? (setae_to_bool(a) ? 1 : 0) : setae_to_int(a);
+            int64_t y = setae_is_bool(b) ? (setae_to_bool(b) ? 1 : 0) : setae_to_int(b);
+            int64_t r;
+            switch (op) {
+            case BIN_ADD:
+                if (!__builtin_add_overflow(x, y, &r)) {
+                    return from_i64(vm, r);
+                }
+                break;
+            case BIN_SUB:
+                if (!__builtin_sub_overflow(x, y, &r)) {
+                    return from_i64(vm, r);
+                }
+                break;
+            case BIN_MUL:
+                if (!__builtin_mul_overflow(x, y, &r)) {
+                    return from_i64(vm, r);
+                }
+                break;
+            case BIN_MOD:
+            case BIN_FLOORDIV: {
+                if (y == 0) {
+                    setae_vm_raise(vm, "ZeroDivisionError",
+                                   "integer division or modulo by zero");
+                    return setae_none();
+                }
+                if (op == BIN_MOD) {
+                    int64_t m = x % y;
+                    if (m != 0 && (m < 0) != (y < 0)) {
+                        m += y;
+                    }
+                    return from_i64(vm, m);
+                }
+                int64_t q = x / y;
+                if (x % y != 0 && (x < 0) != (y < 0)) {
+                    q--;
+                }
+                return from_i64(vm, q);
+            }
+            case BIN_BITAND:
+                return setae_is_bool(a) && setae_is_bool(b) ? setae_bool(x & y)
+                                                            : from_i64(vm, x & y);
+            case BIN_BITOR:
+                return setae_is_bool(a) && setae_is_bool(b) ? setae_bool(x | y)
+                                                            : from_i64(vm, x | y);
+            case BIN_BITXOR:
+                return setae_is_bool(a) && setae_is_bool(b) ? setae_bool(x ^ y)
+                                                            : from_i64(vm, x ^ y);
+            case BIN_RSHIFT:
+                if (y < 0) {
+                    setae_vm_raise(vm, "ValueError", "negative shift count");
+                    return setae_none();
+                }
+                return from_i64(vm, y >= 63 ? (x < 0 ? -1 : 0) : (x >> y));
+            case BIN_LSHIFT:
+            case BIN_POW:
+                break;
+            default:
+                break;
+            }
+        }
+        switch (op) {
+        case BIN_ADD:
+            return setae_int_add(h, a, b);
+        case BIN_SUB:
+            return setae_int_sub(h, a, b);
+        case BIN_MUL:
+            return setae_int_mul(h, a, b);
+        case BIN_MOD:
+        case BIN_FLOORDIV: {
+            if (setae_int_sign(b) == 0) {
                 setae_vm_raise(vm, "ZeroDivisionError", "integer division or modulo by zero");
                 return setae_none();
             }
-            if (op == BIN_MOD) {
-                int64_t r = x % y;
-                if (r != 0 && (r < 0) != (y < 0)) {
-                    r += y;
-                }
-                return from_i64(r);
-            }
-            int64_t q = x / y;
-            if (x % y != 0 && (x < 0) != (y < 0)) {
-                q--;
-            }
-            return from_i64(q);
+            SetaeValue q, r;
+            setae_int_divmod(h, a, b, &q, &r);
+            return op == BIN_MOD ? r : q;
         }
-        int64_t r = op == BIN_ADD ? x + y : op == BIN_SUB ? x - y : x * y;
-        return from_i64(r);
+        case BIN_POW: {
+            int64_t e;
+            if (setae_int_sign(b) < 0) {
+                return setae_from_float(pow(as_number(a), as_number(b)));
+            }
+            if (!setae_int_fits_i64(b, &e)) {
+                setae_vm_raise(vm, "OverflowError", "exponent too large");
+                return setae_none();
+            }
+            return setae_int_pow(h, a, e);
+        }
+        case BIN_LSHIFT: {
+            int64_t e;
+            if (setae_int_sign(b) < 0) {
+                setae_vm_raise(vm, "ValueError", "negative shift count");
+                return setae_none();
+            }
+            if (!setae_int_fits_i64(b, &e)) {
+                setae_vm_raise(vm, "OverflowError", "shift count too large");
+                return setae_none();
+            }
+            return setae_int_lshift(h, a, e);
+        }
+        case BIN_RSHIFT: {
+            int64_t e;
+            if (setae_int_sign(b) < 0) {
+                setae_vm_raise(vm, "ValueError", "negative shift count");
+                return setae_none();
+            }
+            if (!setae_int_fits_i64(b, &e)) {
+                return setae_int_sign(a) < 0 ? setae_from_int(-1) : setae_from_int(0);
+            }
+            return setae_int_rshift(h, a, e);
+        }
+        case BIN_BITAND:
+        case BIN_BITOR:
+        case BIN_BITXOR: {
+            int64_t x, y;
+            if (setae_int_fits_i64(a, &x) && setae_int_fits_i64(b, &y)) {
+                return setae_int_from_i64(
+                    h, op == BIN_BITAND ? (x & y) : op == BIN_BITOR ? (x | y) : (x ^ y));
+            }
+            setae_vm_raise(vm, "OverflowError",
+                           "bitwise operation on integers too large");
+            return setae_none();
+        }
+        default:
+            break;
+        }
     }
     double x = as_number(a);
     double y = as_number(b);
@@ -585,12 +863,18 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         }
         return setae_from_float(r);
     }
-    default:
+    case BIN_POW:
+        return setae_from_float(pow(x, y));
+    case BIN_FLOORDIV:
         if (y == 0.0) {
             setae_vm_raise(vm, "ZeroDivisionError", "float floor division by zero");
             return setae_none();
         }
         return setae_from_float(floor(x / y));
+    default:
+        setae_vm_raise(vm, "TypeError", "unsupported operand type(s) for %s: '%s' and '%s'",
+                       bin_symbol(op, aug), setae_type_name(a), setae_type_name(b));
+        return setae_none();
     }
 }
 
@@ -616,6 +900,8 @@ static int truthy(SetaeValue v) {
         return ((SetaeTuple *)setae_to_ptr(v))->len != 0;
     case SETAE_T_DICT:
         return ((SetaeDict *)setae_to_ptr(v))->len != 0;
+    case SETAE_T_SET:
+        return ((SetaeSet *)setae_to_ptr(v))->used != 0;
     case SETAE_T_RANGE:
         return setae_range_len(setae_to_ptr(v)) != 0;
     default:
@@ -656,6 +942,8 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
     }
     case SETAE_T_DICT:
         return dict_find(setae_to_ptr(container), x) >= 0;
+    case SETAE_T_SET:
+        return setae_set_contains(setae_to_ptr(container), x);
     case SETAE_T_STR: {
         if (!setae_is_str(x)) {
             setae_vm_raise(
@@ -698,6 +986,19 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
     }
 }
 
+static int set_is_subset(SetaeSet *sa, SetaeSet *sb) {
+    if (sa->used > sb->used) {
+        return 0;
+    }
+    for (uint32_t i = 0; i <= sa->mask; i++) {
+        if (sa->table[i].state == SET_ACTIVE &&
+            !setae_set_contains(sb, sa->table[i].key)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b) {
     if (op == CMP_IS || op == CMP_IS_NOT) {
         int same = a == b;
@@ -710,21 +1011,88 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
         }
         return setae_bool(op == CMP_IN ? r : !r);
     }
+    if (setae_obj_type(a) == SETAE_T_SET && setae_obj_type(b) == SETAE_T_SET) {
+        SetaeSet *sa = setae_to_ptr(a);
+        SetaeSet *sb = setae_to_ptr(b);
+        int r;
+        switch (op) {
+        case CMP_EQ:
+            r = sa->used == sb->used && set_is_subset(sa, sb);
+            break;
+        case CMP_NE:
+            r = !(sa->used == sb->used && set_is_subset(sa, sb));
+            break;
+        case CMP_LE:
+            r = set_is_subset(sa, sb);
+            break;
+        case CMP_GE:
+            r = set_is_subset(sb, sa);
+            break;
+        case CMP_LT:
+            r = sa->used < sb->used && set_is_subset(sa, sb);
+            break;
+        default:
+            r = sa->used > sb->used && set_is_subset(sb, sa);
+            break;
+        }
+        return setae_bool(r);
+    }
     if (op == CMP_EQ || op == CMP_NE) {
         int eq = setae_value_eq(a, b);
         return setae_bool(op == CMP_EQ ? eq : !eq);
     }
-    int an = setae_is_int(a) || setae_is_float(a);
-    int bn = setae_is_int(b) || setae_is_float(b);
+    int a_int = setae_is_integer(a);
+    int b_int = setae_is_integer(b);
+    int an = a_int || setae_is_float(a);
+    int bn = b_int || setae_is_float(b);
+    int at = setae_obj_type(a);
+    int bt = setae_obj_type(b);
     int c;
-    if (an && bn) {
+    if (a_int && b_int) {
+        c = setae_int_cmp(a, b);
+    } else if (an && bn) {
         double x = as_number(a);
         double y = as_number(b);
         c = x < y ? -1 : x > y ? 1 : 0;
     } else if (setae_is_str(a) && setae_is_str(b)) {
         c = str_order(a, b);
+    } else if ((at == SETAE_T_TUPLE && bt == SETAE_T_TUPLE) ||
+               (at == SETAE_T_LIST && bt == SETAE_T_LIST)) {
+        SetaeValue *ai, *bi;
+        uint32_t al, bl;
+        if (at == SETAE_T_TUPLE) {
+            ai = ((SetaeTuple *)setae_to_ptr(a))->items;
+            al = ((SetaeTuple *)setae_to_ptr(a))->len;
+            bi = ((SetaeTuple *)setae_to_ptr(b))->items;
+            bl = ((SetaeTuple *)setae_to_ptr(b))->len;
+        } else {
+            ai = ((SetaeList *)setae_to_ptr(a))->items;
+            al = ((SetaeList *)setae_to_ptr(a))->len;
+            bi = ((SetaeList *)setae_to_ptr(b))->items;
+            bl = ((SetaeList *)setae_to_ptr(b))->len;
+        }
+        uint32_t n = al < bl ? al : bl;
+        c = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            if (setae_value_eq(ai[i], bi[i])) {
+                continue;
+            }
+            int lt = setae_value_lt(vm, ai[i], bi[i]);
+            if (vm->error) {
+                return setae_none();
+            }
+            c = lt ? -1 : 1;
+            break;
+        }
+        if (c == 0) {
+            c = al < bl ? -1 : al > bl ? 1 : 0;
+        }
     } else {
-        setae_vm_raise(vm, "TypeError", "comparison not supported between '%s' and '%s'",
+        setae_vm_raise(vm, "TypeError", "'%s' not supported between instances of '%s' and '%s'",
+                       op == CMP_LT   ? "<"
+                       : op == CMP_LE ? "<="
+                       : op == CMP_GT ? ">"
+                                      : ">=",
                        setae_type_name(a), setae_type_name(b));
         return setae_none();
     }
@@ -734,7 +1102,13 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
 
 static SetaeValue unary_neg(SetaeVM *vm, SetaeValue a) {
     if (setae_is_int(a)) {
-        return from_i64(-(int64_t)setae_to_int(a));
+        return from_i64(vm, -(int64_t)setae_to_int(a));
+    }
+    if (setae_obj_type(a) == SETAE_T_BIGINT) {
+        return setae_int_neg(vm->heap, a);
+    }
+    if (setae_is_bool(a)) {
+        return setae_from_int(setae_to_bool(a) ? -1 : 0);
     }
     if (setae_is_float(a)) {
         return setae_from_float(-setae_to_float(a));
@@ -768,7 +1142,145 @@ static SetaeValue str_char_at(SetaeVM *vm, SetaeValue s, size_t cp) {
     return setae_none();
 }
 
+static int slice_get(SetaeVM *vm, SetaeSlice *sl, int64_t len, int64_t *ostart,
+                     int64_t *ostep, int64_t *ocount) {
+    int64_t step = 1;
+    if (!setae_is_none(sl->step)) {
+        if (!setae_is_int(sl->step)) {
+            setae_vm_raise(vm, "TypeError", "slice indices must be integers or None");
+            return 0;
+        }
+        step = setae_to_int(sl->step);
+        if (step == 0) {
+            setae_vm_raise(vm, "ValueError", "slice step cannot be zero");
+            return 0;
+        }
+    }
+    int64_t lower = step < 0 ? -1 : 0;
+    int64_t upper = step < 0 ? len - 1 : len;
+    int64_t start, stop;
+    if (setae_is_none(sl->lower)) {
+        start = step < 0 ? upper : lower;
+    } else if (!setae_is_int(sl->lower)) {
+        setae_vm_raise(vm, "TypeError", "slice indices must be integers or None");
+        return 0;
+    } else {
+        start = setae_to_int(sl->lower);
+        if (start < 0) {
+            start += len;
+            if (start < lower) {
+                start = lower;
+            }
+        } else if (start > upper) {
+            start = upper;
+        }
+    }
+    if (setae_is_none(sl->upper)) {
+        stop = step < 0 ? lower : upper;
+    } else if (!setae_is_int(sl->upper)) {
+        setae_vm_raise(vm, "TypeError", "slice indices must be integers or None");
+        return 0;
+    } else {
+        stop = setae_to_int(sl->upper);
+        if (stop < 0) {
+            stop += len;
+            if (stop < lower) {
+                stop = lower;
+            }
+        } else if (stop > upper) {
+            stop = upper;
+        }
+    }
+    int64_t count;
+    if (step > 0) {
+        count = start < stop ? (stop - start + step - 1) / step : 0;
+    } else {
+        count = start > stop ? (start - stop - step - 1) / -step : 0;
+    }
+    *ostart = start;
+    *ostep = step;
+    *ocount = count;
+    return 1;
+}
+
+static SetaeValue slice_str(SetaeVM *vm, SetaeValue s, int64_t start, int64_t step,
+                            int64_t count) {
+    const char *p = setae_str_data(s);
+    size_t n = setae_str_len(s);
+    size_t ncp = setae_str_count(s);
+    size_t *off = malloc((ncp + 1) * sizeof(size_t));
+    size_t ci = 0;
+    for (size_t i = 0; i <= n; i++) {
+        if (i == n || ((unsigned char)p[i] & 0xc0) != 0x80) {
+            off[ci++] = i;
+            if (ci > ncp) {
+                break;
+            }
+        }
+    }
+    size_t cap = n + 1, len = 0;
+    char *buf = malloc(cap);
+    for (int64_t k = 0, cp = start; k < count; k++, cp += step) {
+        size_t a = off[cp];
+        size_t b = off[cp + 1];
+        while (len + (b - a) > cap) {
+            cap *= 2;
+            buf = realloc(buf, cap);
+        }
+        memcpy(buf + len, p + a, b - a);
+        len += b - a;
+    }
+    SetaeValue r = setae_str_new(vm->heap, buf, len);
+    free(buf);
+    free(off);
+    return r;
+}
+
+static SetaeValue do_slice(SetaeVM *vm, SetaeValue obj, SetaeSlice *sl) {
+    int t = setae_obj_type(obj);
+    int64_t len;
+    if (t == SETAE_T_LIST) {
+        len = ((SetaeList *)setae_to_ptr(obj))->len;
+    } else if (t == SETAE_T_TUPLE) {
+        len = ((SetaeTuple *)setae_to_ptr(obj))->len;
+    } else if (t == SETAE_T_STR) {
+        len = (int64_t)setae_str_count(obj);
+    } else {
+        setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
+                       setae_type_name(obj));
+        return setae_none();
+    }
+    int64_t start, step, count;
+    if (!slice_get(vm, sl, len, &start, &step, &count)) {
+        return setae_none();
+    }
+    setae_vm_push_tmp(vm, obj);
+    SetaeValue rv;
+    if (t == SETAE_T_STR) {
+        rv = slice_str(vm, obj, start, step, count);
+    } else if (t == SETAE_T_LIST) {
+        rv = setae_list_new(vm->heap, (uint32_t)count);
+        SetaeList *r = setae_to_ptr(rv);
+        SetaeList *src = setae_to_ptr(obj);
+        for (int64_t k = 0, i = start; k < count; k++, i += step) {
+            setae_list_push(r, src->items[i]);
+        }
+    } else {
+        rv = setae_tuple_new(vm->heap, NULL, (uint32_t)count);
+        SetaeTuple *r = setae_to_ptr(rv);
+        SetaeTuple *src = setae_to_ptr(obj);
+        for (int64_t k = 0, i = start; k < count; k++, i += step) {
+            r->items[k] = src->items[i];
+        }
+    }
+    setae_vm_pop_tmp(vm);
+    return rv;
+}
+
 static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
+    if (setae_obj_type(idx) == SETAE_T_SLICE) {
+        return do_slice(vm, obj, setae_to_ptr(idx));
+    }
     switch (setae_obj_type(obj)) {
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(obj);
@@ -850,7 +1362,7 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             setae_vm_raise(vm, "IndexError", "range object index out of range");
             return setae_none();
         }
-        return from_i64(r->start + i * r->step);
+        return from_i64(vm, r->start + i * r->step);
     }
     default:
         setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
@@ -935,7 +1447,7 @@ static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeVa
             setae_vm_raise(vm, "TypeError", "unhashable type: '%s'", setae_type_name(idx));
             return;
         }
-        dict_set(setae_to_ptr(obj), idx, val);
+        setae_dict_set(setae_to_ptr(obj), idx, val);
         return;
     }
     default:
@@ -970,6 +1482,17 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
         *out = d->entries[it->index++].key;
         return 1;
     }
+    case SETAE_T_SET: {
+        SetaeSet *s = setae_to_ptr(it->target);
+        while (it->index <= s->mask) {
+            SetaeSetEntry *e = &s->table[it->index++];
+            if (e->state == SET_ACTIVE) {
+                *out = e->key;
+                return 1;
+            }
+        }
+        return 0;
+    }
     case SETAE_T_STR: {
         size_t n = setae_str_len(it->target);
         if (it->index >= n) {
@@ -994,7 +1517,7 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
         if ((int64_t)it->index >= setae_range_len(r)) {
             return 0;
         }
-        *out = from_i64(r->start + (int64_t)it->index * r->step);
+        *out = from_i64(vm, r->start + (int64_t)it->index * r->step);
         it->index++;
         return 1;
     }
@@ -1015,16 +1538,37 @@ static int has_kwargs_given(SetaeValue kwargs) {
     return kwargs != 0 && ((SetaeDict *)setae_to_ptr(kwargs))->len > 0;
 }
 
+static int cur_kwarg(SetaeVM *vm, const char *name, SetaeValue *out) {
+    if (vm->cur_kwargs == 0) {
+        return 0;
+    }
+    SetaeDict *d = setae_to_ptr(vm->cur_kwargs);
+    size_t len = strlen(name);
+    for (uint32_t i = 0; i < d->len; i++) {
+        SetaeValue k = d->entries[i].key;
+        if (setae_is_str(k) && setae_str_len(k) == len &&
+            memcmp(setae_str_data(k), name, len) == 0) {
+            *out = d->entries[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
                              int nargs, SetaeValue kwargs) {
     int t = setae_obj_type(callee);
     if (t == SETAE_T_BUILTIN) {
-        if (has_kwargs_given(kwargs)) {
-            setae_vm_raise(vm, "TypeError", "this builtin takes no keyword arguments");
+        SetaeBuiltin *b = setae_to_ptr(callee);
+        if (has_kwargs_given(kwargs) && !b->kwargs_ok) {
+            setae_vm_raise(vm, "TypeError", "%s() takes no keyword arguments", b->name);
             return setae_none();
         }
-        SetaeBuiltin *b = setae_to_ptr(callee);
-        return b->fn(vm, args, nargs);
+        SetaeValue saved = vm->cur_kwargs;
+        vm->cur_kwargs = kwargs;
+        SetaeValue r = b->fn(vm, args, nargs);
+        vm->cur_kwargs = saved;
+        return r;
     }
     if (t == SETAE_T_FUNCTION) {
         SetaeFunc *f = setae_to_ptr(callee);
@@ -1179,6 +1723,15 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         attr_error(vm, obj, name);
         return setae_none();
     }
+    if (t == SETAE_T_STR) {
+        int found;
+        SetaeValue r = setae_str_method(vm, obj, name, args, nargs, &found);
+        if (found) {
+            return r;
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
     if (t == SETAE_T_LIST) {
         SetaeList *l = setae_to_ptr(obj);
         if (strcmp(name, "append") == 0) {
@@ -1188,6 +1741,165 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                 return setae_none();
             }
             setae_list_push(l, args[0]);
+            return setae_none();
+        }
+        if (strcmp(name, "extend") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "extend() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            SetaeValue it = setae_make_iter(vm, args[0]);
+            if (vm->error) {
+                return setae_none();
+            }
+            setae_vm_push_tmp(vm, it);
+            SetaeValue x;
+            while (setae_iter_advance(vm, it, &x)) {
+                if (vm->error) {
+                    break;
+                }
+                setae_list_push(setae_to_ptr(obj), x);
+            }
+            setae_vm_pop_tmp(vm);
+            return setae_none();
+        }
+        if (strcmp(name, "insert") == 0) {
+            if (nargs != 2 || !setae_is_int(args[0])) {
+                setae_vm_raise(vm, "TypeError", "insert() takes an index and a value");
+                return setae_none();
+            }
+            int64_t i = setae_to_int(args[0]);
+            if (i < 0) {
+                i += l->len;
+                if (i < 0) {
+                    i = 0;
+                }
+            }
+            if (i > (int64_t)l->len) {
+                i = l->len;
+            }
+            setae_list_push(l, setae_none());
+            l = setae_to_ptr(obj);
+            for (uint32_t j = l->len - 1; j > (uint32_t)i; j--) {
+                l->items[j] = l->items[j - 1];
+            }
+            l->items[i] = args[1];
+            return setae_none();
+        }
+        if (strcmp(name, "remove") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "remove() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            for (uint32_t i = 0; i < l->len; i++) {
+                if (setae_value_eq(l->items[i], args[0])) {
+                    for (uint32_t j = i; j + 1 < l->len; j++) {
+                        l->items[j] = l->items[j + 1];
+                    }
+                    l->len--;
+                    return setae_none();
+                }
+            }
+            setae_vm_raise(vm, "ValueError", "list.remove(x): x not in list");
+            return setae_none();
+        }
+        if (strcmp(name, "index") == 0) {
+            if (nargs < 1) {
+                setae_vm_raise(vm, "TypeError", "index() takes at least 1 argument");
+                return setae_none();
+            }
+            for (uint32_t i = 0; i < l->len; i++) {
+                if (setae_value_eq(l->items[i], args[0])) {
+                    return setae_from_int((int32_t)i);
+                }
+            }
+            setae_vm_raise(vm, "ValueError", "is not in list");
+            return setae_none();
+        }
+        if (strcmp(name, "count") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "count() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            int32_t c = 0;
+            for (uint32_t i = 0; i < l->len; i++) {
+                if (setae_value_eq(l->items[i], args[0])) {
+                    c++;
+                }
+            }
+            return setae_from_int(c);
+        }
+        if (strcmp(name, "reverse") == 0) {
+            for (uint32_t i = 0, j = l->len; i < j; i++) {
+                j--;
+                SetaeValue tmp = l->items[i];
+                l->items[i] = l->items[j];
+                l->items[j] = tmp;
+            }
+            return setae_none();
+        }
+        if (strcmp(name, "clear") == 0) {
+            l->len = 0;
+            return setae_none();
+        }
+        if (strcmp(name, "copy") == 0) {
+            SetaeValue rv = setae_list_new(vm->heap, l->len);
+            SetaeList *r = setae_to_ptr(rv);
+            SetaeList *src = setae_to_ptr(obj);
+            for (uint32_t i = 0; i < src->len; i++) {
+                setae_list_push(r, src->items[i]);
+            }
+            return rv;
+        }
+        if (strcmp(name, "sort") == 0) {
+            SetaeValue keyfn = setae_none();
+            int reverse = 0;
+            SetaeValue kv;
+            if (cur_kwarg(vm, "key", &kv)) {
+                keyfn = kv;
+            }
+            if (cur_kwarg(vm, "reverse", &kv)) {
+                reverse = setae_truthy(kv);
+            }
+            SetaeValue keysv = setae_list_new(vm->heap, l->len);
+            setae_vm_push_tmp(vm, keysv);
+            SetaeList *keys = setae_to_ptr(keysv);
+            for (uint32_t i = 0; i < l->len; i++) {
+                SetaeValue k = setae_is_none(keyfn)
+                                   ? l->items[i]
+                                   : setae_call(vm, keyfn, &l->items[i], 1);
+                if (vm->error) {
+                    setae_vm_pop_tmp(vm);
+                    return setae_none();
+                }
+                setae_list_push(keys, k);
+            }
+            l = setae_to_ptr(obj);
+            for (uint32_t i = 1; i < l->len; i++) {
+                SetaeValue kk = keys->items[i];
+                SetaeValue vv = l->items[i];
+                uint32_t j = i;
+                while (j > 0) {
+                    int lt = reverse ? setae_value_lt(vm, keys->items[j - 1], kk)
+                                     : setae_value_lt(vm, kk, keys->items[j - 1]);
+                    if (vm->error) {
+                        setae_vm_pop_tmp(vm);
+                        return setae_none();
+                    }
+                    if (!lt) {
+                        break;
+                    }
+                    keys->items[j] = keys->items[j - 1];
+                    l->items[j] = l->items[j - 1];
+                    j--;
+                }
+                keys->items[j] = kk;
+                l->items[j] = vv;
+            }
+            setae_vm_pop_tmp(vm);
             return setae_none();
         }
         if (strcmp(name, "pop") == 0) {
@@ -1270,6 +1982,294 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
             }
             return rv;
         }
+        if (strcmp(name, "setdefault") == 0) {
+            if (nargs < 1 || nargs > 2) {
+                setae_vm_raise(vm, "TypeError", "setdefault expected 1 or 2 arguments");
+                return setae_none();
+            }
+            if (!hashable(args[0])) {
+                setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
+                               setae_type_name(args[0]));
+                return setae_none();
+            }
+            int64_t i = dict_find(d, args[0]);
+            if (i >= 0) {
+                return d->entries[i].value;
+            }
+            SetaeValue def = nargs == 2 ? args[1] : setae_none();
+            setae_dict_set(d, args[0], def);
+            return def;
+        }
+        if (strcmp(name, "pop") == 0) {
+            if (nargs < 1 || nargs > 2) {
+                setae_vm_raise(vm, "TypeError", "pop expected 1 or 2 arguments");
+                return setae_none();
+            }
+            int64_t i = dict_find(d, args[0]);
+            if (i >= 0) {
+                SetaeValue v = d->entries[i].value;
+                setae_dict_del(d, args[0]);
+                return v;
+            }
+            if (nargs == 2) {
+                return args[1];
+            }
+            setae_vm_raise(vm, "KeyError", "");
+            return setae_none();
+        }
+        if (strcmp(name, "popitem") == 0) {
+            if (d->len == 0) {
+                setae_vm_raise(vm, "KeyError", "'popitem(): dictionary is empty'");
+                return setae_none();
+            }
+            uint32_t last = d->len - 1;
+            SetaeValue kv[2] = {d->entries[last].key, d->entries[last].value};
+            SetaeValue r = setae_tuple_new(vm->heap, kv, 2);
+            setae_vm_push_tmp(vm, r);
+            setae_dict_del(setae_to_ptr(obj), kv[0]);
+            setae_vm_pop_tmp(vm);
+            return r;
+        }
+        if (strcmp(name, "clear") == 0) {
+            d->len = 0;
+            free(d->index);
+            d->index = NULL;
+            d->index_cap = 0;
+            return setae_none();
+        }
+        if (strcmp(name, "copy") == 0) {
+            SetaeValue rv = setae_dict_new(vm->heap);
+            setae_vm_push_tmp(vm, rv);
+            SetaeDict *src = setae_to_ptr(obj);
+            for (uint32_t i = 0; i < src->len; i++) {
+                setae_dict_set(setae_to_ptr(rv), src->entries[i].key, src->entries[i].value);
+            }
+            setae_vm_pop_tmp(vm);
+            return rv;
+        }
+        if (strcmp(name, "update") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError", "update expected 1 argument, got %d", nargs);
+                return setae_none();
+            }
+            if (setae_obj_type(args[0]) == SETAE_T_DICT) {
+                SetaeDict *o = setae_to_ptr(args[0]);
+                for (uint32_t i = 0; i < o->len; i++) {
+                    setae_dict_set(setae_to_ptr(obj), o->entries[i].key, o->entries[i].value);
+                }
+                return setae_none();
+            }
+            SetaeValue it = setae_make_iter(vm, args[0]);
+            if (vm->error) {
+                return setae_none();
+            }
+            setae_vm_push_tmp(vm, it);
+            SetaeValue pair;
+            while (setae_iter_advance(vm, it, &pair)) {
+                if (vm->error) {
+                    break;
+                }
+                setae_vm_push_tmp(vm, pair);
+                SetaeValue pl = setae_iter_collect(vm, pair);
+                setae_vm_pop_tmp(vm);
+                if (vm->error) {
+                    break;
+                }
+                SetaeList *pll = setae_to_ptr(pl);
+                if (pll->len != 2) {
+                    setae_vm_raise(vm, "ValueError", "dictionary update sequence element "
+                                                     "has the wrong length");
+                    break;
+                }
+                setae_dict_set(setae_to_ptr(obj), pll->items[0], pll->items[1]);
+            }
+            setae_vm_pop_tmp(vm);
+            return setae_none();
+        }
+    } else if (t == SETAE_T_SET) {
+        SetaeSet *s = setae_to_ptr(obj);
+        if (s->frozen &&
+            (strcmp(name, "add") == 0 || strcmp(name, "discard") == 0 ||
+             strcmp(name, "remove") == 0 || strcmp(name, "pop") == 0 ||
+             strcmp(name, "clear") == 0 || strcmp(name, "update") == 0)) {
+            setae_vm_raise(vm, "AttributeError",
+                           "'frozenset' object has no attribute '%s'", name);
+            return setae_none();
+        }
+        if (strcmp(name, "add") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError", "add() takes exactly one argument (%d given)",
+                               nargs);
+                return setae_none();
+            }
+            if (!hashable(args[0])) {
+                setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
+                               setae_type_name(args[0]));
+                return setae_none();
+            }
+            setae_set_add(s, args[0]);
+            return setae_none();
+        }
+        if (strcmp(name, "discard") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "discard() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            setae_set_discard(s, args[0]);
+            return setae_none();
+        }
+        if (strcmp(name, "remove") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError",
+                               "remove() takes exactly one argument (%d given)", nargs);
+                return setae_none();
+            }
+            if (!setae_set_discard(s, args[0])) {
+                setae_vm_raise(vm, "KeyError", "");
+            }
+            return setae_none();
+        }
+        if (strcmp(name, "clear") == 0) {
+            for (uint32_t i = 0; i <= s->mask; i++) {
+                s->table[i].state = SET_EMPTY;
+                s->table[i].key = 0;
+            }
+            s->fill = 0;
+            s->used = 0;
+            return setae_none();
+        }
+        if (strcmp(name, "copy") == 0) {
+            SetaeValue cp = setae_set_new(vm->heap);
+            setae_set_merge(setae_to_ptr(cp), s);
+            return cp;
+        }
+        if (strcmp(name, "pop") == 0) {
+            for (uint32_t i = 0; i <= s->mask; i++) {
+                if (s->table[i].state == SET_ACTIVE) {
+                    SetaeValue k = s->table[i].key;
+                    s->table[i].state = SET_DUMMY;
+                    s->table[i].key = 0;
+                    s->used--;
+                    return k;
+                }
+            }
+            setae_vm_raise(vm, "KeyError", "pop from an empty set");
+            return setae_none();
+        }
+        if (strcmp(name, "union") == 0 || strcmp(name, "update") == 0) {
+            int inplace = name[0] == 'u' && name[1] == 'p';
+            SetaeValue rv;
+            SetaeSet *r;
+            if (inplace) {
+                rv = obj;
+                r = s;
+            } else {
+                rv = setae_set_new(vm->heap);
+                setae_vm_push_tmp(vm, rv);
+                r = setae_to_ptr(rv);
+                setae_set_merge(r, s);
+            }
+            for (int ai = 0; ai < nargs; ai++) {
+                SetaeValue it = setae_make_iter(vm, args[ai]);
+                if (vm->error) {
+                    break;
+                }
+                setae_vm_push_tmp(vm, it);
+                SetaeValue x;
+                while (setae_iter_advance(vm, it, &x)) {
+                    if (vm->error) {
+                        break;
+                    }
+                    setae_set_add(r, x);
+                }
+                setae_vm_pop_tmp(vm);
+                if (vm->error) {
+                    break;
+                }
+            }
+            if (!inplace) {
+                setae_vm_pop_tmp(vm);
+            }
+            return inplace ? setae_none() : (vm->error ? setae_none() : rv);
+        }
+        if (strcmp(name, "intersection") == 0 || strcmp(name, "difference") == 0 ||
+            strcmp(name, "symmetric_difference") == 0) {
+            SetaeBinOp bop = name[0] == 'i' ? BIN_BITAND
+                             : name[0] == 'd' ? BIN_SUB
+                                              : BIN_BITXOR;
+            SetaeValue acc = setae_set_new(vm->heap);
+            setae_vm_push_tmp(vm, acc);
+            setae_set_merge(setae_to_ptr(acc), s);
+            for (int ai = 0; ai < nargs; ai++) {
+                SetaeValue o = coerce_to_set(vm, args[ai]);
+                if (vm->error) {
+                    setae_vm_pop_tmp(vm);
+                    return setae_none();
+                }
+                setae_vm_push_tmp(vm, o);
+                SetaeValue next =
+                    set_binop(vm, bop, setae_to_ptr(acc), setae_to_ptr(o));
+                setae_vm_pop_tmp(vm);
+                acc = next;
+                vm->tmp_roots[vm->ntmp - 1] = acc;
+            }
+            setae_vm_pop_tmp(vm);
+            return acc;
+        }
+        if (strcmp(name, "issubset") == 0 || strcmp(name, "issuperset") == 0 ||
+            strcmp(name, "isdisjoint") == 0) {
+            if (nargs != 1) {
+                setae_vm_raise(vm, "TypeError", "%s() takes exactly one argument (%d given)",
+                               name, nargs);
+                return setae_none();
+            }
+            SetaeValue o = coerce_to_set(vm, args[0]);
+            if (vm->error) {
+                return setae_none();
+            }
+            SetaeSet *so = setae_to_ptr(o);
+            if (name[2] == 'd') {
+                for (uint32_t i = 0; i <= s->mask; i++) {
+                    if (s->table[i].state == SET_ACTIVE &&
+                        setae_set_contains(so, s->table[i].key)) {
+                        return setae_bool(0);
+                    }
+                }
+                return setae_bool(1);
+            }
+            int sub = name[2] == 's' && name[4] == 'b' ? set_is_subset(s, so)
+                                                       : set_is_subset(so, s);
+            return setae_bool(sub);
+        }
+    } else if (t == SETAE_T_BUILTIN) {
+        SetaeBuiltin *bt = setae_to_ptr(obj);
+        if (strcmp(bt->name, "dict") == 0 && strcmp(name, "fromkeys") == 0) {
+            if (nargs < 1 || nargs > 2) {
+                setae_vm_raise(vm, "TypeError",
+                               "fromkeys expected 1 or 2 arguments, got %d", nargs);
+                return setae_none();
+            }
+            SetaeValue val = nargs == 2 ? args[1] : setae_none();
+            SetaeValue dv = setae_dict_new(vm->heap);
+            setae_vm_push_tmp(vm, dv);
+            SetaeValue it = setae_make_iter(vm, args[0]);
+            if (vm->error) {
+                setae_vm_pop_tmp(vm);
+                return setae_none();
+            }
+            setae_vm_push_tmp(vm, it);
+            SetaeValue k;
+            while (setae_iter_advance(vm, it, &k)) {
+                if (vm->error) {
+                    break;
+                }
+                setae_dict_set(setae_to_ptr(dv), k, val);
+            }
+            setae_vm_pop_tmp(vm);
+            setae_vm_pop_tmp(vm);
+            return vm->error ? setae_none() : dv;
+        }
     }
     setae_vm_raise(vm, "AttributeError", "'%s' object has no attribute '%s'",
                    setae_type_name(obj), name);
@@ -1349,7 +2349,7 @@ static int bind_args(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int n
                 locals[matched] = val;
                 filled[matched] = 1;
             } else if (has_kw) {
-                dict_set(setae_to_ptr(kwdict), key, val);
+                setae_dict_set(setae_to_ptr(kwdict), key, val);
             } else if (setae_is_str(key)) {
                 setae_vm_raise(vm, "TypeError",
                                "%s() got an unexpected keyword argument '%.*s'",
@@ -1468,14 +2468,19 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_COMPARE_OP] = &&L_OP_COMPARE_OP,
         [OP_UNARY_NEG] = &&L_OP_UNARY_NEG,
         [OP_UNARY_NOT] = &&L_OP_UNARY_NOT,
+        [OP_UNARY_INVERT] = &&L_OP_UNARY_INVERT,
         [OP_MAKE_FUNCTION] = &&L_OP_MAKE_FUNCTION,
         [OP_BUILD_LIST] = &&L_OP_BUILD_LIST,
         [OP_BUILD_DICT] = &&L_OP_BUILD_DICT,
+        [OP_BUILD_SET] = &&L_OP_BUILD_SET,
+        [OP_BUILD_SET_CONST] = &&L_OP_BUILD_SET_CONST,
+        [OP_BUILD_SLICE] = &&L_OP_BUILD_SLICE,
         [OP_SUBSCR] = &&L_OP_SUBSCR,
         [OP_STORE_SUBSCR] = &&L_OP_STORE_SUBSCR,
         [OP_GET_ITER] = &&L_OP_GET_ITER,
         [OP_FOR_ITER] = &&L_OP_FOR_ITER,
         [OP_CALL_METHOD] = &&L_OP_CALL_METHOD,
+        [OP_CALL_METHOD_KW] = &&L_OP_CALL_METHOD_KW,
         [OP_EXTENDED_ARG] = &&L_OP_EXTENDED_ARG,
         [OP_LOAD_CLOSURE] = &&L_OP_LOAD_CLOSURE,
         [OP_LOAD_DEREF] = &&L_OP_LOAD_DEREF,
@@ -1502,6 +2507,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
         [OP_ROT_THREE] = &&L_OP_ROT_THREE,
         [OP_DELETE_DEREF] = &&L_OP_DELETE_DEREF,
         [OP_FORMAT_VALUE] = &&L_OP_FORMAT_VALUE,
+        [OP_FORMAT_SPEC] = &&L_OP_FORMAT_SPEC,
         [OP_YIELD_VALUE] = &&L_OP_YIELD_VALUE,
         [OP_AWAIT] = &&L_OP_AWAIT,
     };
@@ -1615,7 +2621,7 @@ stack_overflow:
             if (module != 0) {
                 SetaeDict *d = setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict);
                 SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
-                dict_set(d, key, val);
+                setae_dict_set(d, key, val);
             } else {
                 setae_vm_set_global(vm, name, val);
             }
@@ -1660,6 +2666,11 @@ stack_overflow:
                 DISPATCH();
             }
             cell->value = 0;
+            DISPATCH();
+        }
+        L_OP_FORMAT_SPEC: {
+            SetaeValue spec = stack[--sp];
+            stack[sp - 1] = setae_format_spec(vm, stack[sp - 1], spec, (int)arg);
             DISPATCH();
         }
         L_OP_FORMAT_VALUE:
@@ -1816,6 +2827,18 @@ stack_overflow:
         L_OP_UNARY_NOT:
             stack[sp - 1] = setae_bool(!truthy(stack[sp - 1]));
             DISPATCH();
+        L_OP_UNARY_INVERT: {
+            SetaeValue a = stack[sp - 1];
+            if (setae_is_bool(a)) {
+                stack[sp - 1] = from_i64(vm, ~(int64_t)(setae_to_bool(a) ? 1 : 0));
+            } else if (setae_is_int(a)) {
+                stack[sp - 1] = from_i64(vm, ~(int64_t)setae_to_int(a));
+            } else {
+                setae_vm_raise(vm, "TypeError", "bad operand type for unary ~: '%s'",
+                               setae_type_name(a));
+            }
+            DISPATCH();
+        }
         L_OP_MAKE_FUNCTION: {
             const SetaeCode *child = setae_code_child(code, arg);
             if (child == NULL) {
@@ -1908,7 +2931,7 @@ stack_overflow:
             if (t == SETAE_T_CLASS) {
                 SetaeValue dv = ((SetaeClass *)setae_to_ptr(obj))->dict;
                 SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
-                dict_set(setae_to_ptr(dv), key, val);
+                setae_dict_set(setae_to_ptr(dv), key, val);
                 vm->class_version++;
                 sp -= 2;
             } else {
@@ -1969,7 +2992,7 @@ stack_overflow:
                 leaf = leaf ? leaf + 1 : qual;
                 SetaeModule *pm = setae_to_ptr(vm->module_cache[parent]);
                 SetaeValue key = setae_str_new(vm->heap, leaf, strlen(leaf));
-                dict_set(setae_to_ptr(pm->dict), key, mod);
+                setae_dict_set(setae_to_ptr(pm->dict), key, mod);
             }
             run_code(vm, mcode, NULL, 0, NULL, NULL, 0, 0, mod, NULL);
             if (vm->error) {
@@ -2027,7 +3050,7 @@ stack_overflow:
             } else {
                 SetaeDict *src = setae_to_ptr(srcv);
                 for (uint32_t i = 0; i < src->len; i++) {
-                    dict_set(setae_to_ptr(stack[sp - 2]), src->entries[i].key,
+                    setae_dict_set(setae_to_ptr(stack[sp - 2]), src->entries[i].key,
                              src->entries[i].value);
                 }
             }
@@ -2106,10 +3129,69 @@ stack_overflow:
                                    setae_type_name(key));
                     break;
                 }
-                dict_set(d, key, val);
+                setae_dict_set(d, key, val);
             }
             sp -= 2 * n;
             stack[sp++] = dv;
+            DISPATCH();
+        }
+        L_OP_BUILD_SET: {
+            int n = (int)arg;
+            SetaeValue sv = setae_set_new(vm->heap);
+            SetaeSet *s = setae_to_ptr(sv);
+            for (int i = 0; i < n; i++) {
+                SetaeValue key = stack[sp - n + i];
+                if (!hashable(key)) {
+                    setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
+                                   setae_type_name(key));
+                    break;
+                }
+                setae_set_add(s, key);
+            }
+            sp -= n;
+            stack[sp++] = sv;
+            DISPATCH();
+        }
+        L_OP_BUILD_SET_CONST: {
+            int n = (int)arg;
+            SetaeValue fv = setae_set_new(vm->heap);
+            SetaeSet *f = setae_to_ptr(fv);
+            for (int i = 0; i < n; i++) {
+                SetaeValue key = stack[sp - n + i];
+                if (!hashable(key)) {
+                    setae_vm_raise(vm, "TypeError", "unhashable type: '%s'",
+                                   setae_type_name(key));
+                    break;
+                }
+                setae_set_add(f, key);
+            }
+            setae_vm_push_tmp(vm, fv);
+            SetaeValue sv = setae_set_new(vm->heap);
+            SetaeSet *s = setae_to_ptr(sv);
+            f = setae_to_ptr(fv);
+            setae_set_presize(s, f->used);
+            if (s->mask == f->mask) {
+                memcpy(s->table, f->table,
+                       ((size_t)f->mask + 1) * sizeof(SetaeSetEntry));
+                s->fill = f->fill;
+                s->used = f->used;
+            } else {
+                for (uint32_t i = 0; i <= f->mask; i++) {
+                    if (f->table[i].state == SET_ACTIVE) {
+                        setae_set_add(s, f->table[i].key);
+                    }
+                }
+            }
+            setae_vm_pop_tmp(vm);
+            sp -= n;
+            stack[sp++] = sv;
+            DISPATCH();
+        }
+        L_OP_BUILD_SLICE: {
+            SetaeValue step = stack[--sp];
+            SetaeValue upper = stack[--sp];
+            SetaeValue lower = stack[--sp];
+            stack[sp++] = setae_slice_new(vm->heap, lower, upper, step);
             DISPATCH();
         }
         L_OP_SUBSCR: {
@@ -2125,45 +3207,17 @@ stack_overflow:
             store_subscript(vm, obj, idx, val);
             DISPATCH();
         }
-        L_OP_GET_ITER: {
-            SetaeValue v = stack[sp - 1];
-            int t = setae_obj_type(v);
-            if (t == SETAE_T_GEN) {
-                if (((SetaeGen *)setae_to_ptr(v))->coroutine) {
-                    setae_vm_raise(vm, "TypeError", "'coroutine' object is not iterable");
-                    DISPATCH();
-                }
-                DISPATCH();
-            }
-            if (t != SETAE_T_LIST && t != SETAE_T_TUPLE && t != SETAE_T_DICT &&
-                t != SETAE_T_STR && t != SETAE_T_RANGE) {
-                setae_vm_raise(vm, "TypeError", "'%s' object is not iterable",
-                               setae_type_name(v));
-                DISPATCH();
-            }
-            stack[sp - 1] = setae_iter_new(vm->heap, v);
+        L_OP_GET_ITER:
+            stack[sp - 1] = setae_make_iter(vm, stack[sp - 1]);
             DISPATCH();
-        }
         L_OP_FOR_ITER: {
-            SetaeValue itv = stack[sp - 1];
-            if (setae_obj_type(itv) == SETAE_T_GEN) {
-                int stopped;
-                SetaeValue v = gen_resume(vm, setae_to_ptr(itv), setae_none(), &stopped);
-                if (vm->error) {
-                    DISPATCH();
-                }
-                if (stopped) {
-                    sp--;
-                    ip = arg * 2;
-                } else {
-                    stack[sp++] = v;
-                }
+            SetaeValue out;
+            int got = setae_iter_advance(vm, stack[sp - 1], &out);
+            if (vm->error) {
                 DISPATCH();
             }
-            SetaeIter *it = setae_to_ptr(itv);
-            SetaeValue next;
-            if (iter_next(vm, it, &next)) {
-                stack[sp++] = next;
+            if (got) {
+                stack[sp++] = out;
             } else {
                 sp--;
                 ip = arg * 2;
@@ -2199,7 +3253,36 @@ stack_overflow:
                 }
             }
             const char *name = setae_code_name(code, arg >> 8);
+            SetaeValue saved_kw = vm->cur_kwargs;
+            vm->cur_kwargs = 0;
             SetaeValue r = call_method(vm, obj, name, argv, n, c);
+            vm->cur_kwargs = saved_kw;
+            sp -= n + 1;
+            stack[sp++] = r;
+            DISPATCH();
+        }
+        L_OP_CALL_METHOD_KW: {
+            int n = (int)(arg & 0xff);
+            SetaeValue kwargs = stack[--sp];
+            SetaeValue *argv = &stack[sp - n];
+            SetaeValue obj = stack[sp - n - 1];
+            const char *name = setae_code_name(code, arg >> 8);
+            SetaeValue kw =
+                (setae_obj_type(kwargs) == SETAE_T_DICT &&
+                 ((SetaeDict *)setae_to_ptr(kwargs))->len > 0)
+                    ? kwargs
+                    : 0;
+            int ot = setae_obj_type(obj);
+            SetaeValue r;
+            if (ot == SETAE_T_INSTANCE || ot == SETAE_T_CLASS || ot == SETAE_T_MODULE) {
+                SetaeValue m = load_attr(vm, obj, name);
+                r = vm->error ? setae_none() : call_value(vm, m, argv, n, kw);
+            } else {
+                SetaeValue saved = vm->cur_kwargs;
+                vm->cur_kwargs = kw;
+                r = call_method(vm, obj, name, argv, n, &ic[unit]);
+                vm->cur_kwargs = saved;
+            }
             sp -= n + 1;
             stack[sp++] = r;
             DISPATCH();
@@ -2298,6 +3381,165 @@ int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *ou
     }
     *out = v;
     return 1;
+}
+
+int setae_truthy(SetaeValue v) {
+    return truthy(v);
+}
+
+SetaeValue setae_value_add(SetaeVM *vm, SetaeValue a, SetaeValue b) {
+    return binary_op(vm, BIN_ADD, 0, a, b);
+}
+
+int setae_value_lt(SetaeVM *vm, SetaeValue a, SetaeValue b) {
+    return setae_to_bool(compare(vm, CMP_LT, a, b));
+}
+
+static int iterop_next(SetaeVM *vm, SetaeIterOp *op, SetaeValue *out);
+
+SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v) {
+    int t = setae_obj_type(v);
+    if (t == SETAE_T_GEN) {
+        if (((SetaeGen *)setae_to_ptr(v))->coroutine) {
+            setae_vm_raise(vm, "TypeError", "'coroutine' object is not iterable");
+            return setae_none();
+        }
+        return v;
+    }
+    if (t == SETAE_T_ITEROP) {
+        return v;
+    }
+    if (t == SETAE_T_LIST || t == SETAE_T_TUPLE || t == SETAE_T_DICT || t == SETAE_T_SET ||
+        t == SETAE_T_STR || t == SETAE_T_RANGE) {
+        return setae_iter_new(vm->heap, v);
+    }
+    setae_vm_raise(vm, "TypeError", "'%s' object is not iterable", setae_type_name(v));
+    return setae_none();
+}
+
+int setae_iter_advance(SetaeVM *vm, SetaeValue it, SetaeValue *out) {
+    int t = setae_obj_type(it);
+    if (t == SETAE_T_ITER) {
+        return iter_next(vm, setae_to_ptr(it), out);
+    }
+    if (t == SETAE_T_GEN) {
+        if (((SetaeGen *)setae_to_ptr(it))->coroutine) {
+            setae_vm_raise(vm, "TypeError", "'coroutine' object is not an iterator");
+            return 0;
+        }
+        return setae_gen_next(vm, it, setae_none(), out);
+    }
+    if (t == SETAE_T_ITEROP) {
+        return iterop_next(vm, setae_to_ptr(it), out);
+    }
+    setae_vm_raise(vm, "TypeError", "'%s' object is not an iterator", setae_type_name(it));
+    return 0;
+}
+
+static int iterop_next(SetaeVM *vm, SetaeIterOp *op, SetaeValue *out) {
+    SetaeList *srcs = setae_to_ptr(op->sources);
+    switch (op->kind) {
+    case ITEROP_MAP: {
+        SetaeValue x;
+        if (!setae_iter_advance(vm, srcs->items[0], &x) || vm->error) {
+            return 0;
+        }
+        setae_vm_push_tmp(vm, x);
+        *out = setae_call(vm, op->func, &x, 1);
+        setae_vm_pop_tmp(vm);
+        return vm->error ? 0 : 1;
+    }
+    case ITEROP_FILTER: {
+        for (;;) {
+            SetaeValue x;
+            if (!setae_iter_advance(vm, srcs->items[0], &x) || vm->error) {
+                return 0;
+            }
+            int keep;
+            if (setae_is_none(op->func)) {
+                keep = setae_truthy(x);
+            } else {
+                setae_vm_push_tmp(vm, x);
+                SetaeValue r = setae_call(vm, op->func, &x, 1);
+                setae_vm_pop_tmp(vm);
+                if (vm->error) {
+                    return 0;
+                }
+                keep = setae_truthy(r);
+            }
+            if (keep) {
+                *out = x;
+                return 1;
+            }
+        }
+    }
+    case ITEROP_ENUMERATE: {
+        SetaeValue x;
+        if (!setae_iter_advance(vm, srcs->items[0], &x) || vm->error) {
+            return 0;
+        }
+        vm->gc_disabled++;
+        SetaeValue pair[2] = {setae_from_int((int32_t)op->index), x};
+        *out = setae_tuple_new(vm->heap, pair, 2);
+        vm->gc_disabled--;
+        op->index++;
+        return 1;
+    }
+    case ITEROP_ZIP: {
+        uint32_t n = srcs->len;
+        if (n == 0) {
+            return 0;
+        }
+        SetaeValue row[16];
+        SetaeValue *tmp = n <= 16 ? row : malloc(n * sizeof(SetaeValue));
+        vm->gc_disabled++;
+        int ok = 1;
+        for (uint32_t i = 0; i < n; i++) {
+            if (!setae_iter_advance(vm, srcs->items[i], &tmp[i]) || vm->error) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            *out = setae_tuple_new(vm->heap, tmp, n);
+        }
+        vm->gc_disabled--;
+        if (tmp != row) {
+            free(tmp);
+        }
+        return ok;
+    }
+    case ITEROP_REVERSED: {
+        SetaeList *seq = setae_to_ptr(srcs->items[0]);
+        if (op->index >= (int64_t)seq->len) {
+            return 0;
+        }
+        op->index++;
+        *out = seq->items[seq->len - (uint32_t)op->index];
+        return 1;
+    }
+    }
+    return 0;
+}
+
+SetaeValue setae_iter_collect(SetaeVM *vm, SetaeValue v) {
+    SetaeValue itv = setae_make_iter(vm, v);
+    if (vm->error) {
+        return setae_none();
+    }
+    SetaeValue lst = setae_list_new(vm->heap, 0);
+    setae_vm_push_tmp(vm, lst);
+    setae_vm_push_tmp(vm, itv);
+    SetaeValue out;
+    while (setae_iter_advance(vm, itv, &out)) {
+        if (vm->error) {
+            break;
+        }
+        setae_list_push(setae_to_ptr(lst), out);
+    }
+    setae_vm_pop_tmp(vm);
+    setae_vm_pop_tmp(vm);
+    return lst;
 }
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {

@@ -25,6 +25,15 @@ static void mark(SetaeValue v) {
         }
         break;
     }
+    case SETAE_T_SET: {
+        SetaeSet *s = (SetaeSet *)o;
+        for (uint32_t i = 0; i <= s->mask; i++) {
+            if (s->table[i].state == SET_ACTIVE) {
+                mark(s->table[i].key);
+            }
+        }
+        break;
+    }
     case SETAE_T_TUPLE: {
         SetaeTuple *t = (SetaeTuple *)o;
         for (uint32_t i = 0; i < t->len; i++) {
@@ -35,6 +44,13 @@ static void mark(SetaeValue v) {
     case SETAE_T_ITER:
         mark(((SetaeIter *)o)->target);
         break;
+    case SETAE_T_SLICE: {
+        SetaeSlice *s = (SetaeSlice *)o;
+        mark(s->lower);
+        mark(s->upper);
+        mark(s->step);
+        break;
+    }
     case SETAE_T_CELL:
         mark(((SetaeCell *)o)->value);
         break;
@@ -60,6 +76,12 @@ static void mark(SetaeValue v) {
         SetaeBound *b = (SetaeBound *)o;
         mark(b->func);
         mark(b->self);
+        break;
+    }
+    case SETAE_T_ITEROP: {
+        SetaeIterOp *op = (SetaeIterOp *)o;
+        mark(op->func);
+        mark(op->sources);
         break;
     }
     case SETAE_T_GEN: {
@@ -136,5 +158,8 @@ void setae_gc_collect(SetaeVM *vm) {
     }
     mark(vm->exc);
     mark(vm->oom);
+    if (vm->cur_kwargs != 0) {
+        mark(vm->cur_kwargs);
+    }
     setae_heap_sweep(vm->heap);
 }

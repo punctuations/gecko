@@ -160,6 +160,7 @@ pub enum Expr {
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
+    Set(Vec<Expr>),
     Unary {
         op: UnOp,
         operand: Box<Expr>,
@@ -191,7 +192,16 @@ pub enum Expr {
         value: Box<Expr>,
         index: Box<Expr>,
     },
+    Slice {
+        lower: Option<Box<Expr>>,
+        upper: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+    },
     ListComp {
+        elt: Box<Expr>,
+        generators: Vec<Comprehension>,
+    },
+    SetComp {
         elt: Box<Expr>,
         generators: Vec<Comprehension>,
     },
@@ -209,7 +219,11 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FStrPart {
     Lit(String),
-    Expr { value: Box<Expr>, repr: bool },
+    Expr {
+        value: Box<Expr>,
+        repr: bool,
+        spec: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

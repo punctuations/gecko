@@ -53,6 +53,9 @@ typedef enum {
     SETAE_T_SUBJECT,
     SETAE_T_STOP,
     SETAE_T_GEN,
+    SETAE_T_ITEROP,
+    SETAE_T_SET,
+    SETAE_T_SLICE,
 } SetaeType;
 
 /* One-word header; the payload follows it in memory. */
@@ -75,6 +78,8 @@ typedef struct SetaeBuiltin {
     SetaeObject obj;
     SetaeCFunc fn;
     const char *name;
+    int kwargs_ok;
+    int is_type;
 } SetaeBuiltin;
 
 /* The value's type, or -1 when it is immediate (int, float, bool, None). */
@@ -150,6 +155,12 @@ typedef enum {
     OP_FORMAT_VALUE,
     OP_YIELD_VALUE,
     OP_AWAIT,
+    OP_BUILD_SET,
+    OP_BUILD_SET_CONST,
+    OP_BUILD_SLICE,
+    OP_UNARY_INVERT,
+    OP_CALL_METHOD_KW,
+    OP_FORMAT_SPEC,
 } SetaeOp;
 
 typedef enum {
@@ -159,6 +170,12 @@ typedef enum {
     BIN_DIV,
     BIN_MOD,
     BIN_FLOORDIV,
+    BIN_POW,
+    BIN_BITAND,
+    BIN_BITOR,
+    BIN_BITXOR,
+    BIN_LSHIFT,
+    BIN_RSHIFT,
 } SetaeBinOp;
 
 typedef enum {

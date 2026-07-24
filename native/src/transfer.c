@@ -395,6 +395,12 @@ static void ser_code(ByteBuf *b, const SetaeCode *c) {
             bb_u8(b, 3);
             double d = setae_to_float(v);
             bb_bytes(b, &d, 8);
+        } else if (setae_obj_type(v) == SETAE_T_BIGINT) {
+            bb_u8(b, 5);
+            size_t dl;
+            char *dec = setae_bigint_decimal(v, &dl);
+            bb_str(b, dec, (uint32_t)dl);
+            free(dec);
         } else {
             bb_u8(b, 4);
             bb_str(b, setae_str_data(v), (uint32_t)setae_str_len(v));

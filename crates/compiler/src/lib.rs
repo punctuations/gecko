@@ -90,6 +90,7 @@ fn compile_unit(
     let mut module = module.clone();
     let mut comps = 0u32;
     lower_with(&mut module.body, &mut comps);
+    rewrite_bare_raise(&mut module.body, None, &mut comps);
     desugar_block(&mut module.body, &mut comps);
     let mut c = Compiler {
         code: new_code(name, 0, 0, 0, 0),
@@ -235,6 +236,56 @@ fn with_one(item: WithItem, body: Vec<Stmt>, n: &mut u32) -> Vec<Stmt> {
     out
 }
 
+fn rewrite_bare_raise(stmts: &mut [Stmt], current: Option<&str>, n: &mut u32) {
+    for s in stmts.iter_mut() {
+        if matches!(s, Stmt::Raise(None)) {
+            if let Some(name) = current {
+                *s = Stmt::Raise(Some(Expr::Name(name.to_string())));
+            }
+            continue;
+        }
+        match s {
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                rewrite_bare_raise(body, current, n);
+                for h in handlers.iter_mut() {
+                    let hname = if let Some(nm) = &h.name {
+                        nm.clone()
+                    } else {
+                        *n += 1;
+                        let nm = format!(".exc{}", *n);
+                        h.name = Some(nm.clone());
+                        nm
+                    };
+                    rewrite_bare_raise(&mut h.body, Some(&hname), n);
+                }
+                rewrite_bare_raise(orelse, current, n);
+                rewrite_bare_raise(finalbody, current, n);
+            }
+            Stmt::If { body, orelse, .. }
+            | Stmt::While { body, orelse, .. }
+            | Stmt::For { body, orelse, .. } => {
+                rewrite_bare_raise(body, current, n);
+                rewrite_bare_raise(orelse, current, n);
+            }
+            Stmt::With { body, .. } => rewrite_bare_raise(body, current, n),
+            Stmt::FunctionDef { body, .. } | Stmt::ClassDef { body, .. } => {
+                rewrite_bare_raise(body, None, n);
+            }
+            Stmt::Match { cases, .. } => {
+                for c in cases.iter_mut() {
+                    rewrite_bare_raise(&mut c.body, current, n);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn desugar_block(stmts: &mut Vec<Stmt>, n: &mut u32) {
     let mut i = 0;
     while i < stmts.len() {
@@ -344,11 +395,14 @@ fn stmt_exprs(s: &mut Stmt, hoisted: &mut Vec<Stmt>, n: &mut u32) {
 
 fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
     match e {
-        Expr::ListComp { .. } | Expr::DictComp { .. } => {
+        Expr::ListComp { .. }
+        | Expr::DictComp { .. }
+        | Expr::SetComp { .. }
+        | Expr::GeneratorExp { .. } => {
             let owned = std::mem::replace(e, Expr::None);
             *e = lower_comp(owned, hoisted, n);
         }
-        Expr::List(elts) | Expr::Tuple(elts) => {
+        Expr::List(elts) | Expr::Tuple(elts) | Expr::Set(elts) => {
             for x in elts {
                 desugar_expr(x, hoisted, n);
             }
@@ -395,6 +449,11 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
         Expr::Subscript { value, index } => {
             desugar_expr(value, hoisted, n);
             desugar_expr(index, hoisted, n);
+        }
+        Expr::Slice { lower, upper, step } => {
+            for e in [lower, upper, step].into_iter().flatten() {
+                desugar_expr(e, hoisted, n);
+            }
         }
         Expr::IfExp { test, body, orelse } => {
             desugar_expr(test, hoisted, n);
@@ -443,6 +502,7 @@ fn desugar_expr(e: &mut Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) {
 fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
     *n += 1;
     let acc = || Expr::Name(".acc".into());
+    let is_gen = matches!(comp, Expr::GeneratorExp { .. });
     let (fname, generators, innermost, empty_acc) = match comp {
         Expr::ListComp { elt, generators } => {
             let append = Stmt::Expr(Expr::Call {
@@ -479,6 +539,28 @@ fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
                 Expr::Dict(Vec::new()),
             )
         }
+        Expr::SetComp { elt, generators } => {
+            let add = Stmt::Expr(Expr::Call {
+                func: Box::new(Expr::Attribute {
+                    value: Box::new(acc()),
+                    attr: "add".into(),
+                }),
+                args: vec![*elt],
+                keywords: Vec::new(),
+            });
+            (
+                format!("<setcomp{}>", *n),
+                generators,
+                add,
+                Expr::Set(Vec::new()),
+            )
+        }
+        Expr::GeneratorExp { elt, generators } => (
+            format!("<genexpr{}>", *n),
+            generators,
+            Stmt::Expr(Expr::Yield(Some(elt))),
+            Expr::None,
+        ),
         _ => unreachable!("lower_comp on a non-comprehension"),
     };
     let mut outer_iter = Expr::None;
@@ -504,14 +586,18 @@ fn lower_comp(comp: Expr, hoisted: &mut Vec<Stmt>, n: &mut u32) -> Expr {
             orelse: Vec::new(),
         };
     }
-    let mut body = vec![
-        Stmt::Assign {
-            targets: vec![acc()],
-            value: empty_acc,
-        },
-        cur,
-        Stmt::Return(Some(acc())),
-    ];
+    let mut body = if is_gen {
+        vec![cur]
+    } else {
+        vec![
+            Stmt::Assign {
+                targets: vec![acc()],
+                value: empty_acc,
+            },
+            cur,
+            Stmt::Return(Some(acc())),
+        ]
+    };
     desugar_block(&mut body, n);
     hoisted.push(Stmt::FunctionDef {
         name: fname.clone(),
@@ -835,7 +921,7 @@ fn target_names(target: &Expr, out: &mut Vec<String>) {
 fn expr_has_yield(e: &Expr) -> bool {
     match e {
         Expr::Yield(_) => true,
-        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_has_yield),
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => xs.iter().any(expr_has_yield),
         Expr::Dict(pairs) => pairs
             .iter()
             .any(|(k, v)| expr_has_yield(k) || expr_has_yield(v)),
@@ -857,6 +943,9 @@ fn expr_has_yield(e: &Expr) -> bool {
         }
         Expr::Attribute { value, .. } => expr_has_yield(value),
         Expr::Subscript { value, index } => expr_has_yield(value) || expr_has_yield(index),
+        Expr::Slice { lower, upper, step } => {
+            [lower, upper, step].into_iter().flatten().any(|e| expr_has_yield(e))
+        }
         Expr::IfExp { test, body, orelse } => {
             expr_has_yield(test) || expr_has_yield(body) || expr_has_yield(orelse)
         }
@@ -1087,7 +1176,7 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::Name(n) => add_unique(out, n),
         Expr::Int { .. } | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => {}
-        Expr::List(elts) | Expr::Tuple(elts) => {
+        Expr::List(elts) | Expr::Tuple(elts) | Expr::Set(elts) => {
             for e in elts {
                 expr_reads(e, out);
             }
@@ -1130,6 +1219,11 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
                 expr_reads(&k.value, out);
             }
         }
+        Expr::Slice { lower, upper, step } => {
+            for e in [lower, upper, step].into_iter().flatten() {
+                expr_reads(e, out);
+            }
+        }
         Expr::Attribute { value, .. } => expr_reads(value, out),
         Expr::Subscript { value, index } => {
             expr_reads(value, out);
@@ -1156,6 +1250,7 @@ fn expr_reads(e: &Expr, out: &mut Vec<String>) {
         Expr::Await(v) => expr_reads(v, out),
         Expr::ListComp { .. }
         | Expr::DictComp { .. }
+        | Expr::SetComp { .. }
         | Expr::GeneratorExp { .. }
         | Expr::Lambda { .. } => {}
     }
@@ -1305,7 +1400,7 @@ fn expr_walrus(e: &Expr, out: &mut Vec<String>) {
             add_unique(out, name);
             expr_walrus(value, out);
         }
-        Expr::List(elts) | Expr::Tuple(elts) => {
+        Expr::List(elts) | Expr::Tuple(elts) | Expr::Set(elts) => {
             for x in elts {
                 expr_walrus(x, out);
             }
@@ -1352,6 +1447,11 @@ fn expr_walrus(e: &Expr, out: &mut Vec<String>) {
         Expr::Subscript { value, index } => {
             expr_walrus(value, out);
             expr_walrus(index, out);
+        }
+        Expr::Slice { lower, upper, step } => {
+            for e in [lower, upper, step].into_iter().flatten() {
+                expr_walrus(e, out);
+            }
         }
         Expr::IfExp { test, body, orelse } => {
             expr_walrus(test, out);
@@ -1976,7 +2076,9 @@ impl Compiler {
             Stmt::Match { subject, cases } => self.match_stmt(subject, cases),
             Stmt::Raise(value) => {
                 let Some(e) = value else {
-                    return unsupported("bare raise");
+                    return Err(CompileError {
+                        message: "no active exception to re-raise".into(),
+                    });
                 };
                 self.expr(e)?;
                 self.emit(Op::Raise, 0);
@@ -2372,15 +2474,14 @@ impl Compiler {
             Expr::Float(f) => self.load_const(Const::Float(*f)),
             Expr::Bool(b) => self.load_const(Const::Bool(*b)),
             Expr::None => self.load_const(Const::None),
-            Expr::Int { digits, radix } => {
-                let n = i128::from_str_radix(digits, *radix).map_err(|_| CompileError {
-                    message: "invalid integer literal".into(),
-                })?;
-                if n < i32::MIN as i128 || n > i32::MAX as i128 {
-                    return unsupported("integers outside the 32-bit range");
+            Expr::Int { digits, radix } => match i128::from_str_radix(digits, *radix) {
+                Ok(n) if n >= i32::MIN as i128 && n <= i32::MAX as i128 => {
+                    self.load_const(Const::Int(n as i32));
                 }
-                self.load_const(Const::Int(n as i32));
-            }
+                Ok(n) => self.load_const(Const::BigInt(n.to_string())),
+                Err(_) if *radix == 10 => self.load_const(Const::BigInt(digits.clone())),
+                Err(_) => return unsupported("very large non-decimal integer literals"),
+            },
             Expr::Name(name) => self.load(name)?,
             Expr::List(elts) => {
                 for e in elts {
@@ -2401,10 +2502,36 @@ impl Compiler {
                 }
                 self.emit(Op::BuildDict, pairs.len() as u32);
             }
+            Expr::Set(elts) => {
+                for e in elts {
+                    self.expr(e)?;
+                }
+                let op = if !elts.is_empty() && elts.iter().all(is_const_expr) {
+                    Op::BuildSetConst
+                } else {
+                    Op::BuildSet
+                };
+                self.emit(op, elts.len() as u32);
+            }
             Expr::Subscript { value, index } => {
                 self.expr(value)?;
                 self.expr(index)?;
                 self.emit(Op::Subscr, 0);
+            }
+            Expr::Slice { lower, upper, step } => {
+                match lower {
+                    Some(e) => self.expr(e)?,
+                    None => self.load_const(Const::None),
+                }
+                match upper {
+                    Some(e) => self.expr(e)?,
+                    None => self.load_const(Const::None),
+                }
+                match step {
+                    Some(e) => self.expr(e)?,
+                    None => self.load_const(Const::None),
+                }
+                self.emit(Op::BuildSlice, 0);
             }
             Expr::Call {
                 func,
@@ -2430,6 +2557,19 @@ impl Compiler {
                         }
                         self.emit(Op::Call, args.len() as u32);
                     }
+                } else if let (Expr::Attribute { value, attr }, false) =
+                    (func.as_ref(), has_star)
+                {
+                    if args.len() > 255 {
+                        return unsupported("more than 255 arguments");
+                    }
+                    self.expr(value)?;
+                    for a in args {
+                        self.expr(a)?;
+                    }
+                    self.build_call_kwargs(keywords)?;
+                    let name = self.name_idx(attr);
+                    self.emit(Op::CallMethodKw, (name << 8) | args.len() as u32);
                 } else {
                     if let Expr::Attribute { value, attr } = func.as_ref() {
                         self.expr(value)?;
@@ -2502,7 +2642,7 @@ impl Compiler {
                     UnOp::Not => self.emit(Op::UnaryNot, 0),
                     UnOp::Neg => self.emit(Op::UnaryNeg, 0),
                     UnOp::Pos => {}
-                    UnOp::Invert => return unsupported("the ~ operator"),
+                    UnOp::Invert => self.emit(Op::UnaryInvert, 0),
                 }
             }
             Expr::Attribute { value, attr } => {
@@ -2544,9 +2684,15 @@ impl Compiler {
                 for (i, part) in parts.iter().enumerate() {
                     match part {
                         FStrPart::Lit(s) => self.load_const(Const::Str(s.clone())),
-                        FStrPart::Expr { value, repr } => {
+                        FStrPart::Expr { value, repr, spec } => {
                             self.expr(value)?;
-                            self.emit(Op::FormatValue, u32::from(*repr));
+                            match spec {
+                                None => self.emit(Op::FormatValue, u32::from(*repr)),
+                                Some(s) => {
+                                    self.load_const(Const::Str(s.clone()));
+                                    self.emit(Op::FormatSpec, u32::from(*repr));
+                                }
+                            }
                         }
                     }
                     if i > 0 {
@@ -2554,13 +2700,28 @@ impl Compiler {
                     }
                 }
             }
-            Expr::ListComp { .. } | Expr::DictComp { .. } | Expr::Lambda { .. } => {
+            Expr::ListComp { .. }
+            | Expr::DictComp { .. }
+            | Expr::SetComp { .. }
+            | Expr::Lambda { .. } => {
                 return Err(CompileError {
                     message: "comprehension or lambda survived desugaring".into(),
                 });
             }
         }
         Ok(())
+    }
+}
+
+fn is_const_expr(e: &Expr) -> bool {
+    match e {
+        Expr::Int { .. } | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
+        Expr::Tuple(elts) => elts.iter().all(is_const_expr),
+        Expr::Unary {
+            op: UnOp::Neg | UnOp::Pos | UnOp::Invert,
+            operand,
+        } => is_const_expr(operand),
+        _ => false,
     }
 }
 
@@ -2587,7 +2748,13 @@ fn bin_selector(op: BinOp) -> Result<u32, CompileError> {
         BinOp::Div => bytecode::BIN_DIV,
         BinOp::Mod => bytecode::BIN_MOD,
         BinOp::FloorDiv => bytecode::BIN_FLOORDIV,
-        _ => unsupported("this operator")?,
+        BinOp::Pow => bytecode::BIN_POW,
+        BinOp::BitAnd => bytecode::BIN_BITAND,
+        BinOp::BitOr => bytecode::BIN_BITOR,
+        BinOp::BitXor => bytecode::BIN_BITXOR,
+        BinOp::LShift => bytecode::BIN_LSHIFT,
+        BinOp::RShift => bytecode::BIN_RSHIFT,
+        BinOp::MatMul => unsupported("the @ operator")?,
     })
 }
 
@@ -2595,7 +2762,7 @@ fn int_const(i: i64) -> Const {
     if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
         Const::Int(i as i32)
     } else {
-        Const::Float(i as f64)
+        Const::BigInt(i.to_string())
     }
 }
 
@@ -2614,6 +2781,7 @@ fn const_truthy(c: &Const) -> bool {
         Const::Int(i) => *i != 0,
         Const::Float(f) => *f != 0.0,
         Const::Str(s) => !s.is_empty(),
+        Const::BigInt(_) => true,
     }
 }
 
@@ -2694,7 +2862,11 @@ fn fold_unary(op: UnOp, v: &Const) -> Option<Const> {
         },
         UnOp::Pos => Some(v.clone()),
         UnOp::Not => Some(Const::Bool(!const_truthy(v))),
-        UnOp::Invert => None,
+        UnOp::Invert => match v {
+            Const::Int(i) => Some(int_const(!(*i as i64))),
+            Const::Bool(b) => Some(int_const(!(*b as i64))),
+            _ => None,
+        },
     }
 }
 
@@ -2855,8 +3027,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported() {
-        assert!(err("print(~5)\n").contains("~ operator"));
-        assert!(err("x = (i for i in [1])\n").contains("generator expressions"));
+        assert!(err("x = a @ b\n").contains("@ operator"));
         assert!(err("break\n").contains("outside loop"));
         assert!(err("continue\n").contains("in loop"));
     }

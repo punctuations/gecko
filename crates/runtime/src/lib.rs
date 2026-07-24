@@ -80,6 +80,8 @@ unsafe extern "C" {
     pub fn setae_vm_heap(vm: *mut SetaeVm) -> *mut SetaeHeap;
     pub fn setae_vm_raise_str(vm: *mut SetaeVm, kind: *const c_char, msg: *const c_char);
     pub fn setae_str_new(h: *mut SetaeHeap, bytes: *const c_char, len: usize) -> SetaeValue;
+    pub fn setae_int_from_decimal(h: *mut SetaeHeap, s: *const c_char, n: usize, neg: c_int)
+        -> SetaeValue;
 
     pub fn setae_msg_read(vm: *mut SetaeVm, v: SetaeValue) -> *mut SetaeMsg;
     pub fn setae_msg_write(vm: *mut SetaeVm, m: *const SetaeMsg) -> SetaeValue;
@@ -691,6 +693,12 @@ impl Vm {
                     bytecode::Const::Str(s) => {
                         setae_str_new(self.heap, s.as_ptr() as *const c_char, s.len())
                     }
+                    bytecode::Const::BigInt(s) => setae_int_from_decimal(
+                        self.heap,
+                        s.as_ptr() as *const c_char,
+                        s.len(),
+                        0,
+                    ),
                 };
                 setae_code_add_const(gc, v);
             }

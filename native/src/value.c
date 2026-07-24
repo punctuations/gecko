@@ -114,6 +114,8 @@ const char *setae_type_name(SetaeValue v) {
         return "list";
     case SETAE_T_DICT:
         return "dict";
+    case SETAE_T_SET:
+        return ((SetaeSet *)setae_to_ptr(v))->frozen ? "frozenset" : "set";
     case SETAE_T_TUPLE:
         return "tuple";
     case SETAE_T_FUNCTION:
@@ -126,6 +128,8 @@ const char *setae_type_name(SetaeValue v) {
         return "builtin_function_or_method";
     case SETAE_T_RANGE:
         return "range";
+    case SETAE_T_SLICE:
+        return "slice";
     case SETAE_T_ITER:
         return "iterator";
     case SETAE_T_CELL:
@@ -146,6 +150,20 @@ const char *setae_type_name(SetaeValue v) {
         return "StopSignal";
     case SETAE_T_GEN:
         return ((SetaeGen *)setae_to_ptr(v))->coroutine ? "coroutine" : "generator";
+    case SETAE_T_ITEROP:
+        switch (((SetaeIterOp *)setae_to_ptr(v))->kind) {
+        case ITEROP_MAP:
+            return "map";
+        case ITEROP_FILTER:
+            return "filter";
+        case ITEROP_ZIP:
+            return "zip";
+        case ITEROP_ENUMERATE:
+            return "enumerate";
+        case ITEROP_REVERSED:
+            return "reversed";
+        }
+        return "iterator";
     default:
         return "object";
     }
@@ -167,11 +185,16 @@ static int str_eq(SetaeValue a, SetaeValue b) {
 }
 
 int setae_value_eq(SetaeValue a, SetaeValue b) {
-    int an = setae_is_int(a) || setae_is_float(a);
-    int bn = setae_is_int(b) || setae_is_float(b);
+    int ai = setae_is_integer(a);
+    int bi = setae_is_integer(b);
+    if (ai && bi) {
+        return setae_int_cmp(a, b) == 0;
+    }
+    int an = ai || setae_is_float(a);
+    int bn = bi || setae_is_float(b);
     if (an && bn) {
-        double x = setae_is_int(a) ? (double)setae_to_int(a) : setae_to_float(a);
-        double y = setae_is_int(b) ? (double)setae_to_int(b) : setae_to_float(b);
+        double x = setae_is_float(a) ? setae_to_float(a) : setae_int_to_double(a);
+        double y = setae_is_float(b) ? setae_to_float(b) : setae_int_to_double(b);
         return x == y;
     }
     if (setae_is_str(a) && setae_is_str(b)) {
@@ -217,6 +240,20 @@ int setae_value_eq(SetaeValue a, SetaeValue b) {
                 }
             }
             if (j == db->len || !setae_value_eq(da->entries[i].value, db->entries[j].value)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (setae_obj_type(a) == SETAE_T_SET && setae_obj_type(b) == SETAE_T_SET) {
+        SetaeSet *sa = setae_to_ptr(a);
+        SetaeSet *sb = setae_to_ptr(b);
+        if (sa->used != sb->used) {
+            return 0;
+        }
+        for (uint32_t i = 0; i <= sa->mask; i++) {
+            if (sa->table[i].state == SET_ACTIVE &&
+                !setae_set_contains(sb, sa->table[i].key)) {
                 return 0;
             }
         }
@@ -288,6 +325,19 @@ uint64_t setae_value_hash(SetaeValue v) {
         uint64_t h = 2870177450012600261ULL;
         for (uint32_t i = 0; i < tup->len; i++) {
             h = (h ^ setae_value_hash(tup->items[i])) * 1099511628211ULL;
+        }
+        return h;
+    }
+    if (t == SETAE_T_BIGINT) {
+        return setae_bigint_hash(v);
+    }
+    if (t == SETAE_T_SET) {
+        SetaeSet *s = setae_to_ptr(v);
+        uint64_t h = 1927868237ULL + (uint64_t)s->used * 2;
+        for (uint32_t i = 0; i <= s->mask; i++) {
+            if (s->table[i].state == SET_ACTIVE) {
+                h ^= hash_u64(setae_value_hash(s->table[i].key));
+            }
         }
         return h;
     }

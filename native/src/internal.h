@@ -31,6 +31,20 @@ typedef struct SetaeRange {
     int64_t step;
 } SetaeRange;
 
+typedef struct SetaeSlice {
+    SetaeObject obj;
+    SetaeValue lower;
+    SetaeValue upper;
+    SetaeValue step;
+} SetaeSlice;
+
+typedef struct SetaeBigInt {
+    SetaeObject obj;
+    int32_t sign;
+    uint32_t len;
+    uint32_t *limbs;
+} SetaeBigInt;
+
 typedef struct SetaeIter {
     SetaeObject obj;
     SetaeValue target;
@@ -120,6 +134,43 @@ typedef struct SetaeSubject {
     void *mailbox;
 } SetaeSubject;
 
+enum {
+    SET_EMPTY,
+    SET_ACTIVE,
+    SET_DUMMY,
+};
+
+typedef struct SetaeSetEntry {
+    SetaeValue key;
+    int64_t hash;
+    uint8_t state;
+} SetaeSetEntry;
+
+typedef struct SetaeSet {
+    SetaeObject obj;
+    uint32_t fill;
+    uint32_t used;
+    uint32_t mask;
+    SetaeSetEntry *table;
+    uint8_t frozen;
+} SetaeSet;
+
+enum {
+    ITEROP_MAP,
+    ITEROP_FILTER,
+    ITEROP_ZIP,
+    ITEROP_ENUMERATE,
+    ITEROP_REVERSED,
+};
+
+typedef struct SetaeIterOp {
+    SetaeObject obj;
+    uint8_t kind;
+    SetaeValue func;
+    SetaeValue sources;
+    int64_t index;
+} SetaeIterOp;
+
 typedef struct SetaeGen {
     SetaeObject obj;
     const SetaeCode *code;
@@ -146,6 +197,18 @@ SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
 SetaeValue setae_dict_new(SetaeHeap *h);
 void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value);
+SetaeValue setae_set_new(SetaeHeap *h);
+int setae_set_add(SetaeSet *s, SetaeValue key);
+int setae_set_contains(const SetaeSet *s, SetaeValue key);
+int setae_set_discard(SetaeSet *s, SetaeValue key);
+void setae_set_presize(SetaeSet *s, uint32_t incoming);
+void setae_set_merge(SetaeSet *so, SetaeSet *other);
+void setae_dict_set(SetaeDict *d, SetaeValue key, SetaeValue value);
+SetaeValue setae_str_method(SetaeVM *vm, SetaeValue s, const char *name, SetaeValue *args,
+                            int nargs, int *found);
+SetaeValue setae_builtin_getattr(SetaeVM *vm, SetaeValue *args, int nargs);
+SetaeValue setae_builtin_hasattr(SetaeVM *vm, SetaeValue *args, int nargs);
+SetaeValue setae_builtin_setattr(SetaeVM *vm, SetaeValue *args, int nargs);
 uint64_t setae_value_hash(SetaeValue v);
 uint64_t setae_hash_bytes(const char *data, size_t len);
 void setae_dict_index_add(SetaeDict *d, uint32_t entry);
@@ -154,6 +217,27 @@ int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t l
 int setae_dict_del(SetaeDict *d, SetaeValue key);
 int setae_dict_del_cstr(SetaeDict *d, const char *name);
 SetaeValue setae_range_new(SetaeHeap *h, int64_t start, int64_t stop, int64_t step);
+SetaeValue setae_slice_new(SetaeHeap *h, SetaeValue lower, SetaeValue upper, SetaeValue step);
+
+SetaeValue setae_bigint_alloc(SetaeHeap *h, int32_t sign, uint32_t len);
+int setae_is_integer(SetaeValue v);
+SetaeValue setae_int_from_i64(SetaeHeap *h, int64_t x);
+SetaeValue setae_int_from_decimal(SetaeHeap *h, const char *s, size_t n, int neg);
+int setae_int_fits_i64(SetaeValue v, int64_t *out);
+double setae_int_to_double(SetaeValue v);
+int setae_int_cmp(SetaeValue a, SetaeValue b);
+int setae_int_sign(SetaeValue v);
+uint64_t setae_bigint_hash(SetaeValue v);
+SetaeValue setae_bigint_to_str(SetaeHeap *h, SetaeValue v);
+char *setae_bigint_decimal(SetaeValue v, size_t *len);
+SetaeValue setae_int_add(SetaeHeap *h, SetaeValue a, SetaeValue b);
+SetaeValue setae_int_sub(SetaeHeap *h, SetaeValue a, SetaeValue b);
+SetaeValue setae_int_mul(SetaeHeap *h, SetaeValue a, SetaeValue b);
+SetaeValue setae_int_neg(SetaeHeap *h, SetaeValue a);
+int setae_int_divmod(SetaeHeap *h, SetaeValue a, SetaeValue b, SetaeValue *q, SetaeValue *r);
+SetaeValue setae_int_pow(SetaeHeap *h, SetaeValue a, int64_t e);
+SetaeValue setae_int_lshift(SetaeHeap *h, SetaeValue a, int64_t n);
+SetaeValue setae_int_rshift(SetaeHeap *h, SetaeValue a, int64_t n);
 SetaeValue setae_iter_new(SetaeHeap *h, SetaeValue target);
 SetaeValue setae_func_new(SetaeHeap *h, const SetaeCode *code, const SetaeValue *cells,
                           uint32_t nfree, const SetaeValue *defaults, uint32_t ndefaults,
@@ -171,7 +255,15 @@ int64_t setae_instance_slot(const SetaeInstance *inst, const char *name);
 void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v);
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
 SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module);
+SetaeValue setae_iterop_new(SetaeHeap *h, uint8_t kind, SetaeValue func, SetaeValue sources);
 int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *out);
+SetaeValue setae_iter_collect(SetaeVM *vm, SetaeValue v);
+SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v);
+int setae_iter_advance(SetaeVM *vm, SetaeValue it, SetaeValue *out);
+int setae_truthy(SetaeValue v);
+int setae_value_lt(SetaeVM *vm, SetaeValue a, SetaeValue b);
+SetaeValue setae_value_add(SetaeVM *vm, SetaeValue a, SetaeValue b);
+SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs);
 
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
 void setae_vm_pop_tmp(SetaeVM *vm);
@@ -246,6 +338,7 @@ struct SetaeVM {
     size_t frame_pool_cap;
 
     SetaeValue exc;
+    SetaeValue cur_kwargs;
 };
 
 void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v);
@@ -280,6 +373,7 @@ int32_t setae_code_module_parent(const SetaeCode *c);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeValue setae_format_value(SetaeVM *vm, SetaeValue v, int repr_mode);
+SetaeValue setae_format_spec(SetaeVM *vm, SetaeValue v, SetaeValue spec, int conv);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);
 void setae_vm_oom(SetaeVM *vm);

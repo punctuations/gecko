@@ -69,6 +69,43 @@ key and an equal float key land in the same slot.
 The index holds positions, not values, so the collector ignores it and a resize
 of the entry array leaves it valid.
 
+## Sets
+
+A set is a single open addressing table of slots, each empty, active, or a
+tombstone left by discard. It does not keep an insertion-order array the way a
+dict does, so iteration walks the slots in table order. The table starts at 8
+slots and grows fourfold once it is three fifths full. To make a program print
+the same bytes on gecko and on CPython, the probe sequence, the growth rule, and
+the resize points copy CPython's setobject.c exactly: the initial slot is the
+hash masked to the table size, a run of up to nine adjacent slots is scanned
+before the hash is perturbed by `i = i*5 + 1 + (perturb >>= 5)`, and int keys
+hash to their own value (with -1 mapped to -2). So `{3, 4, 5, 6}` and
+`set(range(20))` iterate in CPython's order, not insertion order.
+
+Set displays of constant elements match too. CPython folds `{1, 2, 3}` at compile
+time into a frozenset constant that a runtime update copies into the new set, and
+gecko replays that: the BuildSetConst opcode builds the elements once to get the
+frozenset ordering, then copies them into a presized table. This holds for
+literals up to about thirty elements. Larger constant literals sit on a
+frozenset-resize boundary where CPython 3.13's compiler picks a table size that
+does not follow from the documented update rule (a 19- and a 31-element literal
+have the same frozenset and update sizes yet different literal sizes), so a
+constant set literal of thirty-one or more elements can iterate in a different
+order. Sets built any other way, by add, by set() over any iterable, or by a set
+comprehension, match CPython at every size. String and other non-int keys hash
+through gecko's own function, and CPython randomizes string hashing per process,
+so set order for those is not reproducible on either side.
+
+The operators `|`, `&`, `-`, and `^` and the methods `union`, `intersection`,
+`difference`, and `symmetric_difference` build their result the way CPython does:
+union and symmetric difference start from a copy of one operand and update it,
+difference switches between copying and filtering on the same size ratio CPython
+uses, and intersection walks the smaller operand. So `a | b` and the rest iterate
+in CPython's order too, subject to the same large-set boundary. A frozenset is a
+set with a frozen flag: it is hashable, so it can be a dict key or a set element,
+its mutating methods raise, and an operator result takes the type of its left
+operand.
+
 ## Instances and shapes
 
 An instance does not carry a dict. It holds its class, a pointer to a shape, and

@@ -35,6 +35,7 @@ pub enum Const {
     Int(i32),
     Float(f64),
     Str(String),
+    BigInt(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -99,6 +100,12 @@ pub enum Op {
     FormatValue = 50,
     YieldValue = 51,
     Await = 52,
+    BuildSet = 53,
+    BuildSetConst = 54,
+    BuildSlice = 55,
+    UnaryInvert = 56,
+    CallMethodKw = 57,
+    FormatSpec = 58,
 }
 
 pub const BIN_ADD: u32 = 0;
@@ -107,6 +114,12 @@ pub const BIN_MUL: u32 = 2;
 pub const BIN_DIV: u32 = 3;
 pub const BIN_MOD: u32 = 4;
 pub const BIN_FLOORDIV: u32 = 5;
+pub const BIN_POW: u32 = 6;
+pub const BIN_BITAND: u32 = 7;
+pub const BIN_BITOR: u32 = 8;
+pub const BIN_BITXOR: u32 = 9;
+pub const BIN_LSHIFT: u32 = 10;
+pub const BIN_RSHIFT: u32 = 11;
 
 pub const BIN_AUG_FLAG: u32 = 0x80;
 
@@ -173,6 +186,10 @@ fn write_code(out: &mut Vec<u8>, c: &Code) {
             }
             Const::Str(s) => {
                 out.push(4);
+                wstr(out, s);
+            }
+            Const::BigInt(s) => {
+                out.push(5);
                 wstr(out, s);
             }
         }
@@ -268,6 +285,7 @@ impl Reader<'_> {
                 2 => Const::Int(i32::from_le_bytes(self.take(4)?.try_into().unwrap())),
                 3 => Const::Float(f64::from_le_bytes(self.take(8)?.try_into().unwrap())),
                 4 => Const::Str(self.str()?),
+                5 => Const::BigInt(self.str()?),
                 t => return Err(format!("bad const tag {t}")),
             });
         }
@@ -390,6 +408,12 @@ fn op_from_u8(v: u8) -> Result<Op, String> {
         50 => Op::FormatValue,
         51 => Op::YieldValue,
         52 => Op::Await,
+        53 => Op::BuildSet,
+        54 => Op::BuildSetConst,
+        55 => Op::BuildSlice,
+        56 => Op::UnaryInvert,
+        57 => Op::CallMethodKw,
+        58 => Op::FormatSpec,
         _ => return Err(format!("bad opcode {v}")),
     })
 }

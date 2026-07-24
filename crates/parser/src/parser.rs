@@ -1023,7 +1023,7 @@ impl Parser {
             if self.eat_op(Op::LParen) {
                 e = self.call(e)?;
             } else if self.eat_op(Op::LBracket) {
-                let index = Box::new(self.test()?);
+                let index = Box::new(self.subscript_index()?);
                 self.expect_op(Op::RBracket)?;
                 e = Expr::Subscript {
                     value: Box::new(e),
@@ -1040,6 +1040,33 @@ impl Parser {
             }
         }
         Ok(e)
+    }
+
+    fn subscript_index(&mut self) -> Result<Expr, ParseError> {
+        let lower = if self.at_op(Op::Colon) {
+            None
+        } else {
+            Some(Box::new(self.test()?))
+        };
+        if !self.at_op(Op::Colon) {
+            return Ok(*lower.unwrap());
+        }
+        self.advance();
+        let upper = if self.at_op(Op::Colon) || self.at_op(Op::RBracket) {
+            None
+        } else {
+            Some(Box::new(self.test()?))
+        };
+        let step = if self.eat_op(Op::Colon) {
+            if self.at_op(Op::RBracket) {
+                None
+            } else {
+                Some(Box::new(self.test()?))
+            }
+        } else {
+            None
+        };
+        Ok(Expr::Slice { lower, upper, step })
     }
 
     fn call(&mut self, func: Expr) -> Result<Expr, ParseError> {
@@ -1062,10 +1089,18 @@ impl Parser {
                         value,
                     });
                 } else {
-                    args.push(self.test()?);
+                    let value = self.test()?;
+                    if args.is_empty() && keywords.is_empty() && self.at_kw(Kw::For) {
+                        return self.call_genexp(func, value);
+                    }
+                    args.push(value);
                 }
             } else {
-                args.push(self.test()?);
+                let value = self.test()?;
+                if args.is_empty() && keywords.is_empty() && self.at_kw(Kw::For) {
+                    return self.call_genexp(func, value);
+                }
+                args.push(value);
             }
             if !self.eat_op(Op::Comma) {
                 break;
@@ -1076,6 +1111,19 @@ impl Parser {
             func: Box::new(func),
             args,
             keywords,
+        })
+    }
+
+    fn call_genexp(&mut self, func: Expr, elt: Expr) -> Result<Expr, ParseError> {
+        let generators = self.comprehensions()?;
+        self.expect_op(Op::RParen)?;
+        Ok(Expr::Call {
+            func: Box::new(func),
+            args: vec![Expr::GeneratorExp {
+                elt: Box::new(elt),
+                generators,
+            }],
+            keywords: Vec::new(),
         })
     }
 
@@ -1120,11 +1168,12 @@ impl Parser {
                     }
                     let field: String = chars[start..i].iter().collect();
                     i += 1;
-                    let (src, repr) = self.split_fstring_field(&field)?;
+                    let (src, repr, spec) = self.split_fstring_field(&field)?;
                     let value = self.parse_embedded_expr(&src)?;
                     out.push(FStrPart::Expr {
                         value: Box::new(value),
                         repr,
+                        spec,
                     });
                 }
                 c => {
@@ -1139,26 +1188,38 @@ impl Parser {
         Ok(())
     }
 
-    fn split_fstring_field(&self, field: &str) -> Result<(String, bool), ParseError> {
+    fn split_fstring_field(&self, field: &str) -> Result<(String, bool, Option<String>), ParseError> {
         let mut depth = 0;
-        for c in field.chars() {
+        let mut split = None;
+        for (idx, c) in field.char_indices() {
             match c {
                 '(' | '[' | '{' => depth += 1,
                 ')' | ']' | '}' => depth -= 1,
                 ':' if depth == 0 => {
-                    return self.error("f-string format specifiers are not supported yet");
+                    split = Some(idx);
+                    break;
                 }
                 _ => {}
             }
         }
-        let trimmed = field.trim_end();
+        let (head, spec) = match split {
+            Some(i) => {
+                let spec = field[i + 1..].to_string();
+                if spec.contains('{') {
+                    return self.error("nested fields in f-string format specs are not supported");
+                }
+                (&field[..i], Some(spec))
+            }
+            None => (field, None),
+        };
+        let trimmed = head.trim_end();
         if let Some(rest) = trimmed.strip_suffix("!r") {
-            return Ok((rest.to_string(), true));
+            return Ok((rest.to_string(), true, spec));
         }
         if let Some(rest) = trimmed.strip_suffix("!s") {
-            return Ok((rest.to_string(), false));
+            return Ok((rest.to_string(), false, spec));
         }
-        Ok((field.to_string(), false))
+        Ok((head.to_string(), false, spec))
     }
 
     fn parse_embedded_expr(&self, src: &str) -> Result<Expr, ParseError> {
@@ -1316,7 +1377,30 @@ impl Parser {
         if self.eat_op(Op::RBrace) {
             return Ok(Expr::Dict(Vec::new()));
         }
-        let key = self.test()?;
+        let first = self.test()?;
+        if self.at_op(Op::Colon) {
+            return self.dict_tail(first);
+        }
+        if self.at_kw(Kw::For) {
+            let generators = self.comprehensions()?;
+            self.expect_op(Op::RBrace)?;
+            return Ok(Expr::SetComp {
+                elt: Box::new(first),
+                generators,
+            });
+        }
+        let mut elts = vec![first];
+        while self.eat_op(Op::Comma) {
+            if self.at_op(Op::RBrace) {
+                break;
+            }
+            elts.push(self.test()?);
+        }
+        self.expect_op(Op::RBrace)?;
+        Ok(Expr::Set(elts))
+    }
+
+    fn dict_tail(&mut self, key: Expr) -> Result<Expr, ParseError> {
         self.expect_op(Op::Colon)?;
         let value = self.test()?;
         if self.at_kw(Kw::For) {

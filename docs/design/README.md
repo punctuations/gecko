@@ -9,3 +9,4 @@ assume the earlier ones.
 - 03-gc.md: garbage collector.
 - 04-concurrency.md: isolates, actors, channels.
 - 05-embedding.md: host embedding API and the Rust/C boundary.
+- 06-builtins.md: builtin functions, types and their methods, and what is not there yet.

@@ -25,26 +25,28 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md).
 
 ## Status
 
-The project is early. The pipeline runs end to end on a subset of Python:
-literals, names, assignment (including `x[i] = v` and augmented forms),
-arithmetic with `%` and `//`, comparisons and membership, `and`, `or`, `not`,
-`if`, `elif`, `else`, `while`, `for` with `break` and `continue`, functions with
-the full call convention (positional and keyword arguments, defaults, `*args`,
-`**kwargs`, and `*`/`**` spreads at the call), recursion, closures with
-`nonlocal`, lists, dicts, tuples with unpacking, list and dict comprehensions,
-`try`/`except`/`else`/ `finally` with `raise` and the builtin exception types,
-classes with single inheritance, `__init__`, methods, and attributes, decorators
-on functions and classes, importing modules and packages, including dotted
-subpackages, with `import` and `from ... import` (resolved along the importing
-directory, `GECKO_PATH`, and site-packages), subscripting, iteration over lists,
-tuples, dicts, strings, and ranges, the methods `append`, `pop`, `get`, `keys`,
-`values`, and `items`, and the builtins `print`, `len`, `range`, `type`, `next`,
-the constructors `str`, `int`, `float`, `bool`, `list`, `tuple`, `dict`, and
-`sum`, `min`, `max`, `abs`, `sorted`, `reversed`, `enumerate`, `zip`, `map`,
-`filter`, `any`, `all`. Anything outside that subset (generator expressions,
-keyword-only parameters, multiple inheritance, `super`, bare `raise`) is
-rejected at compile time. A precise, non-moving mark-sweep collector reclaims
-garbage when allocation passes a threshold that grows with the live size. An
+The project is early but runs a large and growing subset of Python end to end,
+enough for real programs: the full expression and statement grammar (including
+f-strings, comprehensions and generator expressions, slicing, the walrus
+operator, `match`, `with`, decorators, and `try`/`except`/`else`/`finally` with
+bare `raise` re-raise), functions with the whole call convention (keyword
+arguments, defaults, `*args`, `**kwargs`, `*`/`**` spreads), closures with
+`nonlocal`, generators and `async`/`await`, classes with single inheritance, and
+`import`/`from ... import` for modules and packages. The built-in types are int,
+float, bool, str, list, tuple, dict, set, frozenset, and range, with their
+common methods, and the operators include `**`, `//`, `%`, the bitwise set
+`& | ^ << >> ~`, and set algebra. Sets iterate in the same order they would on
+CPython.
+
+Integers are arbitrary precision, so `2 ** 1000` and factorials stay exact. For
+the full runtime surface, the builtin functions, the types and their methods,
+and what is not there yet, see
+[docs/design/06-builtins.md](docs/design/06-builtins.md).
+
+Constructs outside the supported grammar are rejected at compile time with a
+located error rather than run wrong. A precise, non-moving mark-sweep collector
+reclaims garbage when allocation passes a threshold that grows with the live
+size. An
 embedding host can run many isolated VMs and cap each one's steps, wall-clock
 time, and heap, so untrusted code cannot loop or allocate without bound, and can
 register native host functions that scripts call like builtins. A program can
