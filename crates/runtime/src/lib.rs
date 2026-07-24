@@ -101,6 +101,9 @@ unsafe extern "C" {
         f: extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
     );
     pub fn setae_set_subject_send(f: extern "C" fn(*mut std::ffi::c_void, *mut SetaeMsg));
+    pub fn setae_set_subject_send_after(
+        f: extern "C" fn(*mut std::ffi::c_void, u64, *mut SetaeMsg),
+    );
     pub fn setae_set_subject_call(
         f: extern "C" fn(*mut SetaeVm, SetaeValue, SetaeValue, SetaeValue) -> SetaeValue,
     );
@@ -165,11 +168,11 @@ unsafe extern "C" {
 }
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct Envelope {
     msg: *mut SetaeMsg,
@@ -404,6 +407,108 @@ fn run_message(run: &mut ActorRun, env: Envelope) -> Outcome {
         run.state = next;
         set_root(run.vm.vm, "$state", run.state);
         Outcome::Continue
+    }
+}
+
+// A pending delayed send. It owns a handle to the target (which keeps the
+// target alive until it fires) and the message in heap-neutral form.
+struct MsgPtr(*mut SetaeMsg);
+unsafe impl Send for MsgPtr {}
+
+struct Timer {
+    deadline: Instant,
+    target: Handle,
+    msg: MsgPtr,
+}
+
+impl Timer {
+    fn fire(self) {
+        let env = Envelope::value(self.msg.0);
+        match self.target {
+            Handle::Actor(actor) => actor.deliver(env),
+            Handle::Reply(tx) => {
+                if tx.send(env).is_err() {
+                    unsafe { setae_msg_free(self.msg.0) };
+                }
+            }
+        }
+    }
+}
+
+// Order timers so the nearest deadline is the greatest, giving a min-heap out
+// of the max-heap BinaryHeap.
+impl PartialEq for Timer {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+impl Eq for Timer {}
+impl PartialOrd for Timer {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Timer {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.deadline.cmp(&self.deadline)
+    }
+}
+
+// A single background thread services all timers, firing each into the actor
+// scheduler (or a reply channel) at its deadline.
+fn timers() -> &'static Sender<Timer> {
+    static TIMERS: OnceLock<Sender<Timer>> = OnceLock::new();
+    TIMERS.get_or_init(|| {
+        let (tx, rx) = channel::<Timer>();
+        std::thread::spawn(move || timer_loop(rx));
+        tx
+    })
+}
+
+fn timer_loop(rx: Receiver<Timer>) {
+    let mut heap: BinaryHeap<Timer> = BinaryHeap::new();
+    loop {
+        let now = Instant::now();
+        while heap.peek().is_some_and(|t| t.deadline <= now) {
+            heap.pop().unwrap().fire();
+        }
+        let wait = heap
+            .peek()
+            .map(|t| t.deadline.saturating_duration_since(now));
+        let next = match wait {
+            Some(d) => match rx.recv_timeout(d) {
+                Ok(t) => Some(t),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            },
+            None => match rx.recv() {
+                Ok(t) => Some(t),
+                Err(_) => return,
+            },
+        };
+        if let Some(t) = next {
+            heap.push(t);
+        }
+    }
+}
+
+extern "C" fn subject_send_after(
+    mailbox: *mut std::ffi::c_void,
+    delay_ms: u64,
+    msg: *mut SetaeMsg,
+) {
+    let handle = unsafe { &*(mailbox as *const Handle) };
+    let target = match handle {
+        Handle::Actor(actor) => Handle::Actor(actor.clone()),
+        Handle::Reply(tx) => Handle::Reply(tx.clone()),
+    };
+    let timer = Timer {
+        deadline: Instant::now() + Duration::from_millis(delay_ms),
+        target,
+        msg: MsgPtr(msg),
+    };
+    if timers().send(timer).is_err() {
+        unsafe { setae_msg_free(msg) };
     }
 }
 
@@ -829,6 +934,7 @@ impl Vm {
             setae_set_subject_drop(subject_drop);
             setae_set_subject_clone(subject_clone);
             setae_set_subject_send(subject_send);
+            setae_set_subject_send_after(subject_send_after);
             setae_set_subject_call(subject_call);
             Vm {
                 heap,

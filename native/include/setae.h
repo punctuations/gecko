@@ -230,6 +230,9 @@ void setae_set_subject_clone(void *(*fn)(void *));
 void setae_set_subject_send(void (*fn)(void *, SetaeMsg *));
 int setae_subject_send_value(SetaeVM *vm, SetaeValue subject, SetaeValue arg);
 void setae_set_subject_call(SetaeValue (*fn)(SetaeVM *, SetaeValue, SetaeValue, SetaeValue));
+void setae_set_subject_send_after(void (*fn)(void *, uint64_t, SetaeMsg *));
+int setae_subject_send_after_value(SetaeVM *vm, SetaeValue subject, SetaeValue delay,
+                                   SetaeValue arg);
 SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue build,
                                     SetaeValue timeout);
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);

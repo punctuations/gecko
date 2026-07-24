@@ -1762,6 +1762,15 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
             }
             return setae_subject_call_value(vm, obj, args[0], args[1]);
         }
+        if (strcmp(name, "send_after") == 0) {
+            if (nargs != 2) {
+                setae_vm_raise(vm, "TypeError",
+                               "send_after() takes exactly two arguments (%d given)", nargs);
+                return setae_none();
+            }
+            setae_subject_send_after_value(vm, obj, args[0], args[1]);
+            return setae_none();
+        }
         attr_error(vm, obj, name);
         return setae_none();
     }

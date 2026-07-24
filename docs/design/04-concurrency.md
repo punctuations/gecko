@@ -141,6 +141,15 @@ handler pulls the reply subject out of the message and does `reply.send(result)`
 before returning its next state, the same way a Gleam handler replies to the
 subject a call passed in.
 
+`subject.send_after(delay_ms, message)` is a delayed cast: the message is
+delivered after the delay instead of at once. A single timer thread holds a
+min-heap of pending sends keyed by deadline and, when one comes due, delivers it
+the same way a `send` would, scheduling the actor through the pool. A pending
+timer holds a handle to its target, so the actor stays alive until the delayed
+message fires even if every subject to it has dropped; a message that comes due
+for an actor that has stopped is discarded. This is the timer facility the
+milestone calls for; periodic timers and cancellation are the next step.
+
 ### Messages
 
 A message is deep copied out of the sender's heap and rebuilt in the receiver's,
@@ -214,9 +223,10 @@ calls do not hang, and rejects later sends.
 A `call` still blocks the calling thread on a one-shot reply channel until the
 reply or the timeout. When the caller is itself an actor handler, that blocks its
 worker for the duration, since the VM cannot suspend mid-handler; a pool sized to
-the cores tolerates this, and cooperative suspension is left for later. Bounded
-mailbox backpressure, timers for delayed sends, and per-worker fairness tuning
-are the open items on top of this first cut.
+the cores tolerates this, and cooperative suspension is left for later. Delayed
+sends run on a separate timer thread (see Cast and call). Bounded mailbox
+backpressure and per-worker fairness tuning are the open items on top of this
+first cut.
 
 ### Native wiring
 

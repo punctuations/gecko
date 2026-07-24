@@ -303,6 +303,12 @@ mod tests {
     }
 
     #[test]
+    fn send_after_delivers_delayed_messages() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == \"tick\":\n        return state + 1\n    if message[0] == \"report\":\n        message[1].send(state)\n        return state\n    return state\n\na = actor.spawn(0, handle)\nfor i in range(3):\n    a.send_after(5, [\"tick\"])\nprint(a.call(lambda r: [\"report\", r], 2000))\n\ndef fence(reply):\n    a.send_after(120, [\"report\", reply])\n    return [\"noop\"]\n\nprint(a.call(fence, 3000))\n";
+        assert_eq!(run_source(src).unwrap(), "0\n3\n");
+    }
+
+    #[test]
     fn many_actors_share_the_pool() {
         let src = "from gecko import actor\n\ndef handle(state, message):\n    message[1].send(state + message[0])\n    return state\n\ndef ask(n):\n    def build(reply):\n        return [n, reply]\n    return build\n\nactors = [actor.spawn(i, handle) for i in range(64)]\ntotal = 0\nfor a in actors:\n    total += a.call(ask(1), 2000)\nprint(total)\n";
         assert_eq!(run_source(src).unwrap(), "2080\n");

@@ -48,6 +48,30 @@ SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue 
     return g_subject_call(vm, subject, build, timeout);
 }
 
+static void (*g_subject_send_after)(void *, uint64_t, SetaeMsg *) = NULL;
+
+void setae_set_subject_send_after(void (*fn)(void *, uint64_t, SetaeMsg *)) {
+    g_subject_send_after = fn;
+}
+
+int setae_subject_send_after_value(SetaeVM *vm, SetaeValue subject, SetaeValue delay,
+                                   SetaeValue arg) {
+    if (!setae_is_int(delay)) {
+        setae_vm_raise(vm, "TypeError", "send_after() delay must be an integer");
+        return -1;
+    }
+    int32_t ms = setae_to_int(delay);
+    if (ms < 0) {
+        ms = 0;
+    }
+    SetaeMsg *msg = setae_msg_read(vm, arg);
+    if (msg == NULL) {
+        return -1;
+    }
+    g_subject_send_after(setae_subject_mailbox(subject), (uint64_t)ms, msg);
+    return 0;
+}
+
 typedef struct {
     SetaeMsgTag tag;
     union {
