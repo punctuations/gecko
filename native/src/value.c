@@ -148,6 +148,8 @@ const char *setae_type_name(SetaeValue v) {
         return "subject";
     case SETAE_T_STOP:
         return "StopSignal";
+    case SETAE_T_ARRAY:
+        return "array";
     case SETAE_T_GEN:
         return ((SetaeGen *)setae_to_ptr(v))->coroutine ? "coroutine" : "generator";
     case SETAE_T_ITEROP:

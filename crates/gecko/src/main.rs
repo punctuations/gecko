@@ -1065,6 +1065,24 @@ mod tests {
     }
 
     #[test]
+    fn typed_arrays() {
+        let src = "from gecko import array\nxs = array([1.0, 2.0, 3.0, 4.0], dtype=\"f64\")\nprint(xs)\nprint(len(xs), xs[1], xs[-1])\nys = array([10, 20, 30, 40, 50], dtype=\"i64\")\nprint(ys[1:3], ys[::2])\nprint(array([1, 2, 3], dtype=\"i32\"))\nprint(array(range(4), dtype=\"f32\"))\nprint(bool(array([], dtype=\"f64\")), bool(xs))\nprint(array([10 ** 18], dtype=\"i64\")[0])\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "array([1.0, 2.0, 3.0, 4.0], dtype='f64')\n4 2.0 4.0\narray([20, 30], dtype='i64') array([10, 30, 50], dtype='i64')\narray([1, 2, 3], dtype='i32')\narray([0.0, 1.0, 2.0, 3.0], dtype='f32')\nFalse True\n1000000000000000000\n"
+        );
+    }
+
+    #[test]
+    fn typed_array_view_survives_collection() {
+        let src = "from gecko import array\n\ndef make_view():\n    parent = array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=\"f64\")\n    return parent[1:4]\n\nv = make_view()\nfor _ in range(50000):\n    array([0.0, 0.0, 0.0], dtype=\"f64\")\nprint(v, v[0], v[2])\ntry:\n    array([1.5], dtype=\"i64\")\nexcept TypeError:\n    print(\"typeerror\")\ntry:\n    array([1], dtype=\"q8\")\nexcept ValueError:\n    print(\"valueerror\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "array([2.0, 3.0, 4.0], dtype='f64') 2.0 4.0\ntypeerror\nvalueerror\n"
+        );
+    }
+
+    #[test]
     fn big_integers() {
         let src = "print(2 ** 100)\ndef fact(n):\n    r = 1\n    for i in range(1, n + 1):\n        r *= i\n    return r\nprint(fact(25))\nprint(10 ** 30 + 1)\nprint(2 ** 100 // 7, 2 ** 100 % 7)\nprint(-(2 ** 70))\nprint(2 ** 100 == 2 ** 100, 2 ** 100 > 2 ** 99)\nx = 123456789012345678901234567890\nprint(x + x)\nprint(x * 1000000)\nprint(divmod(x, 7))\nprint(abs(-x), x > 0)\nprint(1000000 * 1000000)\nprint(type(2 ** 100) is int, isinstance(2 ** 100, int))\n";
         assert_eq!(

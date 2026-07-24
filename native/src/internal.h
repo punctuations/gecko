@@ -135,6 +135,23 @@ typedef struct SetaeSubject {
 } SetaeSubject;
 
 enum {
+    DTYPE_F64,
+    DTYPE_F32,
+    DTYPE_I64,
+    DTYPE_I32,
+};
+
+typedef struct SetaeBuffer SetaeBuffer;
+
+typedef struct SetaeArray {
+    SetaeObject obj;
+    SetaeBuffer *buf;
+    uint8_t dtype;
+    uint32_t offset;
+    uint32_t len;
+} SetaeArray;
+
+enum {
     SET_EMPTY,
     SET_ACTIVE,
     SET_DUMMY,
@@ -258,6 +275,20 @@ SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module)
 SetaeValue setae_iterop_new(SetaeHeap *h, uint8_t kind, SetaeValue func, SetaeValue sources);
 int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *out);
 SetaeValue setae_iter_collect(SetaeVM *vm, SetaeValue v);
+
+SetaeBuffer *setae_buffer_alloc(uint8_t dtype, size_t len);
+void setae_buffer_retain(SetaeBuffer *b);
+void setae_buffer_release(SetaeBuffer *b);
+void *setae_buffer_data(SetaeBuffer *b);
+size_t setae_dtype_size(uint8_t dtype);
+const char *setae_dtype_name(uint8_t dtype);
+SetaeValue setae_array_new(SetaeHeap *h, SetaeBuffer *buf, uint8_t dtype, uint32_t offset,
+                           uint32_t len);
+SetaeValue setae_array_get(SetaeVM *vm, SetaeValue arr, int64_t i);
+SetaeValue setae_array_slice(SetaeVM *vm, SetaeValue arr, int64_t start, int64_t step,
+                             int64_t count);
+void setae_array_repr(SetaeVM *vm, SetaeValue arr);
+SetaeValue setae_array_build(SetaeVM *vm, SetaeValue *args, int nargs);
 SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v);
 int setae_iter_advance(SetaeVM *vm, SetaeValue it, SetaeValue *out);
 int setae_truthy(SetaeValue v);

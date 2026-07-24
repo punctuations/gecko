@@ -262,6 +262,9 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
         setae_vm_append_output(vm, buf, (size_t)n);
         return;
     }
+    case SETAE_T_ARRAY:
+        setae_array_repr(vm, v);
+        return;
     case SETAE_T_FUNCTION: {
         SetaeFunc *f = setae_to_ptr(v);
         out_str(vm, "<function ");
@@ -731,6 +734,8 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
         }
         return setae_from_int((int32_t)n);
     }
+    case SETAE_T_ARRAY:
+        return setae_from_int((int32_t)((SetaeArray *)setae_to_ptr(v))->len);
     default:
         setae_vm_raise(vm, "TypeError", "object of type '%s' has no len()",
                        setae_type_name(v));
@@ -1869,9 +1874,14 @@ static void register_gecko(SetaeVM *vm) {
     SetaeValue adict = setae_dict_new(h);
     SetaeValue actor = setae_module_new(h, setae_str_new(h, "_gecko.actor", 12), adict);
 
+    SetaeValue array = setae_builtin_new(h, setae_array_build, "array");
+    ((SetaeBuiltin *)setae_to_ptr(array))->kwargs_ok = 1;
+    ((SetaeBuiltin *)setae_to_ptr(array))->is_type = 1;
+
     SetaeValue gdict = setae_dict_new(h);
     setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "sandbox", 7), sandbox);
     setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "actor", 5), actor);
+    setae_dict_push(setae_to_ptr(gdict), setae_str_new(h, "array", 5), array);
     SetaeValue gecko = setae_module_new(h, setae_str_new(h, "_gecko", 6), gdict);
     setae_vm_register_builtin(vm, "_gecko", gecko);
 }

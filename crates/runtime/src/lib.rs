@@ -206,18 +206,11 @@ impl Envelope {
     }
 }
 
-// A subject is a handle to some mailbox. An actor subject schedules the actor
-// when a message arrives; a reply subject is a one-shot channel a blocked
-// caller waits on. Both are boxed behind the subject's opaque pointer.
 enum Handle {
     Actor(Arc<Actor>),
     Reply(Sender<Envelope>),
 }
 
-// The mutable run state of an actor: its VM and heap, the handler, the threaded
-// state, and the extra handler arguments. Only the worker that currently owns
-// the actor (holds the scheduled slot) touches this, so access through the
-// UnsafeCell is exclusive.
 struct ActorRun {
     vm: Vm,
     handle: SetaeValue,
@@ -225,8 +218,6 @@ struct ActorRun {
     extras: Vec<SetaeValue>,
 }
 
-// A watcher registered on an actor: when the actor terminates, `down` is
-// delivered to `notify`.
 struct Monitor {
     notify: Handle,
     down: MsgPtr,
@@ -234,9 +225,7 @@ struct Monitor {
 
 struct Actor {
     inbox: Mutex<VecDeque<Envelope>>,
-    // Signalled when a slot frees up, for senders blocked on a full mailbox.
     space: Condvar,
-    // 0 means the mailbox is unbounded.
     capacity: usize,
     scheduled: AtomicBool,
     closed: AtomicBool,
@@ -246,8 +235,6 @@ struct Actor {
     run: std::cell::UnsafeCell<ActorRun>,
     sched: Arc<SchedInner>,
 }
-// The scheduled flag serializes which worker touches `run`, and `scheduled` is
-// only mutated under the inbox lock, so no two threads run one actor at once.
 unsafe impl Send for Actor {}
 unsafe impl Sync for Actor {}
 
@@ -257,9 +244,6 @@ enum Outcome {
 }
 
 impl Actor {
-    // Drop a message onto the actor and schedule it if it was idle. Called from
-    // any thread that holds a subject. On a bounded mailbox that is full, this
-    // blocks the sender until a slot frees, which is the backpressure.
     fn deliver(self: &Arc<Actor>, env: Envelope) {
         if self.closed.load(Ordering::Acquire) {
             reject(env);
@@ -284,10 +268,6 @@ impl Actor {
         }
     }
 
-    // End the actor: mark it closed, fail every queued message so waiting calls
-    // do not hang, wake senders blocked on backpressure, and notify every
-    // watcher. Idempotent, so the stop/error path and the final drop can both
-    // call it and it fires the monitors exactly once.
     fn terminate(&self) {
         if self.terminated.swap(true, Ordering::AcqRel) {
             return;
@@ -331,8 +311,6 @@ impl Actor {
     }
 }
 
-// The quiet path: an actor that runs out of senders and messages is dropped
-// here, which fires any monitors that the stop/error path did not.
 impl Drop for Actor {
     fn drop(&mut self) {
         self.terminate();
@@ -421,8 +399,6 @@ fn worker_loop(local: Worker<Arc<Actor>>, sched: Arc<SchedInner>) {
     }
 }
 
-// Drain the actor's mailbox on this worker, running the handler per message and
-// threading its state, then park the actor when the mailbox empties.
 fn run_actor(actor: &Arc<Actor>) {
     let run = unsafe { &mut *actor.run.get() };
     loop {
@@ -492,8 +468,6 @@ fn run_message(run: &mut ActorRun, env: Envelope) -> Outcome {
     }
 }
 
-// A pending delayed send. It owns a handle to the target (which keeps the
-// target alive until it fires) and the message in heap-neutral form.
 struct MsgPtr(*mut SetaeMsg);
 unsafe impl Send for MsgPtr {}
 
@@ -517,8 +491,6 @@ impl Timer {
     }
 }
 
-// Order timers so the nearest deadline is the greatest, giving a min-heap out
-// of the max-heap BinaryHeap.
 impl PartialEq for Timer {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline
@@ -536,8 +508,6 @@ impl Ord for Timer {
     }
 }
 
-// A single background thread services all timers, firing each into the actor
-// scheduler (or a reply channel) at its deadline.
 fn timers() -> &'static Sender<Timer> {
     static TIMERS: OnceLock<Sender<Timer>> = OnceLock::new();
     TIMERS.get_or_init(|| {
@@ -594,7 +564,6 @@ extern "C" fn subject_send_after(
     }
 }
 
-// Register `notify` to receive `down` when the actor behind `target` dies.
 extern "C" fn subject_monitor(
     target: *mut std::ffi::c_void,
     notify: *mut std::ffi::c_void,
@@ -611,7 +580,6 @@ extern "C" fn subject_monitor(
             notify: watcher,
             down: MsgPtr(down),
         }),
-        // A reply subject has no lifecycle to watch, so notify at once.
         Handle::Reply(_) => {
             let env = Envelope::value(down);
             match watcher {
@@ -633,8 +601,6 @@ extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
     let handle = unsafe { Box::from_raw(mailbox as *mut Handle) };
     if let Handle::Actor(actor) = &*handle {
         if actor.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            // The last sender is gone: wake the actor once so it can drain any
-            // queued messages and then be dropped.
             let guard = actor.inbox.lock().unwrap();
             let was = actor.scheduled.swap(true, Ordering::AcqRel);
             drop(guard);
@@ -823,8 +789,6 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             return setae_none();
         }
 
-        // Carry the module's top-level functions and copyable constants into
-        // the isolate so the handler can reach the names it references.
         let mut globals = Vec::new();
         let gcount = setae_vm_globals_count(vm);
         for i in 0..gcount {
@@ -843,8 +807,6 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             } else {
                 let msg = setae_msg_read(vm, val);
                 if msg.is_null() {
-                    // Not a copyable value (a class, module, instance, ...);
-                    // skip it and clear the probe's error.
                     setae_vm_clear_error(vm);
                 } else {
                     globals.push(GlobalItem::Value(name, msg));
@@ -880,8 +842,6 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
     }
 }
 
-// A module global carried into a spawned isolate: a plain function as its
-// serialized code, or a copyable value as its heap-neutral form.
 enum GlobalItem {
     Func(String, Vec<u8>),
     Value(String, *mut SetaeMsg),
@@ -895,8 +855,6 @@ fn free_globals(globals: Vec<GlobalItem>) {
     }
 }
 
-// Wrap an inner code object in a two-instruction module that makes the function
-// and returns it, the format the isolate can lower into its own code tree.
 fn wrapper_code(inner: bytecode::Code) -> bytecode::Code {
     bytecode::Code {
         name: String::new(),
@@ -929,7 +887,6 @@ fn wrapper_code(inner: bytecode::Code) -> bytecode::Code {
     }
 }
 
-// Rebuild a serialized function inside `child` and return the function value.
 fn build_function(child: &mut Vm, bytes: &[u8]) -> Option<SetaeValue> {
     let inner = bytecode::from_bytes(bytes).ok()?;
     let run = child.run(&wrapper_code(inner));
@@ -939,10 +896,6 @@ fn build_function(child: &mut Vm, bytes: &[u8]) -> Option<SetaeValue> {
     Some(run.result)
 }
 
-// Build an actor's run state on the calling thread: make the handler in a fresh
-// isolate, rebuild the module globals it may reach, and rebuild the initial
-// state and extras. The isolate then moves to whichever worker handles its
-// first message.
 fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg, globals: Vec<GlobalItem>) -> Option<ActorRun> {
     let mut child = Vm::new();
     child.enable_actors();

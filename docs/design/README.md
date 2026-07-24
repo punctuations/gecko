@@ -10,3 +10,4 @@ assume the earlier ones.
 - 04-concurrency.md: isolates, actors, channels.
 - 05-embedding.md: host embedding API and the Rust/C boundary.
 - 06-builtins.md: builtin functions, types and their methods, and what is not there yet.
+- 07-data-engine.md: typed arrays, shared buffers, kernels, and parallel map/reduce/filter.

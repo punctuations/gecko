@@ -56,6 +56,7 @@ typedef enum {
     SETAE_T_ITEROP,
     SETAE_T_SET,
     SETAE_T_SLICE,
+    SETAE_T_ARRAY,
 } SetaeType;
 
 /* One-word header; the payload follows it in memory. */

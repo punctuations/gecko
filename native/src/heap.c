@@ -110,6 +110,9 @@ static void obj_free(SetaeObject *o) {
     case SETAE_T_INSTANCE:
         free(((SetaeInstance *)o)->slots);
         break;
+    case SETAE_T_ARRAY:
+        setae_buffer_release(((SetaeArray *)o)->buf);
+        break;
     }
     free(o);
 }
@@ -408,6 +411,16 @@ SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module)
     g->resumed = 0;
     g->done = 0;
     return setae_from_ptr(g);
+}
+
+SetaeValue setae_array_new(SetaeHeap *h, SetaeBuffer *buf, uint8_t dtype, uint32_t offset,
+                           uint32_t len) {
+    SetaeArray *a = heap_alloc(h, sizeof(SetaeArray), SETAE_T_ARRAY);
+    a->buf = buf;
+    a->dtype = dtype;
+    a->offset = offset;
+    a->len = len;
+    return setae_from_ptr(a);
 }
 
 SetaeValue setae_tuple_new(SetaeHeap *h, const SetaeValue *items, uint32_t n) {

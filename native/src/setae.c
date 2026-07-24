@@ -964,6 +964,8 @@ static int truthy(SetaeValue v) {
         return ((SetaeSet *)setae_to_ptr(v))->used != 0;
     case SETAE_T_RANGE:
         return setae_range_len(setae_to_ptr(v)) != 0;
+    case SETAE_T_ARRAY:
+        return ((SetaeArray *)setae_to_ptr(v))->len != 0;
     default:
         return 1;
     }
@@ -1315,6 +1317,8 @@ static SetaeValue do_slice(SetaeVM *vm, SetaeValue obj, SetaeSlice *sl) {
         len = ((SetaeTuple *)setae_to_ptr(obj))->len;
     } else if (t == SETAE_T_STR) {
         len = (int64_t)setae_str_count(obj);
+    } else if (t == SETAE_T_ARRAY) {
+        len = ((SetaeArray *)setae_to_ptr(obj))->len;
     } else {
         setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
                        setae_type_name(obj));
@@ -1323,6 +1327,9 @@ static SetaeValue do_slice(SetaeVM *vm, SetaeValue obj, SetaeSlice *sl) {
     int64_t start, step, count;
     if (!slice_get(vm, sl, len, &start, &step, &count)) {
         return setae_none();
+    }
+    if (t == SETAE_T_ARRAY) {
+        return setae_array_slice(vm, obj, start, step, count);
     }
     setae_vm_push_tmp(vm, obj);
     SetaeValue rv;
@@ -1433,6 +1440,14 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
             return setae_none();
         }
         return from_i64(vm, r->start + i * r->step);
+    }
+    case SETAE_T_ARRAY: {
+        if (!setae_is_int(idx)) {
+            setae_vm_raise(vm, "TypeError", "array indices must be integers, not %s",
+                           setae_type_name(idx));
+            return setae_none();
+        }
+        return setae_array_get(vm, obj, setae_to_int(idx));
     }
     default:
         setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
