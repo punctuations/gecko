@@ -303,6 +303,30 @@ mod tests {
     }
 
     #[test]
+    fn handler_reaches_module_globals() {
+        let src = "from gecko import actor\n\nSCALE = 10\n\ndef double(x):\n    return x * 2\n\ndef handle(state, message):\n    message[1].send(double(message[0]) + SCALE)\n    return state\n\na = actor.spawn(0, handle)\nprint(a.call(lambda r: [5, r], 2000))\n";
+        assert_eq!(run_source(src).unwrap(), "20\n");
+    }
+
+    #[test]
+    fn handler_can_spawn_children() {
+        let src = "from gecko import actor\n\ndef child_h(state, message):\n    message[1].send(state + message[0])\n    return state\n\ndef parent_h(state, message):\n    message[1].send(actor.spawn(100, child_h))\n    return state\n\np = actor.spawn(None, parent_h)\nc = p.call(lambda r: [\"make\", r], 2000)\nprint(c.call(lambda r: [5, r], 2000))\n";
+        assert_eq!(run_source(src).unwrap(), "105\n");
+    }
+
+    #[test]
+    fn monitor_notifies_on_actor_death() {
+        let src = "from gecko import actor\n\ndef worker(state, message):\n    if message[0] == \"boom\":\n        raise ValueError(\"crash\")\n    if message[0] == \"stop\":\n        return actor.stop()\n    return state\n\ndef collector(state, message):\n    if message[0] == \"down\":\n        return state + 1\n    if message[0] == \"get\":\n        message[1].send(state)\n        return state\n    return state\n\ncol = actor.spawn(0, collector)\nw1 = actor.spawn(0, worker)\nw1.monitor(col, [\"down\"])\nw1.send([\"boom\"])\nw2 = actor.spawn(0, worker)\nw2.monitor(col, [\"down\"])\nw2.send([\"stop\"])\n\ndef fence(reply):\n    col.send_after(150, [\"get\", reply])\n    return [\"noop\"]\n\nprint(col.call(fence, 3000))\n";
+        assert_eq!(run_source(src).unwrap(), "2\n");
+    }
+
+    #[test]
+    fn bounded_mailbox_keeps_order_without_loss() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == \"log\":\n        return state + message[1]\n    message[1].send(state)\n    return state\n\na = actor.spawn(\"\", handle, [], 1)\nfor ch in [\"a\", \"b\", \"c\", \"d\", \"e\"]:\n    a.send([\"log\", ch])\nprint(a.call(lambda r: [\"get\", r], 3000))\n";
+        assert_eq!(run_source(src).unwrap(), "abcde\n");
+    }
+
+    #[test]
     fn send_after_delivers_delayed_messages() {
         let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == \"tick\":\n        return state + 1\n    if message[0] == \"report\":\n        message[1].send(state)\n        return state\n    return state\n\na = actor.spawn(0, handle)\nfor i in range(3):\n    a.send_after(5, [\"tick\"])\nprint(a.call(lambda r: [\"report\", r], 2000))\n\ndef fence(reply):\n    a.send_after(120, [\"report\", reply])\n    return [\"noop\"]\n\nprint(a.call(fence, 3000))\n";
         assert_eq!(run_source(src).unwrap(), "0\n3\n");

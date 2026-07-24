@@ -104,6 +104,9 @@ unsafe extern "C" {
     pub fn setae_set_subject_send_after(
         f: extern "C" fn(*mut std::ffi::c_void, u64, *mut SetaeMsg),
     );
+    pub fn setae_set_subject_monitor(
+        f: extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut SetaeMsg),
+    );
     pub fn setae_set_subject_call(
         f: extern "C" fn(*mut SetaeVm, SetaeValue, SetaeValue, SetaeValue) -> SetaeValue,
     );
@@ -161,6 +164,10 @@ unsafe extern "C" {
     pub fn setae_vm_register_builtin(vm: *mut SetaeVm, name: *const c_char, v: SetaeValue);
     pub fn setae_builtin_new(h: *mut SetaeHeap, f: HostFn, name: *const c_char) -> SetaeValue;
     pub fn setae_vm_set_global(vm: *mut SetaeVm, name: *const c_char, v: SetaeValue);
+    pub fn setae_vm_globals_count(vm: *mut SetaeVm) -> u32;
+    pub fn setae_vm_global_name(vm: *mut SetaeVm, i: u32) -> *const c_char;
+    pub fn setae_vm_global_value(vm: *mut SetaeVm, i: u32) -> SetaeValue;
+    pub fn setae_code_nfrees(code: *const SetaeCode) -> u32;
     pub fn setae_vm_run(vm: *mut SetaeVm, code: *mut SetaeCode) -> SetaeValue;
     pub fn setae_vm_error(vm: *mut SetaeVm) -> c_int;
     pub fn setae_vm_error_msg(vm: *mut SetaeVm) -> *const c_char;
@@ -218,11 +225,24 @@ struct ActorRun {
     extras: Vec<SetaeValue>,
 }
 
+// A watcher registered on an actor: when the actor terminates, `down` is
+// delivered to `notify`.
+struct Monitor {
+    notify: Handle,
+    down: MsgPtr,
+}
+
 struct Actor {
     inbox: Mutex<VecDeque<Envelope>>,
+    // Signalled when a slot frees up, for senders blocked on a full mailbox.
+    space: Condvar,
+    // 0 means the mailbox is unbounded.
+    capacity: usize,
     scheduled: AtomicBool,
     closed: AtomicBool,
+    terminated: AtomicBool,
     senders: AtomicUsize,
+    monitors: Mutex<Vec<Monitor>>,
     run: std::cell::UnsafeCell<ActorRun>,
     sched: Arc<SchedInner>,
 }
@@ -238,13 +258,24 @@ enum Outcome {
 
 impl Actor {
     // Drop a message onto the actor and schedule it if it was idle. Called from
-    // any thread that holds a subject.
+    // any thread that holds a subject. On a bounded mailbox that is full, this
+    // blocks the sender until a slot frees, which is the backpressure.
     fn deliver(self: &Arc<Actor>, env: Envelope) {
         if self.closed.load(Ordering::Acquire) {
             reject(env);
             return;
         }
         let mut q = self.inbox.lock().unwrap();
+        if self.capacity > 0 {
+            while q.len() >= self.capacity && !self.closed.load(Ordering::Acquire) {
+                q = self.space.wait(q).unwrap();
+            }
+            if self.closed.load(Ordering::Acquire) {
+                drop(q);
+                reject(env);
+                return;
+            }
+        }
         q.push_back(env);
         let was = self.scheduled.swap(true, Ordering::AcqRel);
         drop(q);
@@ -253,14 +284,58 @@ impl Actor {
         }
     }
 
-    // Mark the actor closed and fail every queued message so waiting calls do
-    // not hang.
-    fn close(&self) {
+    // End the actor: mark it closed, fail every queued message so waiting calls
+    // do not hang, wake senders blocked on backpressure, and notify every
+    // watcher. Idempotent, so the stop/error path and the final drop can both
+    // call it and it fires the monitors exactly once.
+    fn terminate(&self) {
+        if self.terminated.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.closed.store(true, Ordering::Release);
         let mut q = self.inbox.lock().unwrap();
         for env in q.drain(..) {
             reject(env);
         }
+        drop(q);
+        self.space.notify_all();
+
+        let mut mons = self.monitors.lock().unwrap();
+        for m in mons.drain(..) {
+            let env = Envelope::value(m.down.0);
+            match m.notify {
+                Handle::Actor(a) => a.deliver(env),
+                Handle::Reply(tx) => {
+                    if tx.send(env).is_err() {
+                        unsafe { setae_msg_free(m.down.0) };
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_monitor(&self, m: Monitor) {
+        if self.terminated.load(Ordering::Acquire) {
+            let env = Envelope::value(m.down.0);
+            match m.notify {
+                Handle::Actor(a) => a.deliver(env),
+                Handle::Reply(tx) => {
+                    if tx.send(env).is_err() {
+                        unsafe { setae_msg_free(m.down.0) };
+                    }
+                }
+            }
+            return;
+        }
+        self.monitors.lock().unwrap().push(m);
+    }
+}
+
+// The quiet path: an actor that runs out of senders and messages is dropped
+// here, which fires any monitors that the stop/error path did not.
+impl Drop for Actor {
+    fn drop(&mut self) {
+        self.terminate();
     }
 }
 
@@ -351,7 +426,14 @@ fn worker_loop(local: Worker<Arc<Actor>>, sched: Arc<SchedInner>) {
 fn run_actor(actor: &Arc<Actor>) {
     let run = unsafe { &mut *actor.run.get() };
     loop {
-        let env = actor.inbox.lock().unwrap().pop_front();
+        let env = {
+            let mut q = actor.inbox.lock().unwrap();
+            let env = q.pop_front();
+            if env.is_some() && actor.capacity > 0 {
+                actor.space.notify_one();
+            }
+            env
+        };
         match env {
             Some(env) => {
                 if actor.closed.load(Ordering::Acquire) {
@@ -359,7 +441,7 @@ fn run_actor(actor: &Arc<Actor>) {
                     continue;
                 }
                 if let Outcome::Stop = run_message(run, env) {
-                    actor.close();
+                    actor.terminate();
                     return;
                 }
             }
@@ -512,6 +594,38 @@ extern "C" fn subject_send_after(
     }
 }
 
+// Register `notify` to receive `down` when the actor behind `target` dies.
+extern "C" fn subject_monitor(
+    target: *mut std::ffi::c_void,
+    notify: *mut std::ffi::c_void,
+    down: *mut SetaeMsg,
+) {
+    let target = unsafe { &*(target as *const Handle) };
+    let notify = unsafe { &*(notify as *const Handle) };
+    let watcher = match notify {
+        Handle::Actor(actor) => Handle::Actor(actor.clone()),
+        Handle::Reply(tx) => Handle::Reply(tx.clone()),
+    };
+    match target {
+        Handle::Actor(actor) => actor.register_monitor(Monitor {
+            notify: watcher,
+            down: MsgPtr(down),
+        }),
+        // A reply subject has no lifecycle to watch, so notify at once.
+        Handle::Reply(_) => {
+            let env = Envelope::value(down);
+            match watcher {
+                Handle::Actor(a) => a.deliver(env),
+                Handle::Reply(tx) => {
+                    if tx.send(env).is_err() {
+                        unsafe { setae_msg_free(down) };
+                    }
+                }
+            }
+        }
+    }
+}
+
 extern "C" fn subject_drop(mailbox: *mut std::ffi::c_void) {
     if mailbox.is_null() {
         return;
@@ -644,9 +758,9 @@ unsafe fn set_root(vm: *mut SetaeVm, name: &str, v: SetaeValue) {
 
 extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
     unsafe {
-        if argc != 2 && argc != 3 {
+        if argc < 2 || argc > 4 {
             let k = CString::new("TypeError").unwrap();
-            let m = CString::new("spawn() takes 2 or 3 arguments").unwrap();
+            let m = CString::new("spawn() takes 2 to 4 arguments").unwrap();
             setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
             return setae_none();
         }
@@ -668,7 +782,7 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
 
         let heap = setae_vm_heap(vm);
         let extras = setae_list_new(heap, 0);
-        if argc == 3 {
+        if argc >= 3 {
             let e = argv[2];
             match setae_obj_type(e) {
                 T_LIST => {
@@ -689,6 +803,17 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
                 }
             }
         }
+        let capacity = if argc == 4 {
+            if setae_is_int(argv[3]) == 0 {
+                let k = CString::new("TypeError").unwrap();
+                let m = CString::new("spawn() capacity must be an integer").unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                return setae_none();
+            }
+            setae_to_int(argv[3]).max(0) as usize
+        } else {
+            0
+        };
         let pack = setae_list_new(heap, 2);
         setae_list_append(pack, state);
         setae_list_append(pack, extras);
@@ -698,7 +823,36 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             return setae_none();
         }
 
-        let run = match build_actor(bytes, init) {
+        // Carry the module's top-level functions and copyable constants into
+        // the isolate so the handler can reach the names it references.
+        let mut globals = Vec::new();
+        let gcount = setae_vm_globals_count(vm);
+        for i in 0..gcount {
+            let name = CStr::from_ptr(setae_vm_global_name(vm, i))
+                .to_string_lossy()
+                .into_owned();
+            let val = setae_vm_global_value(vm, i);
+            if setae_obj_type(val) == T_FUNCTION {
+                if setae_code_nfrees(setae_func_code(val)) == 0 {
+                    let mut glen = 0usize;
+                    let gptr = setae_code_serialize(setae_func_code(val), &mut glen);
+                    let gbytes = std::slice::from_raw_parts(gptr, glen).to_vec();
+                    setae_bytes_free(gptr);
+                    globals.push(GlobalItem::Func(name, gbytes));
+                }
+            } else {
+                let msg = setae_msg_read(vm, val);
+                if msg.is_null() {
+                    // Not a copyable value (a class, module, instance, ...);
+                    // skip it and clear the probe's error.
+                    setae_vm_clear_error(vm);
+                } else {
+                    globals.push(GlobalItem::Value(name, msg));
+                }
+            }
+        }
+
+        let run = match build_actor(bytes, init, globals) {
             Some(r) => r,
             None => {
                 let k = CString::new("RuntimeError").unwrap();
@@ -709,9 +863,13 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
         };
         let actor = Arc::new(Actor {
             inbox: Mutex::new(VecDeque::new()),
+            space: Condvar::new(),
+            capacity,
             scheduled: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            terminated: AtomicBool::new(false),
             senders: AtomicUsize::new(1),
+            monitors: Mutex::new(Vec::new()),
             run: std::cell::UnsafeCell::new(run),
             sched: scheduler(),
         });
@@ -722,12 +880,25 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
     }
 }
 
-// Build an actor's run state on the calling thread: deserialize the handler,
-// make it in a fresh isolate, and rebuild the initial state and extras there.
-// The isolate then moves to whichever worker handles its first message.
-fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg) -> Option<ActorRun> {
-    let handler = bytecode::from_bytes(&bytes).ok()?;
-    let wrapper = bytecode::Code {
+// A module global carried into a spawned isolate: a plain function as its
+// serialized code, or a copyable value as its heap-neutral form.
+enum GlobalItem {
+    Func(String, Vec<u8>),
+    Value(String, *mut SetaeMsg),
+}
+
+fn free_globals(globals: Vec<GlobalItem>) {
+    for g in globals {
+        if let GlobalItem::Value(_, msg) = g {
+            unsafe { setae_msg_free(msg) };
+        }
+    }
+}
+
+// Wrap an inner code object in a two-instruction module that makes the function
+// and returns it, the format the isolate can lower into its own code tree.
+fn wrapper_code(inner: bytecode::Code) -> bytecode::Code {
+    bytecode::Code {
         name: String::new(),
         consts: Vec::new(),
         names: Vec::new(),
@@ -752,22 +923,54 @@ fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg) -> Option<ActorRun> {
         kwargs: false,
         generator: false,
         coroutine: false,
-        codes: vec![handler],
+        codes: vec![inner],
         modules: Vec::new(),
         parent_module: -1,
-    };
+    }
+}
 
-    let mut child = Vm::new();
-    child.enable_actors();
-    let run = child.run(&wrapper);
+// Rebuild a serialized function inside `child` and return the function value.
+fn build_function(child: &mut Vm, bytes: &[u8]) -> Option<SetaeValue> {
+    let inner = bytecode::from_bytes(bytes).ok()?;
+    let run = child.run(&wrapper_code(inner));
     if run.error {
-        unsafe { setae_msg_free(init) };
         return None;
     }
-    let handle = run.result;
+    Some(run.result)
+}
+
+// Build an actor's run state on the calling thread: make the handler in a fresh
+// isolate, rebuild the module globals it may reach, and rebuild the initial
+// state and extras. The isolate then moves to whichever worker handles its
+// first message.
+fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg, globals: Vec<GlobalItem>) -> Option<ActorRun> {
+    let mut child = Vm::new();
+    child.enable_actors();
+    let handle = match build_function(&mut child, &bytes) {
+        Some(h) => h,
+        None => {
+            unsafe { setae_msg_free(init) };
+            free_globals(globals);
+            return None;
+        }
+    };
 
     unsafe {
         set_root(child.vm, "actor", setae_gecko_actor_module(child.vm));
+        for g in globals {
+            match g {
+                GlobalItem::Func(name, gbytes) => {
+                    if let Some(fv) = build_function(&mut child, &gbytes) {
+                        set_root(child.vm, &name, fv);
+                    }
+                }
+                GlobalItem::Value(name, msg) => {
+                    let v = setae_msg_write(child.vm, msg);
+                    setae_msg_free(msg);
+                    set_root(child.vm, &name, v);
+                }
+            }
+        }
         set_root(child.vm, "$handle", handle);
         let pack = setae_msg_write(child.vm, init);
         setae_msg_free(init);
@@ -935,6 +1138,7 @@ impl Vm {
             setae_set_subject_clone(subject_clone);
             setae_set_subject_send(subject_send);
             setae_set_subject_send_after(subject_send_after);
+            setae_set_subject_monitor(subject_monitor);
             setae_set_subject_call(subject_call);
             Vm {
                 heap,
@@ -1515,12 +1719,16 @@ mod machine_tests {
             let init = setae_msg_read(driver.vm, pack);
             assert!(!init.is_null(), "init pack is sendable");
 
-            let run = build_actor(bytes, init).expect("actor built");
+            let run = build_actor(bytes, init, Vec::new()).expect("actor built");
             let actor = Arc::new(Actor {
                 inbox: Mutex::new(VecDeque::new()),
+                space: Condvar::new(),
+                capacity: 0,
                 scheduled: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
+                terminated: AtomicBool::new(false),
                 senders: AtomicUsize::new(1),
+                monitors: Mutex::new(Vec::new()),
                 run: std::cell::UnsafeCell::new(run),
                 sched: scheduler(),
             });

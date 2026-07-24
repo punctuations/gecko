@@ -233,6 +233,9 @@ void setae_set_subject_call(SetaeValue (*fn)(SetaeVM *, SetaeValue, SetaeValue, 
 void setae_set_subject_send_after(void (*fn)(void *, uint64_t, SetaeMsg *));
 int setae_subject_send_after_value(SetaeVM *vm, SetaeValue subject, SetaeValue delay,
                                    SetaeValue arg);
+void setae_set_subject_monitor(void (*fn)(void *, void *, SetaeMsg *));
+int setae_subject_monitor_value(SetaeVM *vm, SetaeValue subject, SetaeValue notify,
+                                SetaeValue down);
 SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue build,
                                     SetaeValue timeout);
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
@@ -249,6 +252,10 @@ void setae_vm_destroy(SetaeVM *vm);
 void setae_vm_register_builtins(SetaeVM *vm);
 void setae_vm_register_builtin(SetaeVM *vm, const char *name, SetaeValue v);
 void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v);
+uint32_t setae_vm_globals_count(const SetaeVM *vm);
+const char *setae_vm_global_name(const SetaeVM *vm, uint32_t i);
+SetaeValue setae_vm_global_value(const SetaeVM *vm, uint32_t i);
+uint32_t setae_code_nfrees(const SetaeCode *c);
 typedef SetaeValue (*SetaeSandboxHook)(SetaeVM *vm, const char *src, size_t len,
                                        uint64_t steps, size_t mem, uint64_t millis);
 

@@ -109,7 +109,10 @@ answer = counter.call(lambda reply: ("get", reply), 1000)
 returns a subject bound to its mailbox; the actor runs on a pool worker whenever
 it has a message. A third argument, `actor.spawn(state,
 handle, args)`, passes a list or tuple whose items reach the handler as extra
-parameters after `state` and `message`. Returning `actor.stop()` from the handler
+parameters after `state` and `message`. A fourth, `actor.spawn(state, handle,
+args, capacity)`, bounds the mailbox: once it holds `capacity` messages a `send`
+blocks the sender until the actor drains a slot, which is the backpressure.
+`capacity` 0, the default, leaves the mailbox unbounded. Returning `actor.stop()` from the handler
 ends the actor; otherwise the return is the next state. Without a stop an actor
 runs until the last sender to its mailbox drops. A handler runs without its module
 globals (see Function transfer), so the child binds `actor` for it, which is how
@@ -177,12 +180,16 @@ back, wraps the handler in a two-instruction module that makes the function and
 returns it, and lowers that into its own code tree with a fresh, empty cache
 array, so no code object and no inline cache is shared.
 
-The first cut requires the handler to be a plain top-level function: no free
-variables to capture, and no module globals beyond its parameters and the
-builtins, since only the handler's own code subtree travels, not the module
-around it. Nested functions and classes defined inside it do travel, because they
-are child code objects the writer already includes. Closures and module-global
-access are a later step that transfers more of the surrounding code.
+The handler travels with its module's globals. At spawn the runtime walks the
+spawning isolate's top-level names and rebuilds each in the child: a plain
+function by serializing its code the same way, a copyable value (the message
+types) by copying it. So a handler can call other top-level functions, read
+module constants, and recurse by its own name, and a supervisor can `spawn` a
+worker whose handler is just another top-level function. Names that are not
+transferable, a class, a module, an instance, or a function that captures free
+variables, are skipped, so a handler that reaches for one still raises NameError
+in the child. The handler itself must be a plain top-level function with no free
+variables; transferring a closure's captured cells is the remaining step.
 
 ### Isolates on threads
 
@@ -224,9 +231,9 @@ A `call` still blocks the calling thread on a one-shot reply channel until the
 reply or the timeout. When the caller is itself an actor handler, that blocks its
 worker for the duration, since the VM cannot suspend mid-handler; a pool sized to
 the cores tolerates this, and cooperative suspension is left for later. Delayed
-sends run on a separate timer thread (see Cast and call). Bounded mailbox
-backpressure and per-worker fairness tuning are the open items on top of this
-first cut.
+sends run on a separate timer thread (see Cast and call), and a bounded mailbox
+applies backpressure (see The actor shape). Per-worker fairness tuning is the
+open item on top of this first cut.
 
 ### Native wiring
 
@@ -245,8 +252,21 @@ what the caller sees. A call carries its reply channel alongside the message, so
 the failure text travels back through that channel and `call` re-raises it at the
 caller as a RuntimeError carrying the handler's error text. A cast has no one
 waiting, so the failure just stops the actor. Preserving the original exception
-type across the boundary, and supervision with restart and failure trees, are
-deferred.
+type across the boundary is deferred.
+
+### Monitors and supervision
+
+`subject.monitor(notify, down)` registers a watcher: when the actor behind
+`subject` terminates, whether by returning `actor.stop()`, by a handler raising,
+or by running out of senders, the value `down` is delivered to the subject
+`notify`. Termination fires each registered watcher exactly once. Monitoring an
+actor that has already died delivers `down` at once.
+
+That is the primitive supervision is built from, in user code: a supervisor
+actor spawns a child, monitors it back to itself, and on the down-message spawns
+a replacement. Because the down-message is any value the supervisor chooses, it
+can tag which child died and carry whatever the restart needs. A restart policy
+baked into the runtime, and failure trees, sit on top of this and are deferred.
 
 ### Portable API
 
@@ -259,7 +279,7 @@ behavior is pinned down, so a program written against the API will run on both.
 
 - What a message copy costs on a large object graph, and where the immutable
   fast path starts to pay off.
-- Backpressure and bounded mailboxes.
-- Supervision and failure propagation between actors.
-- Transferring closures and the module globals a function reads, so spawn takes
-  any function and not only a self-contained one.
+- Transferring a handler that captures free variables (a closure) or references a
+  class, so spawn takes any function and not only a top-level one that reaches
+  only functions and data.
+- A restart policy and failure trees on top of the monitor primitive.

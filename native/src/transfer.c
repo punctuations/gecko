@@ -72,6 +72,26 @@ int setae_subject_send_after_value(SetaeVM *vm, SetaeValue subject, SetaeValue d
     return 0;
 }
 
+static void (*g_subject_monitor)(void *, void *, SetaeMsg *) = NULL;
+
+void setae_set_subject_monitor(void (*fn)(void *, void *, SetaeMsg *)) {
+    g_subject_monitor = fn;
+}
+
+int setae_subject_monitor_value(SetaeVM *vm, SetaeValue subject, SetaeValue notify,
+                                SetaeValue down) {
+    if (setae_obj_type(notify) != SETAE_T_SUBJECT) {
+        setae_vm_raise(vm, "TypeError", "monitor() notify must be a subject");
+        return -1;
+    }
+    SetaeMsg *msg = setae_msg_read(vm, down);
+    if (msg == NULL) {
+        return -1;
+    }
+    g_subject_monitor(setae_subject_mailbox(subject), setae_subject_mailbox(notify), msg);
+    return 0;
+}
+
 typedef struct {
     SetaeMsgTag tag;
     union {

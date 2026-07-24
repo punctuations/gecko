@@ -149,6 +149,18 @@ static void tab_index_add(const SetaeGlobal *arr, size_t n, uint32_t **pindex,
     }
 }
 
+uint32_t setae_vm_globals_count(const SetaeVM *vm) {
+    return (uint32_t)vm->nglobals;
+}
+
+const char *setae_vm_global_name(const SetaeVM *vm, uint32_t i) {
+    return vm->globals[i].name;
+}
+
+SetaeValue setae_vm_global_value(const SetaeVM *vm, uint32_t i) {
+    return vm->globals[i].value;
+}
+
 void setae_vm_set_global(SetaeVM *vm, const char *name, SetaeValue v) {
     int64_t found = tab_find(vm->globals, vm->nglobals, vm->globals_index,
                              vm->globals_index_cap, name);
@@ -1769,6 +1781,15 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                 return setae_none();
             }
             setae_subject_send_after_value(vm, obj, args[0], args[1]);
+            return setae_none();
+        }
+        if (strcmp(name, "monitor") == 0) {
+            if (nargs != 2) {
+                setae_vm_raise(vm, "TypeError",
+                               "monitor() takes exactly two arguments (%d given)", nargs);
+                return setae_none();
+            }
+            setae_subject_monitor_value(vm, obj, args[0], args[1]);
             return setae_none();
         }
         attr_error(vm, obj, name);
