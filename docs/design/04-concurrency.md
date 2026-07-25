@@ -280,8 +280,6 @@ behavior is pinned down, so a program written against the API will run on both.
 
 ## Open
 
-- What a message copy costs on a large object graph, and where the immutable
-  fast path starts to pay off.
 - Transferring a handler that captures free variables (a closure) or references a
   class, so spawn takes any function and not only a top-level one that reaches
   only functions and data.

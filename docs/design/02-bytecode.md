@@ -209,5 +209,6 @@ packaging phase in v0.0.3.
 
 ## Open
 
-- Superinstructions and inline caches wait for v0.0.5, but leave opcode space
-  for them.
+- Superinstructions. Inline caches shipped in v0.0.5 and bytecode
+  specialization was tried and dropped there, but the opcode space is still
+  reserved.
