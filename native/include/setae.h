@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* NaN-boxed. Encoding in docs/design/01-object-model.md. */
 typedef uint64_t SetaeValue;
 
 #define SETAE_NUMBER_TAG    0xffff000000000000ULL
@@ -15,7 +14,7 @@ typedef uint64_t SetaeValue;
 #define SETAE_VAL_TRUE  0x06ULL
 
 int setae_is_float(SetaeValue v);
-int setae_is_int(SetaeValue v); /* fixnum, not a heap bignum */
+int setae_is_int(SetaeValue v);
 int setae_is_ptr(SetaeValue v);
 int setae_is_none(SetaeValue v);
 int setae_is_bool(SetaeValue v);
@@ -59,7 +58,6 @@ typedef enum {
     SETAE_T_ARRAY,
 } SetaeType;
 
-/* One-word header; the payload follows it in memory. */
 typedef struct SetaeObject {
     uint32_t type;
     uint32_t gc;
@@ -68,7 +66,7 @@ typedef struct SetaeObject {
 typedef struct SetaeStr {
     SetaeObject obj;
     uint32_t len;
-    char data[]; /* UTF-8, not NUL-terminated */
+    char data[];
 } SetaeStr;
 
 struct SetaeVM;
@@ -83,13 +81,11 @@ typedef struct SetaeBuiltin {
     int is_type;
 } SetaeBuiltin;
 
-/* The value's type, or -1 when it is immediate (int, float, bool, None). */
 int setae_obj_type(SetaeValue v);
 int setae_is_str(SetaeValue v);
 size_t setae_str_len(SetaeValue v);
 const char *setae_str_data(SetaeValue v);
 
-/* Owns every object it allocates and frees them all on destroy. */
 typedef struct SetaeHeap SetaeHeap;
 
 SetaeHeap *setae_heap_new(void);
@@ -99,9 +95,6 @@ void setae_heap_set_limit(SetaeHeap *h, size_t max_objects);
 SetaeValue setae_str_new(SetaeHeap *h, const char *bytes, size_t len);
 SetaeValue setae_builtin_new(SetaeHeap *h, SetaeCFunc fn, const char *name);
 
-/* Wordcode: one opcode byte plus one arg byte. OP_EXTENDED_ARG prefixes shift
-   in the high bits of a wider arg. Jump args are instruction indices, not byte
-   offsets. */
 typedef enum {
     OP_LOAD_CONST,
     OP_LOAD_NAME,
@@ -127,7 +120,7 @@ typedef enum {
     OP_STORE_SUBSCR,
     OP_GET_ITER,
     OP_FOR_ITER,
-    OP_CALL_METHOD, /* arg: name index << 8 | argument count */
+    OP_CALL_METHOD,
     OP_EXTENDED_ARG,
     OP_LOAD_CLOSURE,
     OP_LOAD_DEREF,

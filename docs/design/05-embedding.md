@@ -34,6 +34,18 @@ accessor functions and never depends on struct layout:
 A value carrying a pointer stays rooted for as long as the host holds its
 handle, so a collection will not free it. See 03-gc.md.
 
+Three conventions the accessors follow. `setae_obj_type` gives the value's type,
+or -1 when the value is immediate, meaning an int, float, bool, or None, since
+those carry no heap object to ask. `setae_is_int` is true for a fixnum only, so
+an integer past the fixnum range is a heap bignum and answers false; use it to
+test the representation, not to ask whether a value is an integer. String bytes
+are UTF-8 and are not NUL-terminated, so a host reads them with the length the
+accessor returns and never passes them to a C string function.
+
+A heap owns every object it allocates and frees all of them when it is
+destroyed, so a host that destroys a heap invalidates every value it got from
+that heap.
+
 ## Errors
 
 A call that can fail returns a status, and on failure an exception handle with
