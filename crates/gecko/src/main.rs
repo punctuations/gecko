@@ -1083,6 +1083,15 @@ mod tests {
     }
 
     #[test]
+    fn big_integers_cross_actors() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    message[1].send(message[0] * 3)\n    return state\n\na = actor.spawn(0, handle)\nprint(a.call(lambda r: [10 ** 25, r], 2000))\nprint(a.call(lambda r: [-(2 ** 70), r], 2000))\nprint(a.call(lambda r: [7, r], 2000))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "30000000000000000000000000\n-3541774862152233910272\n21\n"
+        );
+    }
+
+    #[test]
     fn big_integers() {
         let src = "print(2 ** 100)\ndef fact(n):\n    r = 1\n    for i in range(1, n + 1):\n        r *= i\n    return r\nprint(fact(25))\nprint(10 ** 30 + 1)\nprint(2 ** 100 // 7, 2 ** 100 % 7)\nprint(-(2 ** 70))\nprint(2 ** 100 == 2 ** 100, 2 ** 100 > 2 ** 99)\nx = 123456789012345678901234567890\nprint(x + x)\nprint(x * 1000000)\nprint(divmod(x, 7))\nprint(abs(-x), x > 0)\nprint(1000000 * 1000000)\nprint(type(2 ** 100) is int, isinstance(2 ** 100, int))\n";
         assert_eq!(

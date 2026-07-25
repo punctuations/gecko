@@ -13,6 +13,7 @@ typedef enum {
     MSG_TUPLE,
     MSG_DICT,
     MSG_SUBJECT,
+    MSG_BIGINT,
 } SetaeMsgTag;
 
 static void *(*g_subject_clone)(void *) = NULL;
@@ -184,6 +185,15 @@ static int64_t msg_read(SetaeMsg *m, IdMap *map, SetaeVM *vm, SetaeValue v) {
         return n;
     }
     int t = setae_obj_type(v);
+    if (t == SETAE_T_BIGINT) {
+        uint32_t n = msg_add(m);
+        size_t len = 0;
+        char *dec = setae_bigint_decimal(v, &len);
+        m->nodes[n].tag = MSG_BIGINT;
+        m->nodes[n].as.str.data = dec;
+        m->nodes[n].as.str.len = (uint32_t)len;
+        return n;
+    }
     if (t == SETAE_T_STR) {
         uint32_t n = msg_add(m);
         uint32_t len = (uint32_t)setae_str_len(v);
@@ -279,6 +289,8 @@ static SetaeValue msg_write(const SetaeMsg *m, SetaeValue *built, SetaeVM *vm, u
         return setae_from_float(nd->as.f);
     case MSG_STR:
         return setae_str_new(vm->heap, nd->as.str.data, nd->as.str.len);
+    case MSG_BIGINT:
+        return setae_int_from_decimal(vm->heap, nd->as.str.data, nd->as.str.len, 0);
     case MSG_LIST: {
         if (built[idx] != 0) {
             return built[idx];
@@ -532,7 +544,7 @@ void setae_msg_free(SetaeMsg *m) {
     }
     for (uint32_t i = 0; i < m->nnodes; i++) {
         SetaeMsgNode *nd = &m->nodes[i];
-        if (nd->tag == MSG_STR) {
+        if (nd->tag == MSG_STR || nd->tag == MSG_BIGINT) {
             free(nd->as.str.data);
         } else if (nd->tag == MSG_LIST || nd->tag == MSG_TUPLE) {
             free(nd->as.seq.items);
