@@ -1134,6 +1134,24 @@ mod tests {
     }
 
     #[test]
+    fn percent_string_formatting() {
+        let src = "print('%d|%s|%r' % (5, 'a', 'a'))\nprint('%5d|%-5d|%05d' % (42, 42, 42))\nprint('%+d|% d' % (7, 7))\nprint('%.2f|%10.3f|%-10.2f|' % (3.14159, 3.14159, 3.14159))\nprint('%x|%X|%#x|%o|%#o' % (255, 255, 255, 8, 8))\nprint('%e|%E|%g|%G' % (12345.6789, 12345.6789, 0.00001234, 123456789.0))\nprint('%c|%c' % (65, 'z'))\nprint('%%|%s' % 'end')\nprint('%(a)s-%(b)d' % {'a': 'x', 'b': 3})\nprint('%.3s|%*d|%.*f' % ('abcdefg', 6, 42, 2, 3.14159))\nprint('%s|%s|%d|%s' % ([1, 2], None, True, {'k': 1}))\nprint('%d' % 2 ** 80)\nprint('%+05d|%+.3d|%.3d|%#.3x|%#.3o' % (-7, 7, -7, 255, 8))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "5|a|'a'\n   42|42   |00042\n+7| 7\n3.14|     3.142|3.14      |\nff|FF|0xff|10|0o10\n1.234568e+04|1.234568E+04|1.234e-05|1.23457E+08\nA|z\n%|end\nx-3\nabc|    42|3.14\n[1, 2]|None|1|{'k': 1}\n1208925819614629174706176\n-0007|+007|-007|0x0ff|0o010\n"
+        );
+    }
+
+    #[test]
+    fn percent_formatting_errors() {
+        let src = "for f in [1, 2, 3, 4, 5]:\n    try:\n        if f == 1:\n            print('%d' % 'x')\n        elif f == 2:\n            print('%d %d' % (1,))\n        elif f == 3:\n            print('%d' % (1, 2))\n        elif f == 4:\n            print('%z' % 1)\n        else:\n            print('%(k)s' % {'j': 1})\n    except TypeError:\n        print('TypeError')\n    except ValueError:\n        print('ValueError')\n    except KeyError:\n        print('KeyError')\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "TypeError\nTypeError\nTypeError\nValueError\nKeyError\n"
+        );
+    }
+
+    #[test]
     fn big_integers() {
         let src = "print(2 ** 100)\ndef fact(n):\n    r = 1\n    for i in range(1, n + 1):\n        r *= i\n    return r\nprint(fact(25))\nprint(10 ** 30 + 1)\nprint(2 ** 100 // 7, 2 ** 100 % 7)\nprint(-(2 ** 70))\nprint(2 ** 100 == 2 ** 100, 2 ** 100 > 2 ** 99)\nx = 123456789012345678901234567890\nprint(x + x)\nprint(x * 1000000)\nprint(divmod(x, 7))\nprint(abs(-x), x > 0)\nprint(1000000 * 1000000)\nprint(type(2 ** 100) is int, isinstance(2 ** 100, int))\n";
         assert_eq!(

@@ -452,6 +452,9 @@ int32_t setae_code_module_parent(const SetaeCode *c);
 
 void setae_vm_append_output(SetaeVM *vm, const char *bytes, size_t len);
 SetaeValue setae_format_value(SetaeVM *vm, SetaeValue v, int repr_mode);
+size_t setae_utf8_encode(uint32_t cp, char *buf);
+int setae_dict_lookup(const SetaeDict *d, SetaeValue key, SetaeValue *out);
+SetaeValue setae_str_percent(SetaeVM *vm, SetaeValue fmt, SetaeValue args);
 SetaeValue setae_format_spec(SetaeVM *vm, SetaeValue v, SetaeValue spec, int conv);
 SetaeHeap *setae_vm_heap(SetaeVM *vm);
 void setae_vm_raise(SetaeVM *vm, const char *kind, const char *fmt, ...);

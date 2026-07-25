@@ -476,3 +476,26 @@ int setae_dict_del_cstr(SetaeDict *d, const char *name) {
     }
     return dict_remove_at(d, i);
 }
+
+size_t setae_utf8_encode(uint32_t cp, char *buf) {
+    if (cp < 0x80) {
+        buf[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        buf[0] = (char)(0xc0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3f));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        buf[0] = (char)(0xe0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        buf[2] = (char)(0x80 | (cp & 0x3f));
+        return 3;
+    }
+    buf[0] = (char)(0xf0 | (cp >> 18));
+    buf[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+    buf[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+    buf[3] = (char)(0x80 | (cp & 0x3f));
+    return 4;
+}

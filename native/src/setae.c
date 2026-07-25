@@ -419,6 +419,15 @@ static int64_t dict_find(const SetaeDict *d, SetaeValue key) {
     return -1;
 }
 
+int setae_dict_lookup(const SetaeDict *d, SetaeValue key, SetaeValue *out) {
+    int64_t i = dict_find(d, key);
+    if (i < 0) {
+        return 0;
+    }
+    *out = d->entries[i].value;
+    return 1;
+}
+
 void setae_dict_set(SetaeDict *d, SetaeValue key, SetaeValue value) {
     int64_t i = dict_find(d, key);
     if (i >= 0) {
@@ -718,6 +727,9 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         default:
             break;
         }
+    }
+    if (op == BIN_MOD && setae_is_str(a)) {
+        return setae_str_percent(vm, a, b);
     }
     if (op == BIN_ADD && setae_is_str(a) && setae_is_str(b)) {
         size_t na = setae_str_len(a);
