@@ -119,7 +119,7 @@ biggest win is still the time before your code runs.
 | --------- | --------------------------- |
 | Hardware  | Apple M1, 8 GB RAM, 8 cores |
 | OS        | macOS 26.4.1 (arm64)        |
-| Gecko     | 0.0.7                       |
+| Gecko     | 0.0.8                       |
 | CPython   | 3.14.6                      |
 | hyperfine | 20 warmup, 300 timed runs   |
 
