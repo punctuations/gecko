@@ -210,6 +210,50 @@ typedef struct SetaeExcEntry {
     uint32_t depth;
 } SetaeExcEntry;
 
+struct SetaeCode {
+    SetaeValue *consts;
+    uint32_t nconsts;
+    uint32_t consts_cap;
+
+    char **names;
+    uint32_t nnames;
+    uint32_t names_cap;
+
+    uint8_t *code;
+    uint32_t ncode;
+    uint32_t code_cap;
+
+    SetaeInlineCache *ic;
+
+    struct SetaeCode **children;
+    uint32_t nchildren;
+    uint32_t children_cap;
+
+    struct SetaeCode **modules;
+    uint32_t nmodules;
+    uint32_t modules_cap;
+
+    SetaeExcEntry *excs;
+    uint32_t nexcs;
+    uint32_t excs_cap;
+
+    char **param_names;
+    uint32_t nparam_names;
+    uint32_t param_names_cap;
+
+    char *fname;
+    uint32_t nlocals;
+    uint32_t nparams;
+    uint32_t ndefaults;
+    uint32_t ncells;
+    uint32_t nfrees;
+    int varargs;
+    int kwargs;
+    int generator;
+    int coroutine;
+    int32_t module_parent;
+};
+
 SetaeValue setae_list_new(SetaeHeap *h, uint32_t cap);
 void setae_list_push(SetaeList *l, SetaeValue v);
 SetaeValue setae_dict_new(SetaeHeap *h);

@@ -1,16 +1,9 @@
 # Contributing
 
-## Prerequisites
-
-- Rust 1.85 or newer, for edition 2024. Install from https://rustup.rs.
-- Meson and Ninja, to build the C runtime under native/, via
-  `pip install meson ninja`.
-- A C compiler whose objects match the Rust host ABI. On Windows that means
-  clang-cl. A MinGW clang or gcc will not link.
-
-`cargo build` runs Meson as part of the build, so it is the only command needed.
-
 ## Build and run
+
+See BUILDING.md for the prerequisites, the supported platforms, and how to
+freeze a program into a standalone binary.
 
 ```sh
 cargo build

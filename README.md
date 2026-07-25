@@ -1,112 +1,209 @@
-# Gecko [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/punctuations/gecko)
+# 🦎 Gecko [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/punctuations/gecko)
 
-Gecko is a Python runtime aimed at short-lived scripts, embedded scripting, edge
-and serverless code, CLI tools, and data processing. These are cases where
-CPython spends a lot of its time on startup and interpreter overhead.
+_A gecko is a tiny reptile. This is a tiny Python._
 
-Gecko implements standard Python, with no language extensions. A Gecko program
-is a valid Python program and still runs on CPython, so the usual tools, meaning
-LSPs, formatters, linters, and type checkers, go on working.
+Gecko is a Python runtime built from scratch, for the cases where CPython spends
+most of its time starting up. <br>
+It runs the same programs, in a fraction of the startup time and the space.
 
-## Goals
+```bash
+$ ls -lh target/release/gecko
+-rwxr-xr-x  723K  gecko*
 
-- Low startup cost and low memory use.
-- No GIL. Concurrency comes from isolates, actors, and channels instead.
-- Typed arrays, columnar storage, and DataFrames in the runtime itself, with
-  SIMD and zero-copy operations.
+# a frozen program, size-optimized runner
+-rwxr-xr-x  235K  fib*
+```
 
-## Architecture
+## Table of contents
 
-The Rust frontend holds the lexer, parser, compiler, and tooling, and lives in
-[`crates/`](crates/). The C runtime holds the Setae VM, the object model, the
-GC, and the scheduler, and lives in [`native/`](native/).
+- [Why Gecko?](#why-gecko)
+- [Installation](#installation)
+- [Benchmarks](#benchmarks)
+- [Compatibility](#compatibility)
+- [Concurrency](#concurrency)
+- [Embedding](#embedding)
+- [Building Gecko](#building-gecko)
+- [Security](#security)
+- [Contributing to Gecko](#contributing-to-gecko)
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md).
+## Why Gecko?
 
-## Status
+|                         | Gecko               | CPython 3.14            |
+| ----------------------- | ------------------- | ----------------------- |
+| Startup, hello world    | **3.0 ms**          | 19.5 ms                 |
+| Peak memory             | **1.8 MB**          | 13.5 MB                 |
+| Install size            | **723 KB**          | 273 MB                  |
+| Standalone binary       | **235 KB**          | none                    |
+| Concurrency             | isolates and actors | threads, GIL by default |
+| Arbitrary-precision int | yes                 | yes                     |
+| C extension modules     | no                  | yes                     |
 
-The project is early but runs a large and growing subset of Python end to end,
-enough for real programs: the full expression and statement grammar (including
-f-strings, comprehensions and generator expressions, slicing, the walrus
-operator, `match`, `with`, decorators, and `try`/`except`/`else`/`finally` with
-bare `raise` re-raise), functions with the whole call convention (keyword
-arguments, defaults, `*args`, `**kwargs`, `*`/`**` spreads), closures with
-`nonlocal`, generators and `async`/`await`, classes with single inheritance, and
-`import`/`from ... import` for modules and packages. The built-in types are int,
-float, bool, str, list, tuple, dict, set, frozenset, and range, with their
-common methods, and the operators include `**`, `//`, `%`, the bitwise set
-`& | ^ << >> ~`, and set algebra. Sets iterate in the same order they would on
+Gecko is built for environments where size and startup time decide things:
+serverless functions, edge workers, embedded scripting, CLI tools, and short
+scripts that do a bit of work and exit. It is not built to win long-running
+compute benchmarks, and it does not yet.
+
+Gecko implements standard Python with no language extensions. A Gecko program is
+a valid Python program and still runs on CPython, so LSPs, formatters, linters,
+and type checkers go on working. The runtime is hand-built: a Rust frontend for
+the lexer, parser, and compiler, and Setae, a C VM with a computed-goto
+interpreter, NaN-boxed values, inline caches, and a precise mark-sweep collector.
+
+## Installation
+
+There is no prebuilt binary yet. Build from source with Rust 1.85 or newer, plus
+Meson and Ninja for the C runtime:
+
+```bash
+pip install meson ninja
+git clone https://github.com/punctuations/gecko
+cd gecko
+cargo build --release
+./target/release/gecko examples/fib.py
+```
+
+To put `gecko` on your PATH:
+
+```bash
+cargo install --path crates/gecko
+```
+
+See [BUILDING.md](BUILDING.md) for supported platforms, the size-optimized
+runner, and how to freeze a program into a standalone binary.
+
+## Benchmarks
+
+Scripts are in [benchmarks/](benchmarks/) and run unmodified on both runtimes,
+with byte-identical output. Measured with hyperfine against CPython 3.14.6,
+invoked by its real binary path, since a pyenv shim adds about 160 ms of its
+own.
+
+### Startup
+
+The case Gecko is built for. Loads a script, prints, and exits.
+
+```bash
+hyperfine -N --warmup 20 --runs 300 \
+  'target/release/gecko benchmarks/startup.py' \
+  'python3.14 benchmarks/startup.py'
+```
+
+| Runtime      | Mean       | Min     | Max     | Relative     |
+| ------------ | ---------- | ------- | ------- | ------------ |
+| **Gecko**    | **3.0 ms** | 2.7 ms  | 3.5 ms  | **1.00**     |
+| CPython 3.14 | 19.5 ms    | 18.7 ms | 21.9 ms | 6.62x slower |
+
+A frozen binary starts in 2.9 ms, since it parses and compiles nothing.
+
+### Compute
+
+Mixed: ahead on arithmetic and calls, behind on data structures.
+
+| Benchmark                     | Gecko    | CPython 3.14 | Result       |
+| ----------------------------- | -------- | ------------ | ------------ |
+| `arithmetic.py`, 3M-iter loop | 180.4 ms | 235.5 ms     | 1.31x faster |
+| `calls.py`, 600k calls        | 94.3 ms  | 117.1 ms     | 1.24x faster |
+| `fib.py`, recursive `fib(25)` | 24.7 ms  | 34.2 ms      | 1.38x faster |
+| `sieve.py`, primes to 1M      | 175.3 ms | 139.4 ms     | 1.26x slower |
+| `wordcount.py`, dict and str  | 243.2 ms | 139.3 ms     | 1.75x slower |
+
+Integers above 2147483647 leave the unboxed range and slow down by about 3x,
+and subscripting and dict work go through paths CPython specializes and Gecko
+does not yet. Today the biggest win is still the time before your code runs.
+
+<details>
+<summary>Environment</summary>
+
+| Detail    | Value                       |
+| --------- | --------------------------- |
+| Hardware  | Apple M1, 8 GB RAM, 8 cores |
+| OS        | macOS 26.4.1 (arm64)        |
+| Gecko     | 0.0.7                       |
+| CPython   | 3.14.6                      |
+| hyperfine | 20 warmup, 300 timed runs   |
+
+</details>
+
+## Compatibility
+
+Gecko runs a large subset of Python end to end: the full expression and
+statement grammar (f-strings with format specs, comprehensions and generator
+expressions, slicing, the walrus operator, `match`, `with`, decorators, and
+`try`/`except`/`else`/`finally`), the whole call convention (keyword arguments,
+defaults, `*args`, `**kwargs`, spreads), closures with `nonlocal`, generators,
+`async`/`await`, classes with single inheritance, and `import`/`from ... import`.
+
+Built-in types are int, float, bool, str, list, tuple, dict, set, frozenset,
+range, and typed arrays. Integers are arbitrary precision, so `2 ** 1000` and
+large factorials stay exact. Sets iterate in the same order they would on
 CPython.
 
-Integers are arbitrary precision, so `2 ** 1000` and factorials stay exact. For
-the full runtime surface, the builtin functions, the types and their methods,
-and what is not there yet, see
-[docs/design/06-builtins.md](docs/design/06-builtins.md).
-
 Constructs outside the supported grammar are rejected at compile time with a
-located error rather than run wrong. A precise, non-moving mark-sweep collector
-reclaims garbage when allocation passes a threshold that grows with the live
-size. An
-embedding host can run many isolated VMs and cap each one's steps, wall-clock
-time, and heap, so untrusted code cannot loop or allocate without bound, and can
-register native host functions that scripts call like builtins. A program can
-also run other code under those limits through the builtin `sandbox` module
-(`from gecko import
-sandbox`): `sandbox.run(source, steps, memory, millis)` runs
-the source in a fresh isolated VM and returns its output.
+located error. They do not run wrong.
 
-```sh
-cargo run -p gecko -- -c 'print("hello world")'
-# hello world
+There is no standard library yet, only the builtin surface. Wheels with compiled
+C extensions do not run, since Gecko has no CPython C ABI. The test suite is 295
+tests, most of which assert that a program's output matches CPython's.
 
-cargo run -p gecko -- examples/fib.py
-# the first ten Fibonacci numbers
+For the full runtime surface, the builtins, the types and their methods, and
+what is missing, see [docs/design/06-builtins.md](docs/design/06-builtins.md).
+
+## Concurrency
+
+No GIL. Concurrency comes from isolates: independent runtimes with their own
+heap and collector that share no mutable state. An actor is an isolate with a
+mailbox and a handler, in Gleam's shape, and they run on an M:N work-stealing
+thread pool.
+
+```python
+from gecko import actor
+
+def handle(state, message):
+    message[1].send(state + message[0])
+    return state + message[0]
+
+counter = actor.spawn(0, handle)
+print(counter.call(lambda reply: [7, reply], 1000))
 ```
 
-## Building a binary
+Messages are deep copied between isolates, except subjects and typed arrays,
+which pass by handle. See
+[docs/design/04-concurrency.md](docs/design/04-concurrency.md).
 
-`gecko build` freezes a program into a standalone executable. The compiled
-bytecode is appended to a copy of `gecko-runner`, a stub holding only the VM and
-the bytecode reader, so the result starts without parsing or compiling anything.
+## Embedding
 
-```sh
-cargo build --release
-./target/release/gecko build examples/fib.py -o fib
-./fib
+A host can run many isolated VMs and cap each one's steps, wall-clock time, and
+heap, so untrusted code cannot loop or allocate without bound, and can register
+native functions that scripts call like builtins. A program can also run other
+code under those limits through the builtin `sandbox` module:
+
+```python
+from gecko import sandbox
+
+print(sandbox.run('print(2 ** 64)', 100000, 1000, 50))
 ```
 
-A plain `cargo build --release` runner links the full Rust standard library and
-weighs about 330 KB. `scripts/build-runner.sh` rebuilds it against a
-size-optimized std, using nightly `build-std` with the immediate-abort panic
-strategy, and drops the result at `target/release/gecko-runner`. That runner is
-about 100 KB, so a frozen program lands near 100 KB plus its bytecode. It needs
-a nightly toolchain with `rust-src`:
+See [docs/design/05-embedding.md](docs/design/05-embedding.md).
 
-```sh
-rustup toolchain install nightly --component rust-src
-./scripts/build-runner.sh
-./target/release/gecko build examples/fib.py -o fib
-```
+## Building Gecko
 
-gecko looks for the release runner next to itself, then in the cargo target
-layout, so freezing from a debug gecko still embeds the small release runner.
-`gecko build --debug` embeds a debug runtime instead, for debugging the runtime
-itself.
+See [BUILDING.md](BUILDING.md) for instructions on building Gecko from source
+and a list of supported platforms.
 
-## Installing packages
+## Security
 
-`gecko install` unpacks a pure-Python wheel into site-packages so any program
-can import it.
+For information on reporting security vulnerabilities in Gecko, see
+[SECURITY.md](SECURITY.md).
 
-```sh
-gecko install some_package-1.0-py3-none-any.whl
-```
+## Contributing to Gecko
 
-site-packages lives under `GECKO_HOME` (default `~/.gecko`), and is searched
-after the importing directory and `GECKO_PATH`. Pass `--to dir` to install
-somewhere else. Wheels with compiled C extensions do not run, since gecko has no
-CPython C ABI.
+Contributions are welcome through pull requests. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the prerequisites, the layout, and the
+style the project follows. <br>
+For the design decisions behind the runtime, see
+[ARCHITECTURE.md](ARCHITECTURE.md) and [docs/design/](docs/design/), and for what
+is planned next, [ROADMAP.md](ROADMAP.md).
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

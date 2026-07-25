@@ -2399,9 +2399,15 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
 static int bind_args(SetaeVM *vm, const SetaeCode *code, SetaeValue *args, int nargs,
                      const SetaeValue *defaults, uint32_t ndefaults, SetaeValue kwargs,
                      SetaeValue *locals) {
-    uint32_t k = setae_code_nparams(code);
-    int has_va = setae_code_varargs(code);
-    int has_kw = setae_code_kwargs(code);
+    uint32_t k = code->nparams;
+    int has_va = code->varargs;
+    int has_kw = code->kwargs;
+    if (kwargs == 0 && !has_va && !has_kw && (uint32_t)nargs == k) {
+        for (uint32_t i = 0; i < k; i++) {
+            locals[i] = args[i];
+        }
+        return 1;
+    }
     uint32_t va_slot = k;
     uint32_t kw_slot = k + (has_va ? 1u : 0u);
     uint32_t required = k - ndefaults;
@@ -2497,7 +2503,7 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
                            int nargs, const SetaeValue *captured,
                            const SetaeValue *defaults, uint32_t ndefaults,
                            SetaeValue kwargs, SetaeValue module, SetaeGen *gen) {
-    if (gen == NULL && setae_code_generator(code)) {
+    if (gen == NULL && code->generator) {
         return make_generator(vm, code, args, nargs, captured, defaults, ndefaults, kwargs,
                               module);
     }
@@ -2507,13 +2513,16 @@ static SetaeValue run_code(SetaeVM *vm, const SetaeCode *code, SetaeValue *args,
     }
     vm->depth++;
 
-    const SetaeValue *consts = setae_code_consts(code);
-    uint32_t ncode;
-    const uint8_t *bytes = setae_code_bytes(code, &ncode);
-    SetaeInlineCache *ic = setae_code_ic((SetaeCode *)code);
-    uint32_t nlocals = setae_code_nlocals(code);
-    uint32_t ncells = setae_code_ncells(code);
-    uint32_t nfrees = setae_code_nfrees(code);
+    const SetaeValue *consts = code->consts;
+    uint32_t ncode = code->ncode;
+    const uint8_t *bytes = code->code;
+    SetaeInlineCache *ic = code->ic;
+    if (ic == NULL && ncode > 0) {
+        ic = setae_code_ic((SetaeCode *)code);
+    }
+    uint32_t nlocals = code->nlocals;
+    uint32_t ncells = code->ncells;
+    uint32_t nfrees = code->nfrees;
     uint32_t fixed = nlocals + ncells + nfrees;
 
     uint32_t frame_cap;
@@ -2699,7 +2708,7 @@ stack_overflow:
                 stack[sp++] = vm->builtins[c->slot].value;
                 DISPATCH();
             }
-            const char *name = setae_code_name(code, arg);
+            const char *name = code->names[arg];
             if (md != NULL) {
                 int64_t i = dict_find_cstr(md, name);
                 if (i >= 0) {
@@ -2731,7 +2740,7 @@ stack_overflow:
             DISPATCH();
         }
         L_OP_STORE_NAME: {
-            const char *name = setae_code_name(code, arg);
+            const char *name = code->names[arg];
             SetaeValue val = stack[--sp];
             if (module != 0) {
                 SetaeDict *d = setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict);
@@ -2861,7 +2870,7 @@ stack_overflow:
             locals[arg] = 0;
             DISPATCH();
         L_OP_DELETE_NAME: {
-            const char *name = setae_code_name(code, arg);
+            const char *name = code->names[arg];
             if (module != 0) {
                 SetaeDict *d = setae_to_ptr(((SetaeModule *)setae_to_ptr(module))->dict);
                 if (!setae_dict_del_cstr(d, name)) {
@@ -2879,7 +2888,7 @@ stack_overflow:
             DISPATCH();
         }
         L_OP_DELETE_ATTR: {
-            const char *name = setae_code_name(code, arg);
+            const char *name = code->names[arg];
             SetaeValue obj = stack[--sp];
             del_attr(vm, obj, name);
             DISPATCH();
@@ -3001,7 +3010,7 @@ stack_overflow:
                     stack[sp - 1] = inst->slots[ic[unit].slot];
                     DISPATCH();
                 }
-                int64_t slot = setae_instance_slot(inst, setae_code_name(code, arg));
+                int64_t slot = setae_instance_slot(inst, code->names[arg]);
                 if (slot >= 0 && inst->slots[slot] != 0) {
                     ic[unit].shape = inst->shape;
                     ic[unit].slot = (uint32_t)slot;
@@ -3009,7 +3018,7 @@ stack_overflow:
                     DISPATCH();
                 }
             }
-            stack[sp - 1] = load_attr(vm, obj, setae_code_name(code, arg));
+            stack[sp - 1] = load_attr(vm, obj, code->names[arg]);
             DISPATCH();
         }
         L_OP_STORE_ATTR: {
@@ -3033,7 +3042,7 @@ stack_overflow:
                     sp -= 2;
                     DISPATCH();
                 }
-                const char *name = setae_code_name(code, arg);
+                const char *name = code->names[arg];
                 SetaeShape *from = inst->shape;
                 setae_instance_set(vm->heap, inst, name, val);
                 ic[unit].shape = from;
@@ -3042,7 +3051,7 @@ stack_overflow:
                 sp -= 2;
                 DISPATCH();
             }
-            const char *name = setae_code_name(code, arg);
+            const char *name = code->names[arg];
             if (t == SETAE_T_CLASS) {
                 SetaeValue dv = ((SetaeClass *)setae_to_ptr(obj))->dict;
                 SetaeValue key = setae_str_new(vm->heap, name, strlen(name));
@@ -3118,7 +3127,7 @@ stack_overflow:
         }
         L_OP_IMPORT_MISSING:
             setae_vm_raise(vm, "ImportError", "No module named '%s'",
-                           setae_code_name(code, arg));
+                           code->names[arg]);
             DISPATCH();
         L_OP_CALL_EX: {
             SetaeValue kwd = stack[sp - 1];
@@ -3367,7 +3376,7 @@ stack_overflow:
                     DISPATCH();
                 }
             }
-            const char *name = setae_code_name(code, arg >> 8);
+            const char *name = code->names[arg >> 8];
             SetaeValue saved_kw = vm->cur_kwargs;
             vm->cur_kwargs = 0;
             SetaeValue r = call_method(vm, obj, name, argv, n, c);
@@ -3381,7 +3390,7 @@ stack_overflow:
             SetaeValue kwargs = stack[--sp];
             SetaeValue *argv = &stack[sp - n];
             SetaeValue obj = stack[sp - n - 1];
-            const char *name = setae_code_name(code, arg >> 8);
+            const char *name = code->names[arg >> 8];
             SetaeValue kw =
                 (setae_obj_type(kwargs) == SETAE_T_DICT &&
                  ((SetaeDict *)setae_to_ptr(kwargs))->len > 0)
