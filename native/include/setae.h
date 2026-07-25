@@ -70,6 +70,7 @@ typedef struct SetaeObject {
 
 typedef struct SetaeStr {
     SetaeObject obj;
+    uint64_t hash;
     uint32_t len;
     char data[];
 } SetaeStr;

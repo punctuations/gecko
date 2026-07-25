@@ -327,7 +327,13 @@ uint64_t setae_value_hash(SetaeValue v) {
     }
     int t = setae_obj_type(v);
     if (t == SETAE_T_STR) {
-        return setae_hash_bytes(setae_str_data(v), setae_str_len(v));
+        SetaeStr *s = setae_to_ptr(v);
+        if (s->hash != 0) {
+            return s->hash;
+        }
+        uint64_t h = setae_hash_bytes(s->data, s->len);
+        s->hash = h != 0 ? h : 1;
+        return s->hash;
     }
     if (t == SETAE_T_TUPLE) {
         SetaeTuple *tup = setae_to_ptr(v);
