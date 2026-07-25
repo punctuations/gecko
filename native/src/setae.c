@@ -466,6 +466,8 @@ static int class_lookup(SetaeValue cls, const char *name, SetaeValue *out) {
     return 0;
 }
 
+static int instance_special(SetaeValue obj, const char *name, SetaeValue *out);
+
 static void attr_error(SetaeVM *vm, SetaeValue obj, const char *name) {
     if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
         SetaeInstance *inst = setae_to_ptr(obj);
@@ -825,6 +827,25 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
     if (setae_obj_type(a) == SETAE_T_ARRAY || setae_obj_type(b) == SETAE_T_ARRAY) {
         return setae_array_binop(vm, op, a, b);
     }
+    if (setae_obj_type(a) == SETAE_T_INSTANCE || setae_obj_type(b) == SETAE_T_INSTANCE) {
+        static const char *const fwd[] = {"__add__",      "__sub__",    "__mul__",
+                                          "__truediv__",  "__mod__",    "__floordiv__",
+                                          "__pow__",      "__and__",    "__or__",
+                                          "__xor__",      "__lshift__", "__rshift__"};
+        static const char *const rev[] = {"__radd__",      "__rsub__",    "__rmul__",
+                                          "__rtruediv__",  "__rmod__",    "__rfloordiv__",
+                                          "__rpow__",      "__rand__",    "__ror__",
+                                          "__rxor__",      "__rlshift__", "__rrshift__"};
+        SetaeValue r;
+        if ((int)op >= 0 && (size_t)op < sizeof(fwd) / sizeof(fwd[0])) {
+            if (setae_call_special(vm, a, fwd[op], &b, 1, &r)) {
+                return r;
+            }
+            if (setae_call_special(vm, b, rev[op], &a, 1, &r)) {
+                return r;
+            }
+        }
+    }
     int a_int = setae_is_integer(a);
     int b_int = setae_is_integer(b);
     int is_bitwise = op == BIN_BITAND || op == BIN_BITOR || op == BIN_BITXOR ||
@@ -1009,6 +1030,17 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
     }
 }
 
+static int truthy_obj(SetaeVM *vm, SetaeValue v) {
+    SetaeValue r;
+    if (setae_call_special(vm, v, "__bool__", NULL, 0, &r)) {
+        return vm->error ? 0 : setae_truthy(r);
+    }
+    if (setae_call_special(vm, v, "__len__", NULL, 0, &r)) {
+        return vm->error ? 0 : (setae_is_int(r) ? setae_to_int(r) != 0 : setae_truthy(r));
+    }
+    return -1;
+}
+
 static int truthy(SetaeValue v) {
     if (setae_is_none(v)) {
         return 0;
@@ -1055,6 +1087,13 @@ static int str_order(SetaeValue a, SetaeValue b) {
 
 static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
     switch (setae_obj_type(container)) {
+    case SETAE_T_INSTANCE: {
+        SetaeValue r;
+        if (setae_call_special(vm, container, "__contains__", &x, 1, &r)) {
+            return vm->error ? 0 : setae_truthy_vm(vm, r);
+        }
+        break;
+    }
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(container);
         for (uint32_t i = 0; i < l->len; i++) {
@@ -1132,7 +1171,42 @@ static int set_is_subset(SetaeSet *sa, SetaeSet *sb) {
     return 1;
 }
 
+int setae_truthy_vm(SetaeVM *vm, SetaeValue v) {
+    if (setae_obj_type(v) != SETAE_T_INSTANCE) {
+        return truthy(v);
+    }
+    if (setae_obj_type(v) == SETAE_T_INSTANCE) {
+        int t = truthy_obj(vm, v);
+        if (t >= 0) {
+            return t;
+        }
+    }
+    return truthy(v);
+}
+
+static inline int truthy_fast(SetaeVM *vm, SetaeValue v) {
+    return setae_obj_type(v) == SETAE_T_INSTANCE ? setae_truthy_vm(vm, v) : truthy(v);
+}
+
 static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b) {
+    if (op <= CMP_GE && setae_is_int(a) && setae_is_int(b)) {
+        int64_t x = setae_to_int(a);
+        int64_t y = setae_to_int(b);
+        switch (op) {
+        case CMP_EQ:
+            return setae_bool(x == y);
+        case CMP_NE:
+            return setae_bool(x != y);
+        case CMP_LT:
+            return setae_bool(x < y);
+        case CMP_LE:
+            return setae_bool(x <= y);
+        case CMP_GT:
+            return setae_bool(x > y);
+        default:
+            return setae_bool(x >= y);
+        }
+    }
     if (op == CMP_IS || op == CMP_IS_NOT) {
         int same = a == b;
         return setae_bool(op == CMP_IS ? same : !same);
@@ -1169,6 +1243,35 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
             break;
         }
         return setae_bool(r);
+    }
+    if (setae_obj_type(a) == SETAE_T_INSTANCE || setae_obj_type(b) == SETAE_T_INSTANCE) {
+        SetaeValue r;
+        if (op == CMP_EQ || op == CMP_NE) {
+            if (setae_call_special(vm, a, op == CMP_EQ ? "__eq__" : "__ne__", &b, 1, &r)) {
+                return r;
+            }
+            if (op == CMP_NE && setae_call_special(vm, a, "__eq__", &b, 1, &r)) {
+                return vm->error ? setae_none() : setae_bool(!setae_truthy(r));
+            }
+            if (setae_call_special(vm, b, op == CMP_EQ ? "__eq__" : "__ne__", &a, 1, &r)) {
+                return r;
+            }
+        } else {
+            const char *fwd = op == CMP_LT   ? "__lt__"
+                              : op == CMP_LE ? "__le__"
+                              : op == CMP_GT ? "__gt__"
+                                             : "__ge__";
+            const char *rev = op == CMP_LT   ? "__gt__"
+                              : op == CMP_LE ? "__ge__"
+                              : op == CMP_GT ? "__lt__"
+                                             : "__le__";
+            if (setae_call_special(vm, a, fwd, &b, 1, &r)) {
+                return r;
+            }
+            if (setae_call_special(vm, b, rev, &a, 1, &r)) {
+                return r;
+            }
+        }
     }
     if (op == CMP_EQ || op == CMP_NE) {
         int eq = setae_value_eq(a, b);
@@ -1244,6 +1347,12 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
 }
 
 static SetaeValue unary_neg(SetaeVM *vm, SetaeValue a) {
+    if (setae_obj_type(a) == SETAE_T_INSTANCE) {
+        SetaeValue r;
+        if (setae_call_special(vm, a, "__neg__", NULL, 0, &r)) {
+            return r;
+        }
+    }
     if (setae_is_int(a)) {
         return from_i64(vm, -(int64_t)setae_to_int(a));
     }
@@ -1520,6 +1629,15 @@ static SetaeValue subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx) {
         }
         return setae_array_get(vm, obj, setae_to_int(idx));
     }
+    case SETAE_T_INSTANCE: {
+        SetaeValue r;
+        if (setae_call_special(vm, obj, "__getitem__", &idx, 1, &r)) {
+            return r;
+        }
+        setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
+                       setae_type_name(obj));
+        return setae_none();
+    }
     default:
         setae_vm_raise(vm, "TypeError", "'%s' object is not subscriptable",
                        setae_type_name(obj));
@@ -1580,6 +1698,14 @@ static void del_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
 
 static void store_subscript(SetaeVM *vm, SetaeValue obj, SetaeValue idx, SetaeValue val) {
     switch (setae_obj_type(obj)) {
+    case SETAE_T_INSTANCE: {
+        SetaeValue pair[2] = {idx, val};
+        SetaeValue r;
+        if (setae_call_special(vm, obj, "__setitem__", pair, 2, &r)) {
+            return;
+        }
+        break;
+    }
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(obj);
         if (!setae_is_int(idx)) {
@@ -1790,8 +1916,43 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         return run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
                         kwargs, f->module, NULL);
     }
+    if (t == SETAE_T_INSTANCE) {
+        SetaeValue r;
+        if (setae_call_special(vm, callee, "__call__", args, nargs, &r)) {
+            return r;
+        }
+    }
     setae_vm_raise(vm, "TypeError", "'%s' object is not callable", setae_type_name(callee));
     return setae_none();
+}
+
+static int instance_special(SetaeValue obj, const char *name, SetaeValue *out) {
+    if (setae_obj_type(obj) != SETAE_T_INSTANCE) {
+        return 0;
+    }
+    SetaeInstance *inst = setae_to_ptr(obj);
+    return class_lookup(inst->cls, name, out);
+}
+
+int setae_call_special(SetaeVM *vm, SetaeValue obj, const char *name, SetaeValue *args,
+                       int nargs, SetaeValue *out) {
+    SetaeValue m;
+    if (!instance_special(obj, name, &m)) {
+        return 0;
+    }
+    SetaeValue argv[8];
+    argv[0] = obj;
+    for (int i = 0; i < nargs && i < 7; i++) {
+        argv[i + 1] = args[i];
+    }
+    if (setae_obj_type(m) == SETAE_T_FUNCTION) {
+        SetaeFunc *f = setae_to_ptr(m);
+        *out = run_code(vm, f->code, argv, nargs + 1, f->cells, f->defaults, f->ndefaults,
+                        0, f->module, NULL);
+    } else {
+        *out = call_value(vm, m, argv, nargs + 1, 0);
+    }
+    return 1;
 }
 
 SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs) {
@@ -2984,24 +3145,24 @@ stack_overflow:
             ip = arg * 2;
             DISPATCH();
         L_OP_POP_JUMP_IF_FALSE:
-            if (!truthy(stack[--sp])) {
+            if (!truthy_fast(vm, stack[--sp])) {
                 ip = arg * 2;
             }
             DISPATCH();
         L_OP_POP_JUMP_IF_TRUE:
-            if (truthy(stack[--sp])) {
+            if (truthy_fast(vm, stack[--sp])) {
                 ip = arg * 2;
             }
             DISPATCH();
         L_OP_JUMP_IF_FALSE_OR_POP:
-            if (!truthy(stack[sp - 1])) {
+            if (!truthy_fast(vm, stack[sp - 1])) {
                 ip = arg * 2;
             } else {
                 sp--;
             }
             DISPATCH();
         L_OP_JUMP_IF_TRUE_OR_POP:
-            if (truthy(stack[sp - 1])) {
+            if (truthy_fast(vm, stack[sp - 1])) {
                 ip = arg * 2;
             } else {
                 sp--;
@@ -3017,7 +3178,7 @@ stack_overflow:
             stack[sp - 1] = unary_neg(vm, stack[sp - 1]);
             DISPATCH();
         L_OP_UNARY_NOT:
-            stack[sp - 1] = setae_bool(!truthy(stack[sp - 1]));
+            stack[sp - 1] = setae_bool(!truthy_fast(vm, stack[sp - 1]));
             DISPATCH();
         L_OP_UNARY_INVERT: {
             SetaeValue a = stack[sp - 1];
@@ -3591,6 +3752,12 @@ static int iterop_next(SetaeVM *vm, SetaeIterOp *op, SetaeValue *out);
 
 SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v) {
     int t = setae_obj_type(v);
+    if (t == SETAE_T_INSTANCE) {
+        SetaeValue r;
+        if (setae_call_special(vm, v, "__iter__", NULL, 0, &r)) {
+            return r;
+        }
+    }
     if (t == SETAE_T_GEN) {
         if (((SetaeGen *)setae_to_ptr(v))->coroutine) {
             setae_vm_raise(vm, "TypeError", "'coroutine' object is not iterable");

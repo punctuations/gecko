@@ -831,7 +831,7 @@ static SetaeValue array_filter(SetaeVM *vm, SetaeValue arr, SetaeValue pred) {
             free(keep);
             return setae_none();
         }
-        if (setae_truthy(r)) {
+        if (setae_truthy_vm(vm, r)) {
             keep[count++] = i;
         }
     }

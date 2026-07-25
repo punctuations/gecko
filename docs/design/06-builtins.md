@@ -118,14 +118,16 @@ unpacking inside literals (`[*a]`, `{**d}`, `{*s}`), keyword-only and
 positional-only parameters, `raise X from Y`, `yield from`, `async for`, and
 `async with`.
 
-Classes: multiple inheritance, `super()`, `@classmethod`, `@staticmethod`,
-`@property`, and operator overloading. Only `__init__`, `__enter__`/`__exit__`,
-and `__await__` are honored on user classes; the other special methods
-(`__str__`, `__repr__`, `__eq__`, `__hash__`, `__bool__`, `__len__`,
-`__getitem__`, `__iter__`, `__contains__`, `__call__`, the comparison methods,
-and the arithmetic methods) are ignored, so a class cannot yet override how it
-prints, compares, or responds to operators. Exceptions carry a single message
-argument; multiple arguments and the `.args` attribute are not there.
+Classes: multiple inheritance, `super()`, `@classmethod`, `@staticmethod`, and
+`@property`. Special methods are honored: `__init__`, `__enter__`/`__exit__`,
+`__await__`, `__str__`, `__repr__`, `__bool__`, `__len__`, `__eq__`, `__ne__`,
+the ordering comparisons, `__hash__`, `__getitem__`, `__setitem__`,
+`__contains__`, `__iter__`, `__call__`, `__neg__`, `__abs__`, and the arithmetic
+operators with their reflected forms (`__add__`/`__radd__` and so on). Missing
+still are `__delitem__`, `__next__` on the object itself (return an iterator from
+`__iter__` instead), the in-place forms (`__iadd__`), `__getattr__`, and
+`__format__`. Exceptions carry a single message argument; multiple arguments and
+the `.args` attribute are not there.
 
 The standard library is absent. There is no `math`, `sys`, `os`, `json`, `re`,
 `random`, `datetime`, `collections`, `itertools`, or `functools`. Only the

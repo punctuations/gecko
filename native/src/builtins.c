@@ -295,6 +295,18 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
     case SETAE_T_INSTANCE: {
         SetaeInstance *i = setae_to_ptr(v);
         SetaeClass *c = setae_to_ptr(i->cls);
+        SetaeValue sv;
+        const char *want = nested ? "__repr__" : "__str__";
+        if (setae_call_special(vm, v, want, NULL, 0, &sv) ||
+            setae_call_special(vm, v, "__repr__", NULL, 0, &sv)) {
+            if (vm->error) {
+                return;
+            }
+            if (setae_is_str(sv)) {
+                setae_vm_append_output(vm, setae_str_data(sv), setae_str_len(sv));
+                return;
+            }
+        }
         out_str(vm, "<");
         setae_vm_append_output(vm, setae_str_data(c->name), setae_str_len(c->name));
         out_str(vm, " object>");
@@ -739,6 +751,14 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
     }
     case SETAE_T_ARRAY:
         return setae_from_int((int32_t)((SetaeArray *)setae_to_ptr(v))->len);
+    case SETAE_T_INSTANCE: {
+        SetaeValue r;
+        if (setae_call_special(vm, v, "__len__", NULL, 0, &r)) {
+            return r;
+        }
+        setae_vm_raise(vm, "TypeError", "object of type 'instance' has no len()");
+        return setae_none();
+    }
     default:
         setae_vm_raise(vm, "TypeError", "object of type '%s' has no len()",
                        setae_type_name(v));
@@ -884,7 +904,7 @@ static SetaeValue builtin_bool(SetaeVM *vm, SetaeValue *args, int nargs) {
         setae_vm_raise(vm, "TypeError", "bool() takes at most 1 argument (%d given)", nargs);
         return setae_none();
     }
-    return setae_bool(setae_truthy(args[0]));
+    return setae_bool(setae_truthy_vm(vm, args[0]));
 }
 
 static SetaeValue builtin_int(SetaeVM *vm, SetaeValue *args, int nargs) {
@@ -1235,6 +1255,12 @@ static SetaeValue builtin_abs(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_none();
     }
     SetaeValue v = args[0];
+    if (setae_obj_type(v) == SETAE_T_INSTANCE) {
+        SetaeValue r;
+        if (setae_call_special(vm, v, "__abs__", NULL, 0, &r)) {
+            return r;
+        }
+    }
     if (setae_is_int(v)) {
         int64_t x = setae_to_int(v);
         return setae_int_from_i64(vm->heap, x < 0 ? -x : x);
@@ -1539,6 +1565,10 @@ static SetaeValue builtin_hash(SetaeVM *vm, SetaeValue *args, int nargs) {
         setae_vm_raise(vm, "TypeError", "unhashable type: '%s'", setae_type_name(args[0]));
         return setae_none();
     }
+    SetaeValue hr;
+    if (setae_call_special(vm, args[0], "__hash__", NULL, 0, &hr)) {
+        return hr;
+    }
     return setae_from_int((int32_t)setae_value_hash(args[0]));
 }
 
@@ -1822,7 +1852,7 @@ static SetaeValue builtin_any(SetaeVM *vm, SetaeValue *args, int nargs) {
     }
     SetaeList *l = setae_to_ptr(lst);
     for (uint32_t i = 0; i < l->len; i++) {
-        if (setae_truthy(l->items[i])) {
+        if (setae_truthy_vm(vm, l->items[i])) {
             return setae_bool(1);
         }
     }
@@ -1840,7 +1870,7 @@ static SetaeValue builtin_all(SetaeVM *vm, SetaeValue *args, int nargs) {
     }
     SetaeList *l = setae_to_ptr(lst);
     for (uint32_t i = 0; i < l->len; i++) {
-        if (!setae_truthy(l->items[i])) {
+        if (!setae_truthy_vm(vm, l->items[i])) {
             return setae_bool(0);
         }
     }
