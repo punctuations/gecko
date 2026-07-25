@@ -112,8 +112,7 @@ str methods: `format`, `format_map`, `encode`, `expandtabs`, `partition`,
 Types: complex numbers, real `bytes` and `bytearray` (a `b'...'` literal parses
 but behaves like a limited string), and `memoryview`.
 
-Operators and syntax: sequence repetition (`"ab" * 3`,
-`[0] * 3`), dict merge (`d1 | d2`), the `@` operator, slice assignment
+Operators and syntax: dict merge (`d1 | d2`), the `@` operator, slice assignment
 (`a[i:j] = ...`) and slice deletion, starred assignment targets (`a, *b = ...`),
 unpacking inside literals (`[*a]`, `{**d}`, `{*s}`), keyword-only and
 positional-only parameters, `raise X from Y`, `yield from`, `async for`, and

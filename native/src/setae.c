@@ -741,6 +741,59 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         free(buf);
         return r;
     }
+    if (op == BIN_MUL) {
+        SetaeValue seq = 0;
+        int64_t count = 0;
+        if (setae_is_int(b) && !setae_is_bool(a)) {
+            seq = a;
+            count = setae_to_int(b);
+        } else if (setae_is_int(a) && !setae_is_bool(b)) {
+            seq = b;
+            count = setae_to_int(a);
+        }
+        int st = seq != 0 ? setae_obj_type(seq) : -1;
+        if (st == SETAE_T_STR || st == SETAE_T_LIST || st == SETAE_T_TUPLE) {
+            if (count < 0) {
+                count = 0;
+            }
+            if (st == SETAE_T_STR) {
+                size_t unit = setae_str_len(seq);
+                size_t total = unit * (size_t)count;
+                char *buf = total ? malloc(total) : NULL;
+                for (int64_t k = 0; k < count; k++) {
+                    memcpy(buf + (size_t)k * unit, setae_str_data(seq), unit);
+                }
+                SetaeValue r = setae_str_new(vm->heap, buf ? buf : "", total);
+                free(buf);
+                return r;
+            }
+            setae_vm_push_tmp(vm, seq);
+            if (st == SETAE_T_LIST) {
+                SetaeList *src = setae_to_ptr(seq);
+                uint32_t unit = src->len;
+                SetaeValue rv = setae_list_new(vm->heap, unit * (uint32_t)count);
+                SetaeList *r = setae_to_ptr(rv);
+                for (int64_t k = 0; k < count; k++) {
+                    for (uint32_t i = 0; i < unit; i++) {
+                        setae_list_push(r, src->items[i]);
+                    }
+                }
+                setae_vm_pop_tmp(vm);
+                return rv;
+            }
+            SetaeTuple *src = setae_to_ptr(seq);
+            uint32_t unit = src->len;
+            SetaeValue rv = setae_tuple_new(vm->heap, NULL, unit * (uint32_t)count);
+            SetaeTuple *r = setae_to_ptr(rv);
+            for (int64_t k = 0; k < count; k++) {
+                for (uint32_t i = 0; i < unit; i++) {
+                    r->items[(size_t)k * unit + i] = src->items[i];
+                }
+            }
+            setae_vm_pop_tmp(vm);
+            return rv;
+        }
+    }
     if (op == BIN_ADD && setae_obj_type(a) == SETAE_T_TUPLE &&
         setae_obj_type(b) == SETAE_T_TUPLE) {
         SetaeTuple *ta = setae_to_ptr(a);

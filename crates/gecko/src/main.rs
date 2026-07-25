@@ -1134,6 +1134,15 @@ mod tests {
     }
 
     #[test]
+    fn sequence_repetition() {
+        let src = "print('ab' * 3, 3 * 'ab', 'x' * 0, 'x' * -1)\nprint([1, 2] * 2, 2 * [1], [] * 5, [0] * 0)\nprint((0,) * 3, 3 * (1, 2), () * 4)\nprint(len([0] * 1000), ('ab' * 100)[:6])\nprint(True * 3, 3 * True, False * 2)\nprint([[0] * 2] * 2)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "ababab ababab  \n[1, 2, 1, 2] [1, 1] [] []\n(0, 0, 0) (1, 2, 1, 2, 1, 2) ()\n1000 ababab\n3 3 0\n[[0, 0], [0, 0]]\n"
+        );
+    }
+
+    #[test]
     fn percent_string_formatting() {
         let src = "print('%d|%s|%r' % (5, 'a', 'a'))\nprint('%5d|%-5d|%05d' % (42, 42, 42))\nprint('%+d|% d' % (7, 7))\nprint('%.2f|%10.3f|%-10.2f|' % (3.14159, 3.14159, 3.14159))\nprint('%x|%X|%#x|%o|%#o' % (255, 255, 255, 8, 8))\nprint('%e|%E|%g|%G' % (12345.6789, 12345.6789, 0.00001234, 123456789.0))\nprint('%c|%c' % (65, 'z'))\nprint('%%|%s' % 'end')\nprint('%(a)s-%(b)d' % {'a': 'x', 'b': 3})\nprint('%.3s|%*d|%.*f' % ('abcdefg', 6, 42, 2, 3.14159))\nprint('%s|%s|%d|%s' % ([1, 2], None, True, {'k': 1}))\nprint('%d' % 2 ** 80)\nprint('%+05d|%+.3d|%.3d|%#.3x|%#.3o' % (-7, 7, -7, 255, 8))\n";
         assert_eq!(
