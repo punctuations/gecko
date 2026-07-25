@@ -79,6 +79,17 @@ can be a dict key or a set element, and its mutating methods raise.
 Tuples have no methods yet (`count` and `index` are missing), though they
 support indexing, slicing, `in`, unpacking, and comparison.
 
+### array
+
+`from gecko import array` gives a typed array over a shared buffer:
+`array(iterable, dtype="f64")`, where dtype is one of `f64`, `f32`, `i64`, or
+`i32`. Methods are `sum`, `prod`, `min`, `max`, `map`, `filter`, `reduce`, and
+`tolist`. Arrays support `len`, indexing, and slicing, and the arithmetic
+operators `+`, `-`, `*`, and `/` against another array of the same length or
+against a scalar. An array is immutable, a slice with step 1 is a view that
+shares the buffer, and sending one to an actor passes the buffer by handle
+instead of copying it. See [07-data-engine.md](07-data-engine.md).
+
 ## Operators
 
 Arithmetic is `+`, `-`, `*`, `/` (true division, always a float), `//`, `%`,

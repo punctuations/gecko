@@ -287,6 +287,9 @@ SetaeValue setae_array_new(SetaeHeap *h, SetaeBuffer *buf, uint8_t dtype, uint32
 SetaeValue setae_array_get(SetaeVM *vm, SetaeValue arr, int64_t i);
 SetaeValue setae_array_slice(SetaeVM *vm, SetaeValue arr, int64_t start, int64_t step,
                              int64_t count);
+SetaeValue setae_array_binop(SetaeVM *vm, int op, SetaeValue a, SetaeValue b);
+SetaeValue setae_array_method(SetaeVM *vm, SetaeValue arr, const char *name, SetaeValue *args,
+                              int nargs, int *found);
 void setae_array_repr(SetaeVM *vm, SetaeValue arr);
 SetaeValue setae_array_build(SetaeVM *vm, SetaeValue *args, int nargs);
 SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v);

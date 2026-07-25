@@ -86,26 +86,46 @@ promoted input, so a caller that wants to avoid it keeps the dtypes matched.
 ## Parallel map, reduce, and filter
 
 The kernels run data-parallel over the v0.0.7 scheduler. A parallel elementwise
-op splits the index range into chunks, injects one task per chunk into the pool,
-and each worker applies the kernel to its slice, writing into a disjoint range of
-the output buffer. The chunks touch non-overlapping output and read immutable
-input, so they never race, and the caller blocks until the last chunk finishes.
-A reduction runs the same split, each chunk reducing its slice to a partial, and
-then combines the partials on the calling thread.
+op splits the index range into chunks and publishes the job to the pool; each
+worker claims chunks from a shared counter and applies the kernel to its slice,
+writing into a disjoint range of the output buffer. The chunks touch
+non-overlapping output and read immutable input, so they never race, and the
+caller blocks until the last chunk finishes. A reduction runs the same split,
+each chunk reducing its slice to a partial and merging it into the accumulator.
+
+The calling thread claims chunks too, rather than only waiting. That is what
+makes the kernels safe to call from inside an actor handler: the handler is
+already occupying a pool worker, and if every worker were busy the same way, a
+caller that only waited would deadlock. Because the caller always makes progress
+on its own job, the work completes whether or not any other worker picks it up,
+and the parallelism is opportunistic.
+
+A parallel op only pays off once the array is large enough to cover the
+scheduling cost, so below a threshold the kernel runs inline on the calling
+thread. Elementwise ops are memory-bandwidth-bound, so their speedup is bounded
+well under the core count; reductions, which read without writing a result
+buffer, scale further.
+
+Float sum and product stay sequential. Reassociating them changes the rounding,
+and a reduction that returns a different last bit depending on how the chunks
+happened to be scheduled is not worth the speed. Min, max, and the integer sum
+and product are exact under reassociation, so those run in parallel.
 
 `array.map`, `array.reduce`, and `array.filter` are the higher-order surface over
-this. When the operation is a native kernel or a simple comparison predicate, it
-runs across the pool. A `map` with an arbitrary Python function cannot go
-parallel yet, for the reason a `call` blocks its worker in 04-concurrency.md: the
-function runs in one isolate's VM and that VM cannot be shared, so a
-Python-function map runs sequentially in the calling isolate. Pushing a compiled
-kernel or a closure into worker isolates is the way that opens up later.
+this. They take a Python function and so run sequentially in the calling isolate,
+for the reason a `call` blocks its worker in 04-concurrency.md: the function runs
+in one isolate's VM and that VM cannot be shared across threads. The parallel
+path is the one the operators and the reduction methods take, where the body is a
+native kernel with no VM in it. Pushing a compiled kernel or a closure into
+worker isolates is what would open the higher-order surface up, and that is
+deferred.
 
-Filter returns a shorter array. It runs in two passes over the chunks: each
-chunk counts how many elements pass, a prefix sum turns the counts into output
-offsets, and a second pass compacts the survivors into the output buffer at those
-offsets. Both passes are parallel and the output length is known before the
-second pass writes.
+`map` returns an array. It keeps the source dtype when the source is integral and
+every result is an integer, and promotes to float when the source is float or any
+result is. `filter` returns a shorter array of the same dtype, in two passes:
+one to test each element and record which survive, one to compact the survivors
+into the output buffer. `reduce` threads an accumulator through the function and
+returns a scalar, taking an optional initial value.
 
 Every op is eager: it materializes its output buffer before returning. Fusing a
 chain of ops into one pass over the data, so `xs * 2.0 + 1.0` avoids the
@@ -127,10 +147,13 @@ where there are no isolates and an array is an ordinary object.
 
 The first cut ships the four dtypes, immutable reference-counted shared buffers
 with 64-byte alignment, the elementwise and reduction kernels leaning on
-auto-vectorization, parallel map, reduce, and filter over the existing pool, and
-array transfer by handle across actor messages. It defers explicit SIMD
-intrinsics and CPU dispatch, the smaller dtypes and bool, parallel map over an
-arbitrary Python function, and kernel fusion.
+auto-vectorization, parallel execution of those kernels over the existing pool,
+the map, reduce, and filter surface, and array transfer by handle across actor
+messages. It defers explicit SIMD intrinsics and CPU dispatch, the smaller dtypes
+and bool, parallel execution of an arbitrary Python function, and kernel fusion.
+
+A spawned isolate binds `array` the way it binds `actor`, so a handler can build
+and compute on arrays without its module globals.
 
 ### Buffer allocation and the GC
 

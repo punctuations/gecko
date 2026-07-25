@@ -13,6 +13,8 @@ pub type SandboxHook =
 
 pub type HostFn = extern "C" fn(*mut SetaeVm, *mut SetaeValue, c_int) -> SetaeValue;
 
+pub type ParallelBody = extern "C" fn(*mut std::ffi::c_void, usize, usize);
+
 pub const OP_LOAD_CONST: u8 = 0;
 pub const OP_LOAD_NAME: u8 = 1;
 pub const OP_STORE_NAME: u8 = 2;
@@ -93,6 +95,8 @@ unsafe extern "C" {
     pub fn setae_subject_new(h: *mut SetaeHeap, mailbox: *mut std::ffi::c_void) -> SetaeValue;
     pub fn setae_stop_new(h: *mut SetaeHeap) -> SetaeValue;
     pub fn setae_subject_mailbox(v: SetaeValue) -> *mut std::ffi::c_void;
+    pub fn setae_set_parallel_for(f: extern "C" fn(*mut std::ffi::c_void, usize, ParallelBody));
+
     pub fn setae_set_subject_drop(f: extern "C" fn(*mut std::ffi::c_void));
     pub fn setae_code_serialize(c: *const SetaeCode, len_out: *mut usize) -> *mut u8;
     pub fn setae_func_code(func: SetaeValue) -> *const SetaeCode;
@@ -126,6 +130,7 @@ unsafe extern "C" {
     pub fn setae_vm_clear_error(vm: *mut SetaeVm);
     pub fn setae_gecko_actor_register(vm: *mut SetaeVm, name: *const c_char, value: SetaeValue);
     pub fn setae_gecko_actor_module(vm: *mut SetaeVm) -> SetaeValue;
+    pub fn setae_gecko_member(vm: *mut SetaeVm, name: *const c_char) -> SetaeValue;
     pub fn setae_obj_type(v: SetaeValue) -> c_int;
     pub fn setae_tuple_len(v: SetaeValue) -> u32;
     pub fn setae_tuple_get(v: SetaeValue, i: u32) -> SetaeValue;
@@ -328,17 +333,63 @@ fn reject(env: Envelope) {
     }
 }
 
+struct Job {
+    ctx: usize,
+    body: ParallelBody,
+    n: usize,
+    chunk: usize,
+    nchunks: usize,
+    next: AtomicUsize,
+    done: Mutex<usize>,
+    finished: Condvar,
+}
+
+unsafe impl Send for Job {}
+unsafe impl Sync for Job {}
+
+impl Job {
+    fn work(&self) {
+        loop {
+            let i = self.next.fetch_add(1, Ordering::Relaxed);
+            if i >= self.nchunks {
+                return;
+            }
+            let start = i * self.chunk;
+            let end = std::cmp::min(start + self.chunk, self.n);
+            (self.body)(self.ctx as *mut std::ffi::c_void, start, end);
+            let mut d = self.done.lock().unwrap();
+            *d += 1;
+            if *d == self.nchunks {
+                self.finished.notify_all();
+            }
+        }
+    }
+}
+
+enum Task {
+    Run(Arc<Actor>),
+    Chunks(Arc<Job>),
+}
+
 struct SchedInner {
-    injector: Injector<Arc<Actor>>,
-    stealers: Vec<Stealer<Arc<Actor>>>,
+    injector: Injector<Task>,
+    stealers: Vec<Stealer<Task>>,
     idle: Mutex<()>,
     wake: Condvar,
+    workers: usize,
 }
 
 impl SchedInner {
     fn inject(&self, actor: Arc<Actor>) {
-        self.injector.push(actor);
+        self.injector.push(Task::Run(actor));
         self.wake.notify_one();
+    }
+
+    fn inject_job(&self, job: &Arc<Job>, copies: usize) {
+        for _ in 0..copies {
+            self.injector.push(Task::Chunks(job.clone()));
+            self.wake.notify_one();
+        }
     }
 
     fn park(&self) {
@@ -357,13 +408,14 @@ fn scheduler() -> Arc<SchedInner> {
             let n = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
-            let workers: Vec<Worker<Arc<Actor>>> = (0..n).map(|_| Worker::new_fifo()).collect();
+            let workers: Vec<Worker<Task>> = (0..n).map(|_| Worker::new_fifo()).collect();
             let stealers = workers.iter().map(|w| w.stealer()).collect();
             let inner = Arc::new(SchedInner {
                 injector: Injector::new(),
                 stealers,
                 idle: Mutex::new(()),
                 wake: Condvar::new(),
+                workers: n,
             });
             for w in workers {
                 let sched = inner.clone();
@@ -375,10 +427,10 @@ fn scheduler() -> Arc<SchedInner> {
 }
 
 fn find_task(
-    local: &Worker<Arc<Actor>>,
-    injector: &Injector<Arc<Actor>>,
-    stealers: &[Stealer<Arc<Actor>>],
-) -> Option<Arc<Actor>> {
+    local: &Worker<Task>,
+    injector: &Injector<Task>,
+    stealers: &[Stealer<Task>],
+) -> Option<Task> {
     local.pop().or_else(|| {
         std::iter::repeat_with(|| {
             injector
@@ -390,12 +442,42 @@ fn find_task(
     })
 }
 
-fn worker_loop(local: Worker<Arc<Actor>>, sched: Arc<SchedInner>) {
+fn worker_loop(local: Worker<Task>, sched: Arc<SchedInner>) {
     loop {
         match find_task(&local, &sched.injector, &sched.stealers) {
-            Some(actor) => run_actor(&actor),
+            Some(Task::Run(actor)) => run_actor(&actor),
+            Some(Task::Chunks(job)) => job.work(),
             None => sched.park(),
         }
+    }
+}
+
+extern "C" fn parallel_for(ctx: *mut std::ffi::c_void, n: usize, body: ParallelBody) {
+    if n == 0 {
+        return;
+    }
+    let sched = scheduler();
+    let target = sched.workers.max(1) * 4;
+    let chunk = n.div_ceil(target).max(1);
+    let nchunks = n.div_ceil(chunk);
+    let job = Arc::new(Job {
+        ctx: ctx as usize,
+        body,
+        n,
+        chunk,
+        nchunks,
+        next: AtomicUsize::new(0),
+        done: Mutex::new(0),
+        finished: Condvar::new(),
+    });
+    sched.inject_job(
+        &job,
+        std::cmp::min(sched.workers, nchunks.saturating_sub(1)),
+    );
+    job.work();
+    let mut d = job.done.lock().unwrap();
+    while *d < nchunks {
+        d = job.finished.wait(d).unwrap();
     }
 }
 
@@ -910,6 +992,12 @@ fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg, globals: Vec<GlobalItem>) ->
 
     unsafe {
         set_root(child.vm, "actor", setae_gecko_actor_module(child.vm));
+        let array_name = CString::new("array").unwrap();
+        set_root(
+            child.vm,
+            "array",
+            setae_gecko_member(child.vm, array_name.as_ptr()),
+        );
         for g in globals {
             match g {
                 GlobalItem::Func(name, gbytes) => {
@@ -1087,6 +1175,7 @@ impl Vm {
             let heap = setae_heap_new();
             let vm = setae_vm_new(heap);
             setae_vm_register_builtins(vm);
+            setae_set_parallel_for(parallel_for);
             setae_set_subject_drop(subject_drop);
             setae_set_subject_clone(subject_clone);
             setae_set_subject_send(subject_send);

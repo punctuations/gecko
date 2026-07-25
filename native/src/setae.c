@@ -754,6 +754,9 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         setae_obj_type(a) == SETAE_T_SET && setae_obj_type(b) == SETAE_T_SET) {
         return set_binop(vm, op, setae_to_ptr(a), setae_to_ptr(b));
     }
+    if (setae_obj_type(a) == SETAE_T_ARRAY || setae_obj_type(b) == SETAE_T_ARRAY) {
+        return setae_array_binop(vm, op, a, b);
+    }
     int a_int = setae_is_integer(a);
     int b_int = setae_is_integer(b);
     int is_bitwise = op == BIN_BITAND || op == BIN_BITOR || op == BIN_BITXOR ||
@@ -1829,6 +1832,15 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
     if (t == SETAE_T_STR) {
         int found;
         SetaeValue r = setae_str_method(vm, obj, name, args, nargs, &found);
+        if (found) {
+            return r;
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
+    if (t == SETAE_T_ARRAY) {
+        int found;
+        SetaeValue r = setae_array_method(vm, obj, name, args, nargs, &found);
         if (found) {
             return r;
         }

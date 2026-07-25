@@ -37,9 +37,9 @@ copied into the receiver's heap. Two things instead pass by handle:
 
 - A subject rides inside a message as a handle to the same mailbox, not a copy,
   which is how a reply routes back to the caller that sent it.
-- Immutable shared buffers, holding columnar data, pass by handle and are
-  reference counted, so large data moves without copying its bytes (see
-  03-gc.md). This one is deferred; copying is the right default until it pays.
+- Typed arrays, over immutable shared buffers holding columnar data, pass by
+  handle and are reference counted, so large data moves without copying its
+  bytes (see 03-gc.md and 07-data-engine.md). v0.0.8 ships this.
 
 The copy walk handles cycles in the graph it transfers.
 
@@ -156,12 +156,14 @@ milestone calls for; periodic timers and cancellation are the next step.
 ### Messages
 
 A message is deep copied out of the sender's heap and rebuilt in the receiver's,
-except subjects, which pass by handle. The transfer walks a value into a
-heap-neutral form the mailbox can carry, and the receiver walks that back into
-its own heap. Copyable types are None, bool, int, float, str, list, tuple, and
-dict. A subject in the graph is carried as its live sender, not copied. Any other
-type, a function, class, instance, module, range, or iterator, raises TypeError
-at the send, naming it. The walk keeps an identity map, so a graph with shared
+except subjects and typed arrays, which pass by handle. The transfer walks a
+value into a heap-neutral form the mailbox can carry, and the receiver walks that
+back into its own heap. Copyable types are None, bool, int (including arbitrary
+precision, carried as its decimal form), float, str, list, tuple, and dict. A
+subject in the graph is carried as its live sender, not copied. A typed array is carried as a retained handle to its shared buffer, so
+its elements never move; the receiver builds an array object over the same
+buffer. Any other type, a function, class, instance, module, range, or iterator,
+raises TypeError at the send, naming it. The walk keeps an identity map, so a graph with shared
 sub-objects or a cycle transfers once and rebuilds with the same sharing.
 
 The neutral form is a flat node array the transfer allocates outside any heap. It
@@ -208,7 +210,8 @@ state, and repeat until the mailbox empties, a stop, or an error.
 The scheduler is a fixed pool of worker threads, one per core, over a
 work-stealing set of deques (crossbeam-deque: a global injector and a per-worker
 deque with stealers). It lives once per process, started the first time an actor
-is spawned.
+is spawned. A queued task is either an actor with messages waiting or a chunk of
+a data-parallel kernel job (see 07-data-engine.md); the two share the pool.
 
 An actor's mailbox is a queue plus a `scheduled` flag. The flag is only changed
 while holding the mailbox lock, so it serializes cleanly. A `send` locks the

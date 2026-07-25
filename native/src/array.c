@@ -246,6 +246,514 @@ SetaeValue setae_array_get(SetaeVM *vm, SetaeValue arr, int64_t i) {
     }
 }
 
+static double elem_double(void *data, uint8_t dtype, size_t i) {
+    switch (dtype) {
+    case DTYPE_F64:
+        return ((double *)data)[i];
+    case DTYPE_F32:
+        return (double)((float *)data)[i];
+    case DTYPE_I64:
+        return (double)((int64_t *)data)[i];
+    default:
+        return (double)((int32_t *)data)[i];
+    }
+}
+
+static int64_t elem_i64(void *data, uint8_t dtype, size_t i) {
+    switch (dtype) {
+    case DTYPE_I64:
+        return ((int64_t *)data)[i];
+    case DTYPE_I32:
+        return (int64_t)((int32_t *)data)[i];
+    case DTYPE_F64:
+        return (int64_t)((double *)data)[i];
+    default:
+        return (int64_t)((float *)data)[i];
+    }
+}
+
+typedef struct {
+    void *out;
+    void *da;
+    void *db;
+    uint32_t oa;
+    uint32_t ob;
+    uint8_t rd;
+    uint8_t ca;
+    uint8_t cb;
+    int aa;
+    int ba;
+    int op;
+    double sa;
+    double sb;
+    int64_t ia;
+    int64_t ib;
+} KernelCtx;
+
+static void kernel_float(void *vctx, size_t start, size_t end) {
+    KernelCtx *c = vctx;
+    for (size_t i = start; i < end; i++) {
+        double x = c->aa ? elem_double(c->da, c->ca, c->oa + i) : c->sa;
+        double y = c->ba ? elem_double(c->db, c->cb, c->ob + i) : c->sb;
+        double r;
+        switch (c->op) {
+        case BIN_ADD:
+            r = x + y;
+            break;
+        case BIN_SUB:
+            r = x - y;
+            break;
+        case BIN_MUL:
+            r = x * y;
+            break;
+        default:
+            r = x / y;
+            break;
+        }
+        store_double(c->out, c->rd, i, r);
+    }
+}
+
+static void kernel_int(void *vctx, size_t start, size_t end) {
+    KernelCtx *c = vctx;
+    for (size_t i = start; i < end; i++) {
+        int64_t x = c->aa ? elem_i64(c->da, c->ca, c->oa + i) : c->ia;
+        int64_t y = c->ba ? elem_i64(c->db, c->cb, c->ob + i) : c->ib;
+        int64_t r;
+        switch (c->op) {
+        case BIN_ADD:
+            r = x + y;
+            break;
+        case BIN_SUB:
+            r = x - y;
+            break;
+        default:
+            r = x * y;
+            break;
+        }
+        store_i64(c->out, c->rd, i, r);
+    }
+}
+
+#define PARALLEL_MIN 8192
+
+static void (*g_parallel_for)(void *, size_t, SetaeParallelBody) = NULL;
+
+void setae_set_parallel_for(void (*fn)(void *, size_t, SetaeParallelBody)) {
+    g_parallel_for = fn;
+}
+
+static void run_parallel(void *ctx, size_t n, SetaeParallelBody body) {
+    if (n >= PARALLEL_MIN && g_parallel_for != NULL) {
+        g_parallel_for(ctx, n, body);
+        return;
+    }
+    body(ctx, 0, n);
+}
+
+static int scalar_class(SetaeVM *vm, SetaeValue v, uint8_t *out) {
+    if (setae_is_int(v) || setae_obj_type(v) == SETAE_T_BIGINT || setae_is_bool(v)) {
+        *out = DTYPE_I64;
+        return 1;
+    }
+    if (setae_is_float(v)) {
+        *out = DTYPE_F64;
+        return 1;
+    }
+    (void)vm;
+    return 0;
+}
+
+SetaeValue setae_array_binop(SetaeVM *vm, int op, SetaeValue a, SetaeValue b) {
+    int aa = setae_obj_type(a) == SETAE_T_ARRAY;
+    int ba = setae_obj_type(b) == SETAE_T_ARRAY;
+    SetaeArray *arrA = aa ? setae_to_ptr(a) : NULL;
+    SetaeArray *arrB = ba ? setae_to_ptr(b) : NULL;
+
+    uint8_t ca, cb;
+    if (aa) {
+        ca = arrA->dtype;
+    } else if (!scalar_class(vm, a, &ca)) {
+        setae_vm_raise(vm, "TypeError", "unsupported operand type(s) for array op: '%s'",
+                       setae_type_name(a));
+        return setae_none();
+    }
+    if (ba) {
+        cb = arrB->dtype;
+    } else if (!scalar_class(vm, b, &cb)) {
+        setae_vm_raise(vm, "TypeError", "unsupported operand type(s) for array op: '%s'",
+                       setae_type_name(b));
+        return setae_none();
+    }
+
+    uint32_t n;
+    if (aa && ba) {
+        if (arrA->len != arrB->len) {
+            setae_vm_raise(vm, "ValueError", "operands could not be broadcast together");
+            return setae_none();
+        }
+        n = arrA->len;
+    } else {
+        n = aa ? arrA->len : arrB->len;
+    }
+
+    uint8_t rd;
+    if (op == BIN_DIV) {
+        rd = DTYPE_F64;
+    } else if (dtype_is_float(ca) || dtype_is_float(cb)) {
+        rd = (ca == DTYPE_F64 || cb == DTYPE_F64) ? DTYPE_F64 : DTYPE_F32;
+    } else {
+        rd = (ca == DTYPE_I64 || cb == DTYPE_I64) ? DTYPE_I64 : DTYPE_I32;
+    }
+
+    SetaeBuffer *buf = setae_buffer_alloc(rd, n);
+    if (buf == NULL) {
+        setae_vm_raise(vm, "MemoryError", "out of memory");
+        return setae_none();
+    }
+    void *out = setae_buffer_data(buf);
+    void *da = aa ? setae_buffer_data(arrA->buf) : NULL;
+    void *db = ba ? setae_buffer_data(arrB->buf) : NULL;
+    uint32_t oa = aa ? arrA->offset : 0;
+    uint32_t ob = ba ? arrB->offset : 0;
+
+    int float_out = dtype_is_float(rd);
+    if (float_out) {
+        if (op != BIN_ADD && op != BIN_SUB && op != BIN_MUL && op != BIN_DIV) {
+            setae_buffer_release(buf);
+            setae_vm_raise(vm, "TypeError", "unsupported operator for arrays");
+            return setae_none();
+        }
+    } else if (op != BIN_ADD && op != BIN_SUB && op != BIN_MUL) {
+        setae_buffer_release(buf);
+        setae_vm_raise(vm, "TypeError", "unsupported operator for integer arrays");
+        return setae_none();
+    }
+
+    int ok = 1;
+    KernelCtx ctx;
+    ctx.out = out;
+    ctx.da = da;
+    ctx.db = db;
+    ctx.oa = oa;
+    ctx.ob = ob;
+    ctx.rd = rd;
+    ctx.ca = ca;
+    ctx.cb = cb;
+    ctx.aa = aa;
+    ctx.ba = ba;
+    ctx.op = op;
+    ctx.sa = aa ? 0.0 : value_to_double(vm, a, &ok);
+    ctx.sb = ba ? 0.0 : value_to_double(vm, b, &ok);
+    if (!float_out) {
+        ctx.ia = aa ? 0 : value_to_i64(vm, a, &ok);
+        ctx.ib = ba ? 0 : value_to_i64(vm, b, &ok);
+    }
+    if (!ok) {
+        setae_buffer_release(buf);
+        return setae_none();
+    }
+    run_parallel(&ctx, n, float_out ? kernel_float : kernel_int);
+    return setae_array_new(vm->heap, buf, rd, 0, n);
+}
+
+enum {
+    RED_SUM,
+    RED_PROD,
+    RED_MIN,
+    RED_MAX,
+};
+
+typedef struct {
+    void *data;
+    uint32_t offset;
+    uint8_t dtype;
+    int op;
+    int is_float;
+    atomic_flag lock;
+    double facc;
+    int64_t iacc;
+} ReduceCtx;
+
+static void reduce_body(void *vctx, size_t start, size_t end) {
+    ReduceCtx *c = vctx;
+    if (c->is_float) {
+        double acc = elem_double(c->data, c->dtype, c->offset + start);
+        if (c->op == RED_SUM) {
+            acc = 0.0;
+        } else if (c->op == RED_PROD) {
+            acc = 1.0;
+        }
+        for (size_t i = start; i < end; i++) {
+            double x = elem_double(c->data, c->dtype, c->offset + i);
+            if (c->op == RED_SUM) {
+                acc += x;
+            } else if (c->op == RED_PROD) {
+                acc *= x;
+            } else if (c->op == RED_MIN) {
+                if (x < acc) {
+                    acc = x;
+                }
+            } else if (x > acc) {
+                acc = x;
+            }
+        }
+        while (atomic_flag_test_and_set(&c->lock)) {
+        }
+        if (c->op == RED_SUM) {
+            c->facc += acc;
+        } else if (c->op == RED_PROD) {
+            c->facc *= acc;
+        } else if (c->op == RED_MIN) {
+            if (acc < c->facc) {
+                c->facc = acc;
+            }
+        } else if (acc > c->facc) {
+            c->facc = acc;
+        }
+        atomic_flag_clear(&c->lock);
+        return;
+    }
+    int64_t acc = elem_i64(c->data, c->dtype, c->offset + start);
+    if (c->op == RED_SUM) {
+        acc = 0;
+    } else if (c->op == RED_PROD) {
+        acc = 1;
+    }
+    for (size_t i = start; i < end; i++) {
+        int64_t x = elem_i64(c->data, c->dtype, c->offset + i);
+        if (c->op == RED_SUM) {
+            acc += x;
+        } else if (c->op == RED_PROD) {
+            acc *= x;
+        } else if (c->op == RED_MIN) {
+            if (x < acc) {
+                acc = x;
+            }
+        } else if (x > acc) {
+            acc = x;
+        }
+    }
+    while (atomic_flag_test_and_set(&c->lock)) {
+    }
+    if (c->op == RED_SUM) {
+        c->iacc += acc;
+    } else if (c->op == RED_PROD) {
+        c->iacc *= acc;
+    } else if (c->op == RED_MIN) {
+        if (acc < c->iacc) {
+            c->iacc = acc;
+        }
+    } else if (acc > c->iacc) {
+        c->iacc = acc;
+    }
+    atomic_flag_clear(&c->lock);
+}
+
+static SetaeValue array_reduce(SetaeVM *vm, SetaeArray *a, const char *name) {
+    int op;
+    if (strcmp(name, "sum") == 0) {
+        op = RED_SUM;
+    } else if (strcmp(name, "prod") == 0) {
+        op = RED_PROD;
+    } else if (strcmp(name, "min") == 0) {
+        op = RED_MIN;
+    } else {
+        op = RED_MAX;
+    }
+    if (a->len == 0) {
+        if (op == RED_SUM) {
+            return setae_from_int(0);
+        }
+        if (op == RED_PROD) {
+            return setae_from_int(1);
+        }
+        setae_vm_raise(vm, "ValueError", "%s() of an empty array", name);
+        return setae_none();
+    }
+    ReduceCtx c;
+    c.data = setae_buffer_data(a->buf);
+    c.offset = a->offset;
+    c.dtype = a->dtype;
+    c.op = op;
+    c.is_float = dtype_is_float(a->dtype);
+    atomic_flag_clear(&c.lock);
+    double seed_f = elem_double(c.data, c.dtype, c.offset);
+    int64_t seed_i = elem_i64(c.data, c.dtype, c.offset);
+    c.facc = op == RED_SUM ? 0.0 : (op == RED_PROD ? 1.0 : seed_f);
+    c.iacc = op == RED_SUM ? 0 : (op == RED_PROD ? 1 : seed_i);
+
+    if (c.is_float && (op == RED_SUM || op == RED_PROD)) {
+        reduce_body(&c, 0, a->len);
+    } else {
+        run_parallel(&c, a->len, reduce_body);
+    }
+    return c.is_float ? setae_from_float(c.facc) : setae_int_from_i64(vm->heap, c.iacc);
+}
+
+static SetaeValue array_map(SetaeVM *vm, SetaeValue arr, SetaeValue fn) {
+    SetaeArray *a = setae_to_ptr(arr);
+    uint32_t n = a->len;
+    SetaeValue lst = setae_list_new(vm->heap, n);
+    setae_vm_push_tmp(vm, lst);
+    int any_float = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        SetaeValue x = setae_array_get(vm, arr, i);
+        SetaeValue r = setae_call(vm, fn, &x, 1);
+        if (vm->error) {
+            setae_vm_pop_tmp(vm);
+            return setae_none();
+        }
+        if (setae_is_float(r)) {
+            any_float = 1;
+        }
+        setae_list_push(setae_to_ptr(lst), r);
+    }
+    uint8_t rd;
+    if (dtype_is_float(a->dtype) || any_float) {
+        rd = a->dtype == DTYPE_F32 ? DTYPE_F32 : DTYPE_F64;
+    } else {
+        rd = a->dtype;
+    }
+    SetaeBuffer *buf = setae_buffer_alloc(rd, n);
+    if (buf == NULL) {
+        setae_vm_pop_tmp(vm);
+        setae_vm_raise(vm, "MemoryError", "out of memory");
+        return setae_none();
+    }
+    void *out = setae_buffer_data(buf);
+    SetaeList *l = setae_to_ptr(lst);
+    for (uint32_t i = 0; i < n; i++) {
+        int ok;
+        if (dtype_is_float(rd)) {
+            double x = value_to_double(vm, l->items[i], &ok);
+            if (!ok) {
+                setae_buffer_release(buf);
+                setae_vm_pop_tmp(vm);
+                return setae_none();
+            }
+            store_double(out, rd, i, x);
+        } else {
+            int64_t x = value_to_i64(vm, l->items[i], &ok);
+            if (!ok) {
+                setae_buffer_release(buf);
+                setae_vm_pop_tmp(vm);
+                return setae_none();
+            }
+            store_i64(out, rd, i, x);
+        }
+    }
+    setae_vm_pop_tmp(vm);
+    return setae_array_new(vm->heap, buf, rd, 0, n);
+}
+
+static SetaeValue array_filter(SetaeVM *vm, SetaeValue arr, SetaeValue pred) {
+    SetaeArray *a = setae_to_ptr(arr);
+    uint32_t n = a->len;
+    uint32_t *keep = n ? malloc(n * sizeof(uint32_t)) : NULL;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        SetaeValue x = setae_array_get(vm, arr, i);
+        SetaeValue r = setae_call(vm, pred, &x, 1);
+        if (vm->error) {
+            free(keep);
+            return setae_none();
+        }
+        if (setae_truthy(r)) {
+            keep[count++] = i;
+        }
+    }
+    SetaeBuffer *buf = setae_buffer_alloc(a->dtype, count);
+    if (buf == NULL) {
+        free(keep);
+        setae_vm_raise(vm, "MemoryError", "out of memory");
+        return setae_none();
+    }
+    size_t sz = setae_dtype_size(a->dtype);
+    char *src = (char *)setae_buffer_data(a->buf) + (size_t)a->offset * sz;
+    char *dst = setae_buffer_data(buf);
+    for (uint32_t k = 0; k < count; k++) {
+        memcpy(dst + (size_t)k * sz, src + (size_t)keep[k] * sz, sz);
+    }
+    free(keep);
+    return setae_array_new(vm->heap, buf, a->dtype, 0, count);
+}
+
+static SetaeValue array_reduce_fn(SetaeVM *vm, SetaeValue arr, SetaeValue fn,
+                                  SetaeValue init, int has_init) {
+    SetaeArray *a = setae_to_ptr(arr);
+    uint32_t i = 0;
+    SetaeValue acc;
+    if (has_init) {
+        acc = init;
+    } else {
+        if (a->len == 0) {
+            setae_vm_raise(vm, "TypeError", "reduce() of an empty array with no initial value");
+            return setae_none();
+        }
+        acc = setae_array_get(vm, arr, 0);
+        i = 1;
+    }
+    setae_vm_push_tmp(vm, acc);
+    for (; i < a->len; i++) {
+        SetaeValue pair[2];
+        pair[0] = acc;
+        pair[1] = setae_array_get(vm, arr, i);
+        acc = setae_call(vm, fn, pair, 2);
+        if (vm->error) {
+            setae_vm_pop_tmp(vm);
+            return setae_none();
+        }
+        setae_vm_pop_tmp(vm);
+        setae_vm_push_tmp(vm, acc);
+    }
+    setae_vm_pop_tmp(vm);
+    return acc;
+}
+
+SetaeValue setae_array_method(SetaeVM *vm, SetaeValue arr, const char *name, SetaeValue *args,
+                              int nargs, int *found) {
+    *found = 1;
+    if (strcmp(name, "map") == 0 || strcmp(name, "filter") == 0) {
+        if (nargs != 1) {
+            setae_vm_raise(vm, "TypeError", "%s() takes exactly one argument (%d given)",
+                           name, nargs);
+            return setae_none();
+        }
+        return strcmp(name, "map") == 0 ? array_map(vm, arr, args[0])
+                                        : array_filter(vm, arr, args[0]);
+    }
+    if (strcmp(name, "reduce") == 0) {
+        if (nargs != 1 && nargs != 2) {
+            setae_vm_raise(vm, "TypeError", "reduce() takes one or two arguments (%d given)",
+                           nargs);
+            return setae_none();
+        }
+        return array_reduce_fn(vm, arr, args[0], nargs == 2 ? args[1] : setae_none(),
+                               nargs == 2);
+    }
+    if (strcmp(name, "sum") == 0 || strcmp(name, "prod") == 0 || strcmp(name, "min") == 0 ||
+        strcmp(name, "max") == 0) {
+        if (nargs != 0) {
+            setae_vm_raise(vm, "TypeError", "%s() takes no arguments", name);
+            return setae_none();
+        }
+        return array_reduce(vm, setae_to_ptr(arr), name);
+    }
+    if (strcmp(name, "tolist") == 0) {
+        SetaeArray *a = setae_to_ptr(arr);
+        SetaeValue lst = setae_list_new(vm->heap, a->len);
+        setae_vm_push_tmp(vm, lst);
+        for (uint32_t i = 0; i < a->len; i++) {
+            setae_list_push(setae_to_ptr(lst), setae_array_get(vm, arr, i));
+        }
+        setae_vm_pop_tmp(vm);
+        return lst;
+    }
+    *found = 0;
+    return setae_none();
+}
+
 SetaeValue setae_array_slice(SetaeVM *vm, SetaeValue arr, int64_t start, int64_t step,
                              int64_t count) {
     SetaeArray *a = setae_to_ptr(arr);

@@ -239,6 +239,9 @@ int setae_subject_monitor_value(SetaeVM *vm, SetaeValue subject, SetaeValue noti
                                 SetaeValue down);
 SetaeValue setae_subject_call_value(SetaeVM *vm, SetaeValue subject, SetaeValue build,
                                     SetaeValue timeout);
+typedef void (*SetaeParallelBody)(void *ctx, size_t start, size_t end);
+void setae_set_parallel_for(void (*fn)(void *ctx, size_t n, SetaeParallelBody body));
+
 void setae_vm_push_tmp(SetaeVM *vm, SetaeValue v);
 void setae_vm_pop_tmp(SetaeVM *vm);
 
@@ -265,6 +268,7 @@ SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int narg
 void setae_vm_clear_error(SetaeVM *vm);
 void setae_gecko_actor_register(SetaeVM *vm, const char *name, SetaeValue value);
 SetaeValue setae_gecko_actor_module(SetaeVM *vm);
+SetaeValue setae_gecko_member(SetaeVM *vm, const char *name);
 void setae_vm_set_step_limit(SetaeVM *vm, uint64_t limit);
 void setae_vm_set_time_limit(SetaeVM *vm, uint64_t millis);
 void setae_vm_set_sandbox_hook(SetaeVM *vm, SetaeSandboxHook hook);

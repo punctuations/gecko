@@ -14,6 +14,7 @@ typedef enum {
     MSG_DICT,
     MSG_SUBJECT,
     MSG_BIGINT,
+    MSG_ARRAY,
 } SetaeMsgTag;
 
 static void *(*g_subject_clone)(void *) = NULL;
@@ -113,6 +114,12 @@ typedef struct {
             uint32_t len;
         } dict;
         void *mailbox;
+        struct {
+            SetaeBuffer *buf;
+            uint32_t offset;
+            uint32_t len;
+            uint8_t dtype;
+        } array;
     } as;
 } SetaeMsgNode;
 
@@ -271,6 +278,18 @@ static int64_t msg_read(SetaeMsg *m, IdMap *map, SetaeVM *vm, SetaeValue v) {
         m->nodes[n].as.mailbox = g_subject_clone(setae_subject_mailbox(v));
         return n;
     }
+    if (t == SETAE_T_ARRAY) {
+        SetaeArray *a = setae_to_ptr(v);
+        uint32_t n = msg_add(m);
+        idmap_put(map, v, n);
+        m->nodes[n].tag = MSG_ARRAY;
+        setae_buffer_retain(a->buf);
+        m->nodes[n].as.array.buf = a->buf;
+        m->nodes[n].as.array.offset = a->offset;
+        m->nodes[n].as.array.len = a->len;
+        m->nodes[n].as.array.dtype = a->dtype;
+        return n;
+    }
     setae_vm_raise(vm, "TypeError", "cannot send a %s value across actors",
                    setae_type_name(v));
     return -1;
@@ -341,6 +360,16 @@ static SetaeValue msg_write(const SetaeMsg *m, SetaeValue *built, SetaeVM *vm, u
         SetaeValue sv = setae_subject_new(vm->heap, g_subject_clone(nd->as.mailbox));
         built[idx] = sv;
         return sv;
+    }
+    case MSG_ARRAY: {
+        if (built[idx] != 0) {
+            return built[idx];
+        }
+        setae_buffer_retain(nd->as.array.buf);
+        SetaeValue av = setae_array_new(vm->heap, nd->as.array.buf, nd->as.array.dtype,
+                                        nd->as.array.offset, nd->as.array.len);
+        built[idx] = av;
+        return av;
     }
     }
     return setae_none();
@@ -553,6 +582,8 @@ void setae_msg_free(SetaeMsg *m) {
             free(nd->as.dict.vals);
         } else if (nd->tag == MSG_SUBJECT) {
             setae_subject_drop_handle(nd->as.mailbox);
+        } else if (nd->tag == MSG_ARRAY) {
+            setae_buffer_release(nd->as.array.buf);
         }
     }
     free(m->nodes);

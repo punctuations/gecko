@@ -1083,6 +1083,48 @@ mod tests {
     }
 
     #[test]
+    fn typed_array_arithmetic() {
+        let src = "from gecko import array\nxs = array([1.0, 2.0, 3.0, 4.0], dtype=\"f64\")\nprint(xs * 2.0 + 1.0)\nprint(xs.sum(), xs.prod(), xs.min(), xs.max())\na = array([1, 2, 3, 4], dtype=\"i64\")\nb = array([10, 20, 30, 40], dtype=\"i64\")\nprint(a + b, a * b, b - a)\nprint(a.sum(), a.prod(), a.min(), a.max())\nprint(a / b)\nprint(a.tolist())\ntry:\n    a + array([1, 2], dtype=\"i64\")\nexcept ValueError:\n    print(\"shape\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "array([3.0, 5.0, 7.0, 9.0], dtype='f64')\n10.0 24.0 1.0 4.0\narray([11, 22, 33, 44], dtype='i64') array([10, 40, 90, 160], dtype='i64') array([9, 18, 27, 36], dtype='i64')\n10 24 1 4\narray([0.1, 0.1, 0.1, 0.1], dtype='f64')\n[1, 2, 3, 4]\nshape\n"
+        );
+    }
+
+    #[test]
+    fn typed_arrays_transfer_by_handle() {
+        let src = "from gecko import actor, array\n\ndef handle(state, message):\n    message[1].send(message[0].sum())\n    return state\n\ndef echo(state, message):\n    message[1].send(message[0])\n    return state\n\na = actor.spawn(0, handle)\ndata = array([1.0, 2.0, 3.0, 4.0], dtype=\"f64\")\nprint(a.call(lambda r: [data, r], 2000))\nprint(data)\ne = actor.spawn(0, echo)\nback = e.call(lambda r: [data[1:3], r], 2000)\nprint(back, back.sum())\nbig = e.call(lambda r: [array(range(100000), dtype=\"f64\"), r], 5000)\nprint(len(big), big[99999])\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "10.0\narray([1.0, 2.0, 3.0, 4.0], dtype='f64')\narray([2.0, 3.0], dtype='f64') 5.0\n100000 99999.0\n"
+        );
+    }
+
+    #[test]
+    fn typed_array_map_filter_reduce() {
+        let src = "from gecko import array\nxs = array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=\"f64\")\nprint(xs.map(lambda x: x * x))\nprint(xs.filter(lambda x: x > 2.0))\nprint(xs.reduce(lambda a, b: a + b), xs.reduce(lambda a, b: a + b, 100.0))\na = array([1, 2, 3, 4, 5, 6], dtype=\"i64\")\nprint(a.map(lambda x: x * 2))\nprint(a.filter(lambda x: x % 2 == 0))\nprint(a.reduce(lambda p, q: p * q))\nprint(a.map(lambda x: x / 2))\nv = a[1:4]\nprint(v.map(lambda x: x + 10), v.filter(lambda x: x > 2))\nbig = array([10 ** 18, 2 * 10 ** 18, 3], dtype=\"i64\")\nprint(big.reduce(lambda p, q: p + q))\nprint(array([], dtype=\"f64\").filter(lambda x: True))\ntry:\n    array([], dtype=\"i64\").reduce(lambda p, q: p + q)\nexcept TypeError:\n    print(\"empty\")\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "array([1.0, 4.0, 9.0, 16.0, 25.0], dtype='f64')\narray([3.0, 4.0, 5.0], dtype='f64')\n15.0 115.0\narray([2, 4, 6, 8, 10, 12], dtype='i64')\narray([2, 4, 6], dtype='i64')\n720\narray([0.5, 1.0, 1.5, 2.0, 2.5, 3.0], dtype='f64')\narray([12, 13, 14], dtype='i64') array([3, 4], dtype='i64')\n3000000000000000003\narray([], dtype='f64')\nempty\n"
+        );
+    }
+
+    #[test]
+    fn typed_array_kernels_run_in_parallel() {
+        let src = "from gecko import array\nn = 300000\nxs = array(range(n), dtype=\"i64\")\nz = xs + xs\nprint(len(z), z[0], z[1], z[n - 1])\nprint(z.sum(), z.min(), z.max())\nf = array(range(n), dtype=\"f64\")\ng = f * 2.0 + 1.0\nprint(g[0], g[n - 1], g.min(), g.max(), g.sum())\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "300000 0 2 599998\n89999700000 0 599998\n1.0 599999.0 1.0 599999.0 90000000000.0\n"
+        );
+    }
+
+    #[test]
+    fn actors_run_parallel_kernels_concurrently() {
+        let src = "from gecko import array, actor\n\nN = 200000\n\ndef handle(state, message):\n    a = array(range(N), dtype=\"i64\")\n    b = a + a\n    message[1].send(b.sum())\n    return state\n\nworkers = []\nfor i in range(8):\n    workers.append(actor.spawn(0, handle))\n\nexpect = 0\nfor i in range(N):\n    expect += i\nexpect = expect * 2\nbad = 0\nfor w in workers:\n    if w.call(lambda r: [0, r], 30000) != expect:\n        bad += 1\nprint(expect, bad)\n";
+        assert_eq!(run_source(src).unwrap(), "39999800000 0\n");
+    }
+
+    #[test]
     fn big_integers_cross_actors() {
         let src = "from gecko import actor\n\ndef handle(state, message):\n    message[1].send(message[0] * 3)\n    return state\n\na = actor.spawn(0, handle)\nprint(a.call(lambda r: [10 ** 25, r], 2000))\nprint(a.call(lambda r: [-(2 ** 70), r], 2000))\nprint(a.call(lambda r: [7, r], 2000))\n";
         assert_eq!(
