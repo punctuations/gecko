@@ -127,7 +127,7 @@ static void repr_quoted(SetaeVM *vm, SetaeValue v) {
 static void repr(SetaeVM *vm, SetaeValue v, int nested) {
     char buf[64];
     if (setae_is_int(v)) {
-        int n = snprintf(buf, sizeof(buf), "%d", setae_to_int(v));
+        int n = snprintf(buf, sizeof(buf), "%lld", (long long)setae_to_int(v));
         setae_vm_append_output(vm, buf, (size_t)n);
         return;
     }
@@ -729,10 +729,10 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_from_int((int32_t)((SetaeSet *)setae_to_ptr(v))->used);
     case SETAE_T_RANGE: {
         int64_t n = setae_range_len(setae_to_ptr(v));
-        if (n > INT32_MAX) {
-            n = INT32_MAX;
+        if (n > SETAE_FIXNUM_MAX) {
+            n = SETAE_FIXNUM_MAX;
         }
-        return setae_from_int((int32_t)n);
+        return setae_from_int(n);
     }
     case SETAE_T_ARRAY:
         return setae_from_int((int32_t)((SetaeArray *)setae_to_ptr(v))->len);
@@ -800,21 +800,21 @@ static SetaeValue builtin_sandbox_run(SetaeVM *vm, SetaeValue *args, int nargs) 
             setae_vm_raise(vm, "TypeError", "sandbox.run steps must be an int");
             return setae_none();
         }
-        steps = (uint64_t)(uint32_t)setae_to_int(args[1]);
+        steps = (uint64_t)setae_to_int(args[1]);
     }
     if (nargs >= 3) {
         if (!setae_is_int(args[2])) {
             setae_vm_raise(vm, "TypeError", "sandbox.run memory must be an int");
             return setae_none();
         }
-        mem = (size_t)(uint32_t)setae_to_int(args[2]);
+        mem = (size_t)setae_to_int(args[2]);
     }
     if (nargs >= 4) {
         if (!setae_is_int(args[3])) {
             setae_vm_raise(vm, "TypeError", "sandbox.run millis must be an int");
             return setae_none();
         }
-        millis = (uint64_t)(uint32_t)setae_to_int(args[3]);
+        millis = (uint64_t)setae_to_int(args[3]);
     }
     return vm->sandbox_hook(vm, setae_str_data(args[0]), setae_str_len(args[0]), steps,
                             mem, millis);
@@ -902,8 +902,8 @@ static SetaeValue builtin_int(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (setae_is_float(v)) {
         double d = setae_to_float(v);
         double t = d < 0 ? ceil(d) : floor(d);
-        if (t >= -2147483648.0 && t <= 2147483647.0) {
-            return setae_from_int((int32_t)t);
+        if (t >= -140737488355328.0 && t <= 140737488355327.0) {
+            return setae_from_int((int64_t)t);
         }
         char tmp[64];
         snprintf(tmp, sizeof(tmp), "%.0f", t);
@@ -1234,7 +1234,7 @@ static SetaeValue builtin_abs(SetaeVM *vm, SetaeValue *args, int nargs) {
     SetaeValue v = args[0];
     if (setae_is_int(v)) {
         int64_t x = setae_to_int(v);
-        return setae_from_int((int32_t)(x < 0 ? -x : x));
+        return setae_int_from_i64(vm->heap, x < 0 ? -x : x);
     }
     if (setae_obj_type(v) == SETAE_T_BIGINT) {
         return setae_int_sign(v) < 0 ? setae_int_neg(vm->heap, v) : v;
@@ -1263,8 +1263,8 @@ static double round_half_even(double d) {
 }
 
 static SetaeValue int_or_float(double d) {
-    if (d >= -2147483648.0 && d <= 2147483647.0) {
-        return setae_from_int((int32_t)d);
+    if (d >= -140737488355328.0 && d <= 140737488355327.0) {
+        return setae_from_int((int64_t)d);
     }
     return setae_from_float(d);
 }
@@ -1280,7 +1280,7 @@ static SetaeValue builtin_round(SetaeVM *vm, SetaeValue *args, int nargs) {
     if (setae_is_int(v) || setae_is_bool(v)) {
         int64_t x = setae_is_bool(v) ? (setae_to_bool(v) ? 1 : 0) : setae_to_int(v);
         if (!has_n || ndigits >= 0) {
-            return setae_from_int((int32_t)x);
+            return setae_from_int(x);
         }
         double p = pow(10.0, -ndigits);
         return int_or_float(round_half_even((double)x / p) * p);
@@ -1656,7 +1656,7 @@ static SetaeValue builtin_pow(SetaeVM *vm, SetaeValue *args, int nargs) {
             exp >>= 1;
             b = (b * b) % mod;
         }
-        return setae_from_int((int32_t)result);
+        return setae_from_int(result);
     }
     double base = setae_is_float(args[0]) ? setae_to_float(args[0])
                                           : (double)setae_to_int(args[0]);

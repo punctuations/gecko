@@ -61,8 +61,9 @@ unsafe extern "C" {
 
     pub fn setae_from_float(d: f64) -> SetaeValue;
     pub fn setae_to_float(v: SetaeValue) -> f64;
-    pub fn setae_from_int(i: i32) -> SetaeValue;
-    pub fn setae_to_int(v: SetaeValue) -> i32;
+    pub fn setae_from_int(i: i64) -> SetaeValue;
+    pub fn setae_to_int(v: SetaeValue) -> i64;
+    pub fn setae_fixnum_fits(i: i64) -> c_int;
 
     pub fn setae_none() -> SetaeValue;
     pub fn setae_bool(b: c_int) -> SetaeValue;
@@ -1116,7 +1117,20 @@ mod tests {
 
     #[test]
     fn int_roundtrips() {
-        for i in [0, 1, -1, i32::MAX, i32::MIN, 123456] {
+        for i in [
+            0,
+            1,
+            -1,
+            i32::MAX as i64,
+            i32::MIN as i64,
+            123456,
+            140737488355327,
+            -140737488355328,
+            140737488355326,
+            -140737488355327,
+            1 << 40,
+            -(1 << 40),
+        ] {
             let v = unsafe { setae_from_int(i) };
             assert_eq!(unsafe { setae_is_int(v) }, 1, "is_int {i}");
             assert_eq!(unsafe { setae_is_float(v) }, 0, "not float {i}");
@@ -1284,7 +1298,7 @@ impl Vm {
                 let v = match c {
                     bytecode::Const::None => setae_none(),
                     bytecode::Const::Bool(b) => setae_bool(*b as c_int),
-                    bytecode::Const::Int(i) => setae_from_int(*i),
+                    bytecode::Const::Int(i) => setae_from_int(*i as i64),
                     bytecode::Const::Float(f) => setae_from_float(*f),
                     bytecode::Const::Str(s) => {
                         setae_str_new(self.heap, s.as_ptr() as *const c_char, s.len())
@@ -1416,7 +1430,7 @@ mod machine_tests {
         }
     }
 
-    fn int_result(run: &Run) -> i32 {
+    fn int_result(run: &Run) -> i64 {
         assert!(!run.error, "{}", run.message);
         assert_eq!(unsafe { setae_is_int(run.result) }, 1);
         unsafe { setae_to_int(run.result) }

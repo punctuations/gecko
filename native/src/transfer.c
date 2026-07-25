@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,7 +63,7 @@ int setae_subject_send_after_value(SetaeVM *vm, SetaeValue subject, SetaeValue d
         setae_vm_raise(vm, "TypeError", "send_after() delay must be an integer");
         return -1;
     }
-    int32_t ms = setae_to_int(delay);
+    int64_t ms = setae_to_int(delay);
     if (ms < 0) {
         ms = 0;
     }
@@ -98,7 +99,7 @@ typedef struct {
     SetaeMsgTag tag;
     union {
         int b;
-        int32_t i;
+        int64_t i;
         double f;
         struct {
             char *data;
@@ -472,10 +473,16 @@ static void ser_code(ByteBuf *b, const SetaeCode *c) {
         } else if (setae_is_bool(v)) {
             bb_u8(b, 1);
             bb_u8(b, setae_to_bool(v) ? 1 : 0);
-        } else if (setae_is_int(v)) {
+        } else if (setae_is_int(v) && setae_to_int(v) >= INT32_MIN &&
+                   setae_to_int(v) <= INT32_MAX) {
             bb_u8(b, 2);
-            int32_t x = setae_to_int(v);
+            int32_t x = (int32_t)setae_to_int(v);
             bb_bytes(b, &x, 4);
+        } else if (setae_is_int(v)) {
+            bb_u8(b, 5);
+            char dec[32];
+            int dn = snprintf(dec, sizeof(dec), "%lld", (long long)setae_to_int(v));
+            bb_str(b, dec, (uint32_t)dn);
         } else if (setae_is_float(v)) {
             bb_u8(b, 3);
             double d = setae_to_float(v);

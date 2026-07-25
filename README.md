@@ -101,15 +101,15 @@ Mixed: ahead on arithmetic and calls, behind on data structures.
 
 | Benchmark                     | Gecko    | CPython 3.14 | Result       |
 | ----------------------------- | -------- | ------------ | ------------ |
-| `arithmetic.py`, 3M-iter loop | 180.4 ms | 235.5 ms     | 1.31x faster |
-| `calls.py`, 600k calls        | 94.3 ms  | 117.1 ms     | 1.24x faster |
-| `fib.py`, recursive `fib(25)` | 24.7 ms  | 34.2 ms      | 1.38x faster |
-| `sieve.py`, primes to 1M      | 175.3 ms | 139.4 ms     | 1.26x slower |
-| `wordcount.py`, dict and str  | 243.2 ms | 139.3 ms     | 1.75x slower |
+| `arithmetic.py`, 3M-iter loop | 178.8 ms | 233.5 ms     | 1.31x faster |
+| `calls.py`, 600k calls        | 92.1 ms  | 116.5 ms     | 1.26x faster |
+| `fib.py`, recursive `fib(25)` | 24.2 ms  | 34.0 ms      | 1.40x faster |
+| `sieve.py`, primes to 1M      | 172.3 ms | 138.7 ms     | 1.24x slower |
+| `wordcount.py`, dict and str  | 241.2 ms | 137.7 ms     | 1.75x slower |
 
-Integers above 2147483647 leave the unboxed range and slow down by about 3x,
-and subscripting and dict work go through paths CPython specializes and Gecko
-does not yet. Today the biggest win is still the time before your code runs.
+Integers above 140737488355327 leave the unboxed range and slow down by about
+3x, and dict lookups rehash string keys where CPython caches the hash. Today the
+biggest win is still the time before your code runs.
 
 <details>
 <summary>Environment</summary>

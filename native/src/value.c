@@ -45,12 +45,16 @@ double setae_to_float(SetaeValue v) {
     return bits_f64(v - SETAE_DOUBLE_OFFSET);
 }
 
-SetaeValue setae_from_int(int32_t i) {
-    return SETAE_NUMBER_TAG | (uint32_t)i;
+SetaeValue setae_from_int(int64_t i) {
+    return SETAE_NUMBER_TAG | ((uint64_t)i & SETAE_FIXNUM_MASK);
 }
 
-int32_t setae_to_int(SetaeValue v) {
-    return (int32_t)(uint32_t)v;
+int64_t setae_to_int(SetaeValue v) {
+    return (int64_t)(v << 16) >> 16;
+}
+
+int setae_fixnum_fits(int64_t i) {
+    return i >= SETAE_FIXNUM_MIN && i <= SETAE_FIXNUM_MAX;
 }
 
 SetaeValue setae_none(void) {

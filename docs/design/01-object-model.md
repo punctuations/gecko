@@ -11,8 +11,8 @@ the payload, as a type tag plus 48 bits.
 Encodings:
 
 - float: any non-NaN double, stored as is.
-- fixnum: a small signed integer, inline. Covers at least the signed 32-bit
-  range.
+- fixnum: a small signed integer, inline. 48 bits of payload, so it covers
+  -140737488355328 to 140737488355327.
 - pointer: a heap object address of 48 bits, aligned so the low bits are free.
 - singleton: None, True, False, and internal sentinels, each a fixed pattern.
 
@@ -50,9 +50,17 @@ code, and module. bool and None are singletons rather than heap objects.
 
 ## Integers
 
-A fixnum covers the common case inline. Arithmetic that overflows the fixnum
-range promotes to a heap bignum. Equality and hashing treat a fixnum and a
-bignum of the same mathematical value as equal.
+A fixnum covers the common case inline, holding 48 bits of payload in the
+NaN-boxed word, which reaches 140737488355327. Arithmetic that overflows that
+range promotes to a heap bignum, and a result that falls back inside it
+normalizes to a fixnum again, so the representation never depends on how a
+value was reached. Equality and hashing treat a fixnum and a bignum of the same
+mathematical value as equal.
+
+The width matters for speed, not just range. A bignum result costs two
+allocations and becomes garbage the collector has to walk, so arithmetic that
+stays inside the fixnum range runs several times faster than arithmetic that
+leaves it.
 
 ## Dictionaries
 
@@ -128,8 +136,6 @@ shape can record the shape and the slot and skip the walk next time.
 
 ## Open
 
-- The exact fixnum width, whether 30, 32, or wider, and the pointer tag layout.
-  Fix both once the NaN-box constant table is written.
 - The internal layout of str: ASCII against UTF-8 storage, and whether to inline
   small strings.
 - Whether to intern small ints and short strings.

@@ -382,8 +382,8 @@ static double as_number(SetaeValue v) {
 }
 
 static SetaeValue from_i64(SetaeVM *vm, int64_t i) {
-    if (i >= INT32_MIN && i <= INT32_MAX) {
-        return setae_from_int((int32_t)i);
+    if (i >= SETAE_FIXNUM_MIN && i <= SETAE_FIXNUM_MAX) {
+        return SETAE_NUMBER_TAG | ((uint64_t)i & SETAE_FIXNUM_MASK);
     }
     return setae_int_from_i64(vm->heap, i);
 }
@@ -683,7 +683,10 @@ static SetaeValue binary_op(SetaeVM *vm, SetaeBinOp op, int aug, SetaeValue a,
         case BIN_SUB:
             return from_i64(vm, x - y);
         case BIN_MUL:
-            return from_i64(vm, x * y);
+            if (!__builtin_mul_overflow(x, y, &r)) {
+                return from_i64(vm, r);
+            }
+            break;
         case BIN_MOD:
         case BIN_FLOORDIV:
             if (y != 0) {
@@ -1107,8 +1110,8 @@ static SetaeValue compare(SetaeVM *vm, SetaeCmpOp op, SetaeValue a, SetaeValue b
         return setae_bool(op == CMP_EQ ? eq : !eq);
     }
     if (setae_is_int(a) && setae_is_int(b)) {
-        int32_t x = setae_to_int(a);
-        int32_t y = setae_to_int(b);
+        int64_t x = setae_to_int(a);
+        int64_t y = setae_to_int(b);
         int fc = x < y ? -1 : x > y ? 1 : 0;
         int fr = op == CMP_LT   ? fc < 0
                  : op == CMP_LE ? fc <= 0
@@ -3603,7 +3606,7 @@ static int iterop_next(SetaeVM *vm, SetaeIterOp *op, SetaeValue *out) {
             return 0;
         }
         vm->gc_disabled++;
-        SetaeValue pair[2] = {setae_from_int((int32_t)op->index), x};
+        SetaeValue pair[2] = {setae_from_int(op->index), x};
         *out = setae_tuple_new(vm->heap, pair, 2);
         vm->gc_disabled--;
         op->index++;

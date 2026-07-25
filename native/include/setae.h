@@ -13,6 +13,10 @@ typedef uint64_t SetaeValue;
 #define SETAE_VAL_FALSE 0x04ULL
 #define SETAE_VAL_TRUE  0x06ULL
 
+#define SETAE_FIXNUM_MASK 0x0000ffffffffffffULL
+#define SETAE_FIXNUM_MAX  140737488355327LL
+#define SETAE_FIXNUM_MIN  (-140737488355328LL)
+
 int setae_is_float(SetaeValue v);
 int setae_is_int(SetaeValue v);
 int setae_is_ptr(SetaeValue v);
@@ -21,8 +25,9 @@ int setae_is_bool(SetaeValue v);
 
 SetaeValue setae_from_float(double d);
 double setae_to_float(SetaeValue v);
-SetaeValue setae_from_int(int32_t i);
-int32_t setae_to_int(SetaeValue v);
+SetaeValue setae_from_int(int64_t i);
+int64_t setae_to_int(SetaeValue v);
+int setae_fixnum_fits(int64_t i);
 
 SetaeValue setae_none(void);
 SetaeValue setae_bool(int b);

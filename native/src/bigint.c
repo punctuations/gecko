@@ -49,13 +49,16 @@ static SetaeValue make_int(SetaeHeap *h, int sign, const uint32_t *mag, uint32_t
     if (len == 0) {
         return setae_from_int(0);
     }
-    if (len == 1) {
-        uint32_t m = mag[0];
-        if (sign >= 0 && m <= 0x7fffffffu) {
-            return setae_from_int((int32_t)m);
+    if (len <= 2) {
+        uint64_t m = mag[0];
+        if (len == 2) {
+            m |= (uint64_t)mag[1] << 32;
         }
-        if (sign < 0 && m <= 0x80000000u) {
-            return setae_from_int((int32_t)(-(int64_t)m));
+        if (sign >= 0 && m <= (uint64_t)SETAE_FIXNUM_MAX) {
+            return setae_from_int((int64_t)m);
+        }
+        if (sign < 0 && m <= (uint64_t)SETAE_FIXNUM_MAX + 1u) {
+            return setae_from_int(-(int64_t)m);
         }
     }
     SetaeValue bv = setae_bigint_alloc(h, sign < 0 ? -1 : 1, len);
@@ -429,8 +432,8 @@ SetaeValue setae_bigint_to_str(SetaeHeap *h, SetaeValue v) {
 }
 
 SetaeValue setae_int_from_i64(SetaeHeap *h, int64_t x) {
-    if (x >= INT32_MIN && x <= INT32_MAX) {
-        return setae_from_int((int32_t)x);
+    if (setae_fixnum_fits(x)) {
+        return setae_from_int(x);
     }
     int sign = x < 0 ? -1 : 1;
     uint64_t u = x < 0 ? (uint64_t)(-(x + 1)) + 1 : (uint64_t)x;
