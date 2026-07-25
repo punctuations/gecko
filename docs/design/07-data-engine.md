@@ -73,11 +73,21 @@ min, max, and count. Each kernel reads one or two input buffers and writes a
 fresh output buffer of the result dtype.
 
 A kernel is a tight loop over aligned, contiguous memory with no Python calls in
-the body, so the C compiler auto-vectorizes it at `-O2` with the alignment known.
-The first cut relies on that auto-vectorization rather than hand-written
-intrinsics. Explicit SIMD with a runtime CPU-feature dispatch (SSE, AVX2, NEON)
-is the step after, once the kernel set and the buffer layout are pinned and there
-is a benchmark to hold it to.
+the body. The hot combinations, f64 and i64 against another array of the same
+dtype or against a scalar, are compiled to explicit SIMD: NEON on arm64, SSE2 on
+x86-64, chosen at compile time, with the scalar loop kept for every other dtype
+combination and for the tail elements a vector register cannot fill.
+
+Specializing matters more than the intrinsics do. The generic loop reads its
+operand dtype and its operator from the context on every element, which no
+compiler can vectorize. Lifting both out of the loop is what makes the body a
+straight line over typed pointers, and the intrinsics then double it again. An
+operand pair the fast path does not cover falls back to the generic loop and is
+correct, only slower.
+
+A scalar on the left of a commutative operator is swapped so `2.0 * xs` takes the
+same path as `xs * 2.0`. Subtraction and division are not swapped, since order
+decides the result.
 
 Mixed dtypes promote by the usual numeric rules before the kernel runs: an
 `i64` array times an `f64` scalar produces `f64`. Promotion allocates the
@@ -146,11 +156,13 @@ where there are no isolates and an array is an ordinary object.
 ## Implementation for v0.0.8
 
 The first cut ships the four dtypes, immutable reference-counted shared buffers
-with 64-byte alignment, the elementwise and reduction kernels leaning on
-auto-vectorization, parallel execution of those kernels over the existing pool,
-the map, reduce, and filter surface, and array transfer by handle across actor
-messages. It defers explicit SIMD intrinsics and CPU dispatch, the smaller dtypes
-and bool, parallel execution of an arbitrary Python function, and kernel fusion.
+with 64-byte alignment, the elementwise and reduction kernels with explicit SIMD
+on the hot dtype pairs, parallel execution of those kernels over the existing
+pool, the map, reduce, and filter surface, and array transfer by handle across
+actor messages. It defers runtime CPU-feature dispatch for the wider x86 vector
+widths (AVX2 and AVX-512 are chosen at compile time today, so a binary built for
+a baseline target does not use them), the smaller dtypes and bool, parallel
+execution of an arbitrary Python function, and kernel fusion.
 
 A spawned isolate binds `array` the way it binds `actor`, so a handler can build
 and compute on arrays without its module globals.

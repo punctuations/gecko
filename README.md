@@ -74,7 +74,8 @@ runner, and how to freeze a program into a standalone binary.
 ## Benchmarks
 
 Scripts are in [benchmarks/](benchmarks/) and run unmodified on both runtimes,
-with byte-identical output. Measured with hyperfine against CPython 3.14.6,
+with byte-identical output. The exception is `arrays.py`, which uses the
+gecko-only typed-array API and has no CPython counterpart yet. Measured with hyperfine against CPython 3.14.6,
 invoked by its real binary path, since a pyenv shim adds about 160 ms of its
 own.
 

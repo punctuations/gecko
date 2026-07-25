@@ -290,8 +290,177 @@ typedef struct {
     int64_t ib;
 } KernelCtx;
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define SETAE_SIMD_NEON 1
+#elif defined(__SSE2__)
+#include <emmintrin.h>
+#define SETAE_SIMD_SSE2 1
+#endif
+
+#define FAST_F64(NAME, EXPR, VEXPR)                                                      \
+    static void NAME(const double *xa, const double *xb, double sb, double *o,           \
+                     size_t start, size_t end, int vec_b) {                              \
+        size_t i = start;                                                                \
+        VEXPR                                                                            \
+        for (; i < end; i++) {                                                           \
+            double x = xa[i];                                                            \
+            double y = vec_b ? xb[i] : sb;                                               \
+            o[i] = EXPR;                                                                 \
+        }                                                                                \
+    }
+
+#if defined(SETAE_SIMD_NEON)
+#define VEC_F64(OPI)                                                                     \
+    if (vec_b) {                                                                         \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            vst1q_f64(o + i, OPI(vld1q_f64(xa + i), vld1q_f64(xb + i)));                 \
+        }                                                                                \
+    } else {                                                                             \
+        float64x2_t vb = vdupq_n_f64(sb);                                                \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            vst1q_f64(o + i, OPI(vld1q_f64(xa + i), vb));                                \
+        }                                                                                \
+    }
+FAST_F64(f64_add, x + y, VEC_F64(vaddq_f64))
+FAST_F64(f64_sub, x - y, VEC_F64(vsubq_f64))
+FAST_F64(f64_mul, x *y, VEC_F64(vmulq_f64))
+FAST_F64(f64_div, x / y, VEC_F64(vdivq_f64))
+#elif defined(SETAE_SIMD_SSE2)
+#define VEC_F64(OPI)                                                                     \
+    if (vec_b) {                                                                         \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            _mm_storeu_pd(o + i, OPI(_mm_loadu_pd(xa + i), _mm_loadu_pd(xb + i)));       \
+        }                                                                                \
+    } else {                                                                             \
+        __m128d vb = _mm_set1_pd(sb);                                                    \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            _mm_storeu_pd(o + i, OPI(_mm_loadu_pd(xa + i), vb));                         \
+        }                                                                                \
+    }
+FAST_F64(f64_add, x + y, VEC_F64(_mm_add_pd))
+FAST_F64(f64_sub, x - y, VEC_F64(_mm_sub_pd))
+FAST_F64(f64_mul, x *y, VEC_F64(_mm_mul_pd))
+FAST_F64(f64_div, x / y, VEC_F64(_mm_div_pd))
+#else
+FAST_F64(f64_add, x + y, )
+FAST_F64(f64_sub, x - y, )
+FAST_F64(f64_mul, x *y, )
+FAST_F64(f64_div, x / y, )
+#endif
+
+#define FAST_I64(NAME, EXPR, VEXPR)                                                      \
+    static void NAME(const int64_t *xa, const int64_t *xb, int64_t sb, int64_t *o,       \
+                     size_t start, size_t end, int vec_b) {                              \
+        size_t i = start;                                                                \
+        VEXPR                                                                            \
+        for (; i < end; i++) {                                                           \
+            int64_t x = xa[i];                                                           \
+            int64_t y = vec_b ? xb[i] : sb;                                              \
+            o[i] = EXPR;                                                                 \
+        }                                                                                \
+    }
+
+#if defined(SETAE_SIMD_NEON)
+#define VEC_I64(OPI)                                                                     \
+    if (vec_b) {                                                                         \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            vst1q_s64(o + i, OPI(vld1q_s64(xa + i), vld1q_s64(xb + i)));                 \
+        }                                                                                \
+    } else {                                                                             \
+        int64x2_t vb = vdupq_n_s64(sb);                                                  \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            vst1q_s64(o + i, OPI(vld1q_s64(xa + i), vb));                                \
+        }                                                                                \
+    }
+FAST_I64(i64_add, x + y, VEC_I64(vaddq_s64))
+FAST_I64(i64_sub, x - y, VEC_I64(vsubq_s64))
+#elif defined(SETAE_SIMD_SSE2)
+#define VEC_I64(OPI)                                                                     \
+    if (vec_b) {                                                                         \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            _mm_storeu_si128((__m128i *)(o + i),                                         \
+                             OPI(_mm_loadu_si128((const __m128i *)(xa + i)),             \
+                                 _mm_loadu_si128((const __m128i *)(xb + i))));           \
+        }                                                                                \
+    } else {                                                                             \
+        __m128i vb = _mm_set1_epi64x(sb);                                                \
+        for (; i + 2 <= end; i += 2) {                                                   \
+            _mm_storeu_si128((__m128i *)(o + i),                                         \
+                             OPI(_mm_loadu_si128((const __m128i *)(xa + i)), vb));       \
+        }                                                                                \
+    }
+FAST_I64(i64_add, x + y, VEC_I64(_mm_add_epi64))
+FAST_I64(i64_sub, x - y, VEC_I64(_mm_sub_epi64))
+#else
+FAST_I64(i64_add, x + y, )
+FAST_I64(i64_sub, x - y, )
+#endif
+
+FAST_I64(i64_mul, x *y, )
+
+static int kernel_fast(KernelCtx *c, size_t start, size_t end) {
+    int swap = !c->aa && c->ba && (c->op == BIN_ADD || c->op == BIN_MUL);
+    int lhs_arr = c->aa || swap;
+    const void *lhs_data = swap ? c->db : c->da;
+    uint32_t lhs_off = swap ? c->ob : c->oa;
+    uint8_t lhs_dtype = swap ? c->cb : c->ca;
+    int rhs_arr = swap ? 0 : c->ba;
+    const void *rhs_data = c->db;
+    uint32_t rhs_off = c->ob;
+    uint8_t rhs_dtype = swap ? c->ca : c->cb;
+    double rhs_f = swap ? c->sa : c->sb;
+    int64_t rhs_i = swap ? c->ia : c->ib;
+
+    if (c->rd == DTYPE_F64 && lhs_arr && lhs_dtype == DTYPE_F64 &&
+        (!rhs_arr || rhs_dtype == DTYPE_F64)) {
+        const double *xa = (const double *)lhs_data + lhs_off;
+        const double *xb = rhs_arr ? (const double *)rhs_data + rhs_off : NULL;
+        double *o = c->out;
+        switch (c->op) {
+        case BIN_ADD:
+            f64_add(xa, xb, rhs_f, o, start, end, rhs_arr);
+            return 1;
+        case BIN_SUB:
+            f64_sub(xa, xb, rhs_f, o, start, end, rhs_arr);
+            return 1;
+        case BIN_MUL:
+            f64_mul(xa, xb, rhs_f, o, start, end, rhs_arr);
+            return 1;
+        case BIN_DIV:
+            f64_div(xa, xb, rhs_f, o, start, end, rhs_arr);
+            return 1;
+        default:
+            return 0;
+        }
+    }
+    if (c->rd == DTYPE_I64 && lhs_arr && lhs_dtype == DTYPE_I64 &&
+        (!rhs_arr || rhs_dtype == DTYPE_I64)) {
+        const int64_t *xa = (const int64_t *)lhs_data + lhs_off;
+        const int64_t *xb = rhs_arr ? (const int64_t *)rhs_data + rhs_off : NULL;
+        int64_t *o = c->out;
+        switch (c->op) {
+        case BIN_ADD:
+            i64_add(xa, xb, rhs_i, o, start, end, rhs_arr);
+            return 1;
+        case BIN_SUB:
+            i64_sub(xa, xb, rhs_i, o, start, end, rhs_arr);
+            return 1;
+        case BIN_MUL:
+            i64_mul(xa, xb, rhs_i, o, start, end, rhs_arr);
+            return 1;
+        default:
+            return 0;
+        }
+    }
+    return 0;
+}
+
 static void kernel_float(void *vctx, size_t start, size_t end) {
     KernelCtx *c = vctx;
+    if (kernel_fast(c, start, end)) {
+        return;
+    }
     for (size_t i = start; i < end; i++) {
         double x = c->aa ? elem_double(c->da, c->ca, c->oa + i) : c->sa;
         double y = c->ba ? elem_double(c->db, c->cb, c->ob + i) : c->sb;
@@ -316,6 +485,9 @@ static void kernel_float(void *vctx, size_t start, size_t end) {
 
 static void kernel_int(void *vctx, size_t start, size_t end) {
     KernelCtx *c = vctx;
+    if (kernel_fast(c, start, end)) {
+        return;
+    }
     for (size_t i = start; i < end; i++) {
         int64_t x = c->aa ? elem_i64(c->da, c->ca, c->oa + i) : c->ia;
         int64_t y = c->ba ? elem_i64(c->db, c->cb, c->ob + i) : c->ib;
