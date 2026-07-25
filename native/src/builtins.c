@@ -650,14 +650,17 @@ SetaeValue setae_format_spec(SetaeVM *vm, SetaeValue v, SetaeValue specv, int co
             pre[pi++] = '0';
             pre[pi++] = type == 'X' ? 'X' : type == 'b' ? 'b' : type == 'o' ? 'o' : 'x';
         }
-        char sd[210];
-        int sdi = 0;
+        char lead[12];
+        size_t li = 0;
+        const char *sg = sign_str(neg, f.sign);
+        size_t sgl = strlen(sg);
+        memcpy(lead, sg, sgl);
+        li += sgl;
         for (int k = 0; k < pi; k++) {
-            sd[sdi++] = pre[k];
+            lead[li++] = pre[k];
         }
-        memcpy(sd + sdi, grouped, glen);
-        sdi += (int)glen;
-        return apply_field(vm, sign_str(neg, f.sign), sd, (size_t)sdi, &f, '>');
+        lead[li] = '\0';
+        return apply_field(vm, lead, grouped, glen, &f, '>');
     }
 
     double d = setae_is_float(v) ? setae_to_float(v)
@@ -1372,27 +1375,8 @@ static SetaeValue builtin_chr(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_none();
     }
     char buf[4];
-    int n;
-    if (cp < 0x80) {
-        buf[0] = (char)cp;
-        n = 1;
-    } else if (cp < 0x800) {
-        buf[0] = (char)(0xc0 | (cp >> 6));
-        buf[1] = (char)(0x80 | (cp & 0x3f));
-        n = 2;
-    } else if (cp < 0x10000) {
-        buf[0] = (char)(0xe0 | (cp >> 12));
-        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
-        buf[2] = (char)(0x80 | (cp & 0x3f));
-        n = 3;
-    } else {
-        buf[0] = (char)(0xf0 | (cp >> 18));
-        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
-        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
-        buf[3] = (char)(0x80 | (cp & 0x3f));
-        n = 4;
-    }
-    return setae_str_new(vm->heap, buf, (size_t)n);
+    size_t n = setae_utf8_encode((uint32_t)cp, buf);
+    return setae_str_new(vm->heap, buf, n);
 }
 
 static SetaeValue int_base(SetaeVM *vm, SetaeValue *args, int nargs, int base,
