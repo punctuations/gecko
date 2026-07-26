@@ -570,6 +570,27 @@ const SetaeCode *setae_func_code(SetaeValue func) {
     return ((SetaeFunc *)setae_to_ptr(func))->code;
 }
 
+uint32_t setae_func_nfree(SetaeValue func) {
+    return ((SetaeFunc *)setae_to_ptr(func))->nfree;
+}
+
+SetaeValue setae_func_free_value(SetaeValue func, uint32_t i) {
+    SetaeFunc *f = setae_to_ptr(func);
+    if (i >= f->nfree) {
+        return setae_none();
+    }
+    SetaeCell *c = setae_to_ptr(f->cells[i]);
+    return c->value == 0 ? setae_none() : c->value;
+}
+
+void setae_func_set_free(SetaeValue func, uint32_t i, SetaeValue v) {
+    SetaeFunc *f = setae_to_ptr(func);
+    if (i >= f->nfree) {
+        return;
+    }
+    ((SetaeCell *)setae_to_ptr(f->cells[i]))->value = v;
+}
+
 void setae_bytes_free(uint8_t *p) {
     free(p);
 }

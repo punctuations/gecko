@@ -101,6 +101,9 @@ unsafe extern "C" {
     pub fn setae_set_subject_drop(f: extern "C" fn(*mut std::ffi::c_void));
     pub fn setae_code_serialize(c: *const SetaeCode, len_out: *mut usize) -> *mut u8;
     pub fn setae_func_code(func: SetaeValue) -> *const SetaeCode;
+    pub fn setae_func_nfree(func: SetaeValue) -> u32;
+    pub fn setae_func_free_value(func: SetaeValue, i: u32) -> SetaeValue;
+    pub fn setae_func_set_free(func: SetaeValue, i: u32, v: SetaeValue);
     pub fn setae_bytes_free(p: *mut u8);
     pub fn setae_set_subject_clone(
         f: extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
@@ -829,6 +832,27 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
         let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
         setae_bytes_free(ptr);
 
+        let nfree = setae_func_nfree(handle);
+        let mut frees: Vec<MsgPtr> = Vec::new();
+        for i in 0..nfree {
+            let cv = setae_func_free_value(handle, i);
+            let m = setae_msg_read(vm, cv);
+            if m.is_null() {
+                for f in frees {
+                    setae_msg_free(f.0);
+                }
+                setae_vm_clear_error(vm);
+                let k = CString::new("TypeError").unwrap();
+                let msg = CString::new(
+                    "spawn() handler captures a value that cannot cross an actor boundary",
+                )
+                .unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), msg.as_ptr());
+                return setae_none();
+            }
+            frees.push(MsgPtr(m));
+        }
+
         let heap = setae_vm_heap(vm);
         let extras = setae_list_new(heap, 0);
         if argc >= 3 {
@@ -897,7 +921,7 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             }
         }
 
-        let run = match build_actor(bytes, init, globals) {
+        let run = match build_actor(bytes, init, globals, frees) {
             Some(r) => r,
             None => {
                 let k = CString::new("RuntimeError").unwrap();
@@ -939,25 +963,31 @@ fn free_globals(globals: Vec<GlobalItem>) {
 }
 
 fn wrapper_code(inner: bytecode::Code) -> bytecode::Code {
+    let nfrees = inner.nfrees;
+    let mut ops: Vec<bytecode::Instr> = (0..nfrees)
+        .map(|i| bytecode::Instr {
+            op: bytecode::Op::LoadClosure,
+            arg: i,
+        })
+        .collect();
+    ops.push(bytecode::Instr {
+        op: bytecode::Op::MakeFunction,
+        arg: 0,
+    });
+    ops.push(bytecode::Instr {
+        op: bytecode::Op::Return,
+        arg: 0,
+    });
     bytecode::Code {
         name: String::new(),
         consts: Vec::new(),
         names: Vec::new(),
-        ops: vec![
-            bytecode::Instr {
-                op: bytecode::Op::MakeFunction,
-                arg: 0,
-            },
-            bytecode::Instr {
-                op: bytecode::Op::Return,
-                arg: 0,
-            },
-        ],
+        ops,
         excs: Vec::new(),
         nlocals: 0,
         nparams: 0,
         ndefaults: 0,
-        ncells: 0,
+        ncells: nfrees,
         nfrees: 0,
         param_names: Vec::new(),
         varargs: false,
@@ -979,7 +1009,12 @@ fn build_function(child: &mut Vm, bytes: &[u8]) -> Option<SetaeValue> {
     Some(run.result)
 }
 
-fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg, globals: Vec<GlobalItem>) -> Option<ActorRun> {
+fn build_actor(
+    bytes: Vec<u8>,
+    init: *mut SetaeMsg,
+    globals: Vec<GlobalItem>,
+    frees: Vec<MsgPtr>,
+) -> Option<ActorRun> {
     let mut child = Vm::new();
     child.enable_actors();
     let handle = match build_function(&mut child, &bytes) {
@@ -987,9 +1022,20 @@ fn build_actor(bytes: Vec<u8>, init: *mut SetaeMsg, globals: Vec<GlobalItem>) ->
         None => {
             unsafe { setae_msg_free(init) };
             free_globals(globals);
+            for f in frees {
+                unsafe { setae_msg_free(f.0) };
+            }
             return None;
         }
     };
+
+    unsafe {
+        for (i, f) in frees.into_iter().enumerate() {
+            let v = setae_msg_write(child.vm, f.0);
+            setae_msg_free(f.0);
+            setae_func_set_free(handle, i as u32, v);
+        }
+    }
 
     unsafe {
         set_root(child.vm, "actor", setae_gecko_actor_module(child.vm));
@@ -1775,7 +1821,7 @@ mod machine_tests {
             let init = setae_msg_read(driver.vm, pack);
             assert!(!init.is_null(), "init pack is sendable");
 
-            let run = build_actor(bytes, init, Vec::new()).expect("actor built");
+            let run = build_actor(bytes, init, Vec::new(), Vec::new()).expect("actor built");
             let actor = Arc::new(Actor {
                 inbox: Mutex::new(VecDeque::new()),
                 space: Condvar::new(),

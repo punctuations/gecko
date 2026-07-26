@@ -246,6 +246,9 @@ void setae_vm_pop_tmp(SetaeVM *vm);
 
 uint8_t *setae_code_serialize(const SetaeCode *c, size_t *len_out);
 const SetaeCode *setae_func_code(SetaeValue func);
+uint32_t setae_func_nfree(SetaeValue func);
+SetaeValue setae_func_free_value(SetaeValue func, uint32_t i);
+void setae_func_set_free(SetaeValue func, uint32_t i, SetaeValue v);
 void setae_bytes_free(uint8_t *p);
 uint32_t setae_tuple_len(SetaeValue tv);
 SetaeValue setae_tuple_get(SetaeValue tv, uint32_t i);

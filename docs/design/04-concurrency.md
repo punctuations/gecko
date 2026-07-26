@@ -190,8 +190,15 @@ module constants, and recurse by its own name, and a supervisor can `spawn` a
 worker whose handler is just another top-level function. Names that are not
 transferable, a class, a module, an instance, or a function that captures free
 variables, are skipped, so a handler that reaches for one still raises NameError
-in the child. The handler itself must be a plain top-level function with no free
-variables; transferring a closure's captured cells is the remaining step.
+in the child.
+
+The handler may be a closure. Its captured cells travel with it: each captured
+value is copied by the same rules a message follows, and the child rebuilds the
+cells around the transferred code, so `actor.spawn(state, make_handler(config))`
+works and two actors built from the same factory get independent captures. A
+capture the copy rules reject, a function or a class, raises TypeError at the
+spawn rather than failing later in the child. Because captures are copied and not
+shared, a later mutation in the parent is not visible to the actor.
 
 ### Isolates on threads
 
@@ -280,7 +287,6 @@ behavior is pinned down, so a program written against the API will run on both.
 
 ## Open
 
-- Transferring a handler that captures free variables (a closure) or references a
-  class, so spawn takes any function and not only a top-level one that reaches
-  only functions and data.
+- Transferring a handler that references a class, so spawn takes a function whose
+  captures or globals include one.
 - A restart policy and failure trees on top of the monitor primitive.

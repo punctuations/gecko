@@ -1092,7 +1092,9 @@ static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
         if (setae_call_special(vm, container, "__contains__", &x, 1, &r)) {
             return vm->error ? 0 : setae_truthy_vm(vm, r);
         }
-        break;
+        setae_vm_raise(vm, "TypeError", "argument of type '%s' is not iterable",
+                       setae_type_name(container));
+        return 0;
     }
     case SETAE_T_LIST: {
         SetaeList *l = setae_to_ptr(container);
@@ -1172,9 +1174,6 @@ static int set_is_subset(SetaeSet *sa, SetaeSet *sb) {
 }
 
 int setae_truthy_vm(SetaeVM *vm, SetaeValue v) {
-    if (setae_obj_type(v) != SETAE_T_INSTANCE) {
-        return truthy(v);
-    }
     if (setae_obj_type(v) == SETAE_T_INSTANCE) {
         int t = truthy_obj(vm, v);
         if (t >= 0) {

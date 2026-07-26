@@ -1134,6 +1134,15 @@ mod tests {
     }
 
     #[test]
+    fn spawn_transfers_closures() {
+        let src = "from gecko import actor\n\ndef make_adder(base, label):\n    def handle(state, message):\n        message[1].send(label + str(base + message[0]))\n        return state\n    return handle\n\na = actor.spawn(0, make_adder(100, \"sum=\"))\nb = actor.spawn(0, make_adder(1000, \"big=\"))\nprint(a.call(lambda r: [5, r], 2000))\nprint(b.call(lambda r: [1, r], 2000))\nprint(a.call(lambda r: [2, r], 2000))\n\ndef uses(d):\n    def handle(state, message):\n        message[0].send(len(d))\n        return state\n    return handle\n\ndata = [1, 2]\nh = actor.spawn(0, uses(data))\nprint(h.call(lambda r: [r], 2000))\ndata.append(3)\nprint(h.call(lambda r: [r], 2000), len(data))\n\ndef bad():\n    helper = lambda x: x\n    def handle(state, message):\n        message[0].send(helper(1))\n        return state\n    return handle\n\ntry:\n    actor.spawn(0, bad())\n    print('spawned')\nexcept TypeError:\n    print('TypeError')\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "sum=105\nbig=1001\nsum=102\n2\n2 3\nTypeError\n"
+        );
+    }
+
+    #[test]
     fn special_methods() {
         let src = "class V:\n    def __init__(self, n): self.n = n\n    def __repr__(self): return \"V(\" + str(self.n) + \")\"\n    def __str__(self): return \"v\" + str(self.n)\n    def __add__(self, o): return V(self.n + o.n)\n    def __radd__(self, o): return V(o + self.n)\n    def __mul__(self, o): return V(self.n * o)\n    def __neg__(self): return V(-self.n)\n    def __abs__(self): return V(abs(self.n))\n    def __len__(self): return self.n\n    def __bool__(self): return self.n != 0\n    def __eq__(self, o): return self.n == o.n\n    def __lt__(self, o): return self.n < o.n\n    def __le__(self, o): return self.n <= o.n\n    def __gt__(self, o): return self.n > o.n\n    def __ge__(self, o): return self.n >= o.n\n    def __hash__(self): return self.n * 7\n    def __call__(self, k): return self.n + k\n    def __contains__(self, x): return x == self.n\n\nclass Box:\n    def __init__(self): self.d = {}\n    def __getitem__(self, k): return self.d[k]\n    def __setitem__(self, k, v): self.d[k] = v\n    def __len__(self): return len(self.d)\n\nclass Count:\n    def __init__(self, n): self.n = n\n    def __iter__(self): return iter([i * i for i in range(self.n)])\n\na, b = V(3), V(4)\nprint(a, repr(a), [a], str(a))\nprint(a + b, 10 + a, a * 5, -a, abs(V(-9)))\nprint(len(a), bool(a), bool(V(0)))\nprint(a == V(3), a != V(3), a < b, a > b, a <= V(3), a >= b)\nprint(hash(a), a(10), 3 in a, 8 in a)\nbox = Box()\nbox[\"k\"] = 1\nbox[\"j\"] = 2\nprint(box[\"k\"], box[\"j\"], len(box))\nprint([x for x in Count(5)])\nfor x in Count(3):\n    print(x)\nprint(sorted([V(5), V(1), V(3)]))\n";
         assert_eq!(
