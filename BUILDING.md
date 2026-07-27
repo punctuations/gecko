@@ -65,7 +65,7 @@ rustup toolchain install nightly --component rust-src
 ./target/release/gecko build examples/fib.py -o fib
 ```
 
-That runner is about 268 KB, so a frozen program lands near 268 KB plus its
+That runner is about 265 KB, so a frozen program lands near 265 KB plus its
 bytecode. CI holds it under 300 KiB, and the margin is thin, so a change that
 adds much to the runtime will trip that gate.
 

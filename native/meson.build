@@ -4,6 +4,7 @@ project('gecko-runtime', 'c',
     'c_std=c11',
     'default_library=static',
     'warning_level=2',
+    'b_lto=true',
   ])
 
 inc = include_directories('include')

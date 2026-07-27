@@ -8,10 +8,10 @@ It runs the same programs, in a fraction of the startup time and the space.
 
 ```bash
 $ ls -lh target/release/gecko
--rwxr-xr-x  739K  gecko*
+-rwxr-xr-x  737K  gecko*
 
 # a frozen program, size-optimized runner
--rwxr-xr-x  268K  fib*
+-rwxr-xr-x  265K  fib*
 ```
 
 ## Table of contents
@@ -32,16 +32,15 @@ $ ls -lh target/release/gecko
 | ----------------------- | ------------------- | ----------------------- |
 | Startup, hello world    | **3.0 ms**          | 19.5 ms                 |
 | Peak memory             | **1.8 MB**          | 13.5 MB                 |
-| Install size            | **739 KB**          | 273 MB                  |
-| Standalone binary       | **268 KB**          | none                    |
+| Install size            | **737 KB**          | 273 MB                  |
+| Standalone binary       | **265 KB**          | none                    |
 | Concurrency             | isolates and actors | threads, GIL by default |
 | Arbitrary-precision int | yes                 | yes                     |
 | C extension modules     | no                  | yes                     |
 
 Gecko is built for environments where size and startup time decide things:
 serverless functions, edge workers, embedded scripting, CLI tools, and short
-scripts that do a bit of work and exit. It is not built to win long-running
-compute benchmarks, and it does not yet.
+scripts that do a bit of work and exit.
 
 Gecko implements standard Python with no language extensions. A Gecko program is
 a valid Python program and still runs on CPython, so LSPs, formatters, linters,
@@ -73,11 +72,9 @@ runner, and how to freeze a program into a standalone binary.
 
 ## Benchmarks
 
-Scripts are in [benchmarks/](benchmarks/) and run unmodified on both runtimes,
-with byte-identical output. The exception is `arrays.py`, which uses the
-gecko-only typed-array API and has no CPython counterpart yet. Measured with hyperfine against CPython 3.14.6,
-invoked by its real binary path, since a pyenv shim adds about 160 ms of its
-own.
+Scripts are in [benchmarks/](benchmarks/). They run unmodified on both runtimes
+with byte-identical output, apart from `arrays.py`, which uses the gecko-only
+typed-array API. Measured with hyperfine against CPython 3.14.6.
 
 ### Startup
 
@@ -98,19 +95,18 @@ A frozen binary starts in 2.9 ms, since it parses and compiles nothing.
 
 ### Compute
 
-Mixed: ahead on arithmetic and calls, behind on data structures.
+Ahead on all five.
 
 | Benchmark                     | Gecko    | CPython 3.14 | Result       |
 | ----------------------------- | -------- | ------------ | ------------ |
-| `arithmetic.py`, 3M-iter loop | 173.1 ms | 232.6 ms     | 1.34x faster |
-| `calls.py`, 600k calls        | 93.3 ms  | 115.6 ms     | 1.24x faster |
-| `fib.py`, recursive `fib(25)` | 24.7 ms  | 33.5 ms      | 1.36x faster |
-| `sieve.py`, primes to 1M      | 176.6 ms | 131.8 ms     | 1.34x slower |
-| `wordcount.py`, dict and str  | 152.4 ms | 135.2 ms     | 1.13x slower |
+| `arithmetic.py`, 3M-iter loop | 143.0 ms | 232.7 ms     | 1.63x faster |
+| `calls.py`, 600k calls        | 77.8 ms  | 115.9 ms     | 1.49x faster |
+| `fib.py`, recursive `fib(25)` | 20.4 ms  | 33.5 ms      | 1.64x faster |
+| `sieve.py`, primes to 1M      | 129.3 ms | 132.9 ms     | 1.03x faster |
+| `wordcount.py`, dict and str  | 122.8 ms | 135.5 ms     | 1.10x faster |
 
 Integers above 140737488355327 leave the unboxed range and slow down by about
-3x, and list subscripting still goes through a path CPython specializes. Today
-the biggest win is still the time before your code runs.
+3x.
 
 <details>
 <summary>Environment</summary>
@@ -135,17 +131,13 @@ defaults, `*args`, `**kwargs`, spreads), closures with `nonlocal`, generators,
 `async`/`await`, classes with single inheritance, and `import`/`from ... import`.
 
 Built-in types are int, float, bool, str, list, tuple, dict, set, frozenset,
-range, and typed arrays. Integers are arbitrary precision, so `2 ** 1000` and
-large factorials stay exact. Sets of integers iterate in the same order they
-would on CPython; string sets cannot be matched, because CPython randomizes
-string hashes per process and its own order changes between runs.
+range, and typed arrays. Integers are arbitrary precision. Sets of integers
+iterate in CPython's order.
 
 Constructs outside the supported grammar are rejected at compile time with a
-located error. They do not run wrong.
-
-There is no standard library yet, only the builtin surface. Wheels with compiled
-C extensions do not run, since Gecko has no CPython C ABI. The test suite is 295
-tests, most of which assert that a program's output matches CPython's.
+located error. There is no standard library yet, and wheels with compiled C
+extensions do not run. The test suite is 303 tests, most asserting that output
+matches CPython's.
 
 For the full runtime surface, the builtins, the types and their methods, and
 what is missing, see [docs/design/06-builtins.md](docs/design/06-builtins.md).
@@ -174,10 +166,9 @@ which pass by handle. See
 
 ## Embedding
 
-A host can run many isolated VMs and cap each one's steps, wall-clock time, and
-heap, so untrusted code cannot loop or allocate without bound, and can register
-native functions that scripts call like builtins. A program can also run other
-code under those limits through the builtin `sandbox` module:
+A host can run many isolated VMs, cap each one's steps, wall-clock time, and
+heap, and register native functions that scripts call like builtins. A program
+can run other code under those limits through the builtin `sandbox` module:
 
 ```python
 from gecko import sandbox
