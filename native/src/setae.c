@@ -388,10 +388,19 @@ static SetaeValue from_i64(SetaeVM *vm, int64_t i) {
     return setae_int_from_i64(vm->heap, i);
 }
 
+static int instance_special(SetaeValue obj, const char *name, SetaeValue *out);
+
 static int hashable(SetaeValue v) {
     int t = setae_obj_type(v);
     if (t == SETAE_T_LIST || t == SETAE_T_DICT) {
         return 0;
+    }
+    if (t == SETAE_T_INSTANCE) {
+        SetaeValue m;
+        if (instance_special(v, "__hash__", &m)) {
+            return 1;
+        }
+        return !instance_special(v, "__eq__", &m);
     }
     if (t == SETAE_T_SET) {
         return ((SetaeSet *)setae_to_ptr(v))->frozen;
@@ -411,8 +420,9 @@ static int64_t dict_find(const SetaeDict *d, SetaeValue key) {
     if (d->index != NULL) {
         return setae_dict_index_get(d, key);
     }
+    uint64_t h = setae_value_hash(key);
     for (uint32_t i = 0; i < d->len; i++) {
-        if (setae_value_eq(d->entries[i].key, key)) {
+        if (d->entries[i].hash == h && setae_value_eq(d->entries[i].key, key)) {
             return (int64_t)i;
         }
     }
@@ -466,7 +476,6 @@ static int class_lookup(SetaeValue cls, const char *name, SetaeValue *out) {
     return 0;
 }
 
-static int instance_special(SetaeValue obj, const char *name, SetaeValue *out);
 
 static void attr_error(SetaeVM *vm, SetaeValue obj, const char *name) {
     if (setae_obj_type(obj) == SETAE_T_INSTANCE) {
@@ -1955,7 +1964,11 @@ int setae_call_special(SetaeVM *vm, SetaeValue obj, const char *name, SetaeValue
 }
 
 SetaeValue setae_call(SetaeVM *vm, SetaeValue callee, SetaeValue *args, int nargs) {
-    return call_value(vm, callee, args, nargs, 0);
+    SetaeVM *saved = setae_active_vm();
+    setae_set_active_vm(vm);
+    SetaeValue r = call_value(vm, callee, args, nargs, 0);
+    setae_set_active_vm(saved);
+    return r;
 }
 
 static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
@@ -3901,6 +3914,7 @@ SetaeValue setae_iter_collect(SetaeVM *vm, SetaeValue v) {
 }
 
 SetaeValue setae_vm_run(SetaeVM *vm, SetaeCode *code) {
+    setae_set_active_vm(vm);
     attach_code(vm, code);
     vm->root = code;
     uint32_t nm = setae_code_nmodules(code);

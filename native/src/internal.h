@@ -13,6 +13,7 @@ typedef struct SetaeList {
 typedef struct SetaeDictEntry {
     SetaeValue key;
     SetaeValue value;
+    uint64_t hash;
 } SetaeDictEntry;
 
 typedef struct SetaeDict {
@@ -340,6 +341,8 @@ SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v);
 int setae_iter_advance(SetaeVM *vm, SetaeValue it, SetaeValue *out);
 int setae_truthy(SetaeValue v);
 int setae_truthy_vm(SetaeVM *vm, SetaeValue v);
+SetaeVM *setae_active_vm(void);
+void setae_set_active_vm(SetaeVM *vm);
 int setae_call_special(SetaeVM *vm, SetaeValue obj, const char *name, SetaeValue *args,
                        int nargs, SetaeValue *out);
 int setae_value_lt(SetaeVM *vm, SetaeValue a, SetaeValue b);

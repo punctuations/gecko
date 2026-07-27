@@ -71,8 +71,8 @@ Iteration is in insertion order, matching CPython.
 `add`, `discard`, `remove`, `pop`, `clear`, `copy`, `union`, `update`,
 `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`,
 `isdisjoint`. The operators `|`, `&`, `-`, `^` and the subset comparisons
-(`<`, `<=`, `>`, `>=`) work too. Sets iterate in CPython's order, not insertion
-order; see [01-object-model.md](01-object-model.md) for how that is matched and
+(`<`, `<=`, `>`, `>=`) work too. Sets of integers iterate in CPython's order, not
+insertion order; see [01-object-model.md](01-object-model.md) for how that is matched and
 the one large-literal boundary where it is not. A frozenset is hashable, so it
 can be a dict key or a set element, and its mutating methods raise.
 

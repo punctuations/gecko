@@ -179,6 +179,7 @@ void setae_dict_push(SetaeDict *d, SetaeValue key, SetaeValue value) {
     }
     d->entries[d->len].key = key;
     d->entries[d->len].value = value;
+    d->entries[d->len].hash = setae_value_hash(key);
     d->len++;
     setae_dict_index_add(d, d->len - 1);
 }

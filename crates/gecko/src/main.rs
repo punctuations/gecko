@@ -1134,6 +1134,15 @@ mod tests {
     }
 
     #[test]
+    fn dict_keys_use_hash_and_eq() {
+        let src = "class V:\n    def __init__(self, k): self.k = k\n    def __eq__(self, o): return self.k == o.k\n    def __hash__(self): return self.k % 7\n\nd = {}\nfor i in range(200):\n    d[V(i % 5)] = 1\n    d['s' + str(i % 3)] = 2\nprint(len(d), sorted(d.values()))\nd2 = {}\nd2[V(1)] = 'a'\nd2[V(1)] = 'b'\nprint(len(d2), list(d2.values()))\nprint(V(1) in d2, V(9) in d2)\nprint(len({V(1), V(1), V(3)}))\n\nclass E:\n    def __init__(self, v): self.v = v\n    def __eq__(self, o): return True\ntry:\n    {E(1): 1}\n    print('hashable')\nexcept TypeError:\n    print('unhashable')\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "8 [1, 1, 1, 1, 1, 2, 2, 2]\n1 ['b']\nTrue False\n2\nunhashable\n"
+        );
+    }
+
+    #[test]
     fn supervise_restarts_a_failing_child() {
         let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == 'boom':\n        raise ValueError('crash')\n    message[1].send(state + message[0])\n    return state + message[0]\n\nsup = actor.supervise(0, handle, None, 2, 60000)\nprint(sup.call(lambda r: [5, r], 2000))\nprint(sup.call(lambda r: [7, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\nprint(sup.call(lambda r: [1, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\nprint(sup.call(lambda r: [1, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\ntry:\n    sup.call(lambda r: [1, r], 2000)\n    print('alive')\nexcept RuntimeError:\n    print('exhausted')\n";
         assert_eq!(

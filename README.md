@@ -8,10 +8,10 @@ It runs the same programs, in a fraction of the startup time and the space.
 
 ```bash
 $ ls -lh target/release/gecko
--rwxr-xr-x  723K  gecko*
+-rwxr-xr-x  739K  gecko*
 
 # a frozen program, size-optimized runner
--rwxr-xr-x  235K  fib*
+-rwxr-xr-x  268K  fib*
 ```
 
 ## Table of contents
@@ -32,8 +32,8 @@ $ ls -lh target/release/gecko
 | ----------------------- | ------------------- | ----------------------- |
 | Startup, hello world    | **3.0 ms**          | 19.5 ms                 |
 | Peak memory             | **1.8 MB**          | 13.5 MB                 |
-| Install size            | **723 KB**          | 273 MB                  |
-| Standalone binary       | **235 KB**          | none                    |
+| Install size            | **739 KB**          | 273 MB                  |
+| Standalone binary       | **268 KB**          | none                    |
 | Concurrency             | isolates and actors | threads, GIL by default |
 | Arbitrary-precision int | yes                 | yes                     |
 | C extension modules     | no                  | yes                     |
@@ -102,15 +102,15 @@ Mixed: ahead on arithmetic and calls, behind on data structures.
 
 | Benchmark                     | Gecko    | CPython 3.14 | Result       |
 | ----------------------------- | -------- | ------------ | ------------ |
-| `arithmetic.py`, 3M-iter loop | 178.8 ms | 233.5 ms     | 1.31x faster |
-| `calls.py`, 600k calls        | 92.1 ms  | 116.5 ms     | 1.26x faster |
-| `fib.py`, recursive `fib(25)` | 24.2 ms  | 34.0 ms      | 1.40x faster |
-| `sieve.py`, primes to 1M      | 172.3 ms | 138.7 ms     | 1.24x slower |
-| `wordcount.py`, dict and str  | 241.2 ms | 137.7 ms     | 1.75x slower |
+| `arithmetic.py`, 3M-iter loop | 173.1 ms | 232.6 ms     | 1.34x faster |
+| `calls.py`, 600k calls        | 93.3 ms  | 115.6 ms     | 1.24x faster |
+| `fib.py`, recursive `fib(25)` | 24.7 ms  | 33.5 ms      | 1.36x faster |
+| `sieve.py`, primes to 1M      | 176.6 ms | 131.8 ms     | 1.34x slower |
+| `wordcount.py`, dict and str  | 152.4 ms | 135.2 ms     | 1.13x slower |
 
 Integers above 140737488355327 leave the unboxed range and slow down by about
-3x, and dict lookups rehash string keys where CPython caches the hash. Today the
-biggest win is still the time before your code runs.
+3x, and list subscripting still goes through a path CPython specializes. Today
+the biggest win is still the time before your code runs.
 
 <details>
 <summary>Environment</summary>
@@ -136,8 +136,9 @@ defaults, `*args`, `**kwargs`, spreads), closures with `nonlocal`, generators,
 
 Built-in types are int, float, bool, str, list, tuple, dict, set, frozenset,
 range, and typed arrays. Integers are arbitrary precision, so `2 ** 1000` and
-large factorials stay exact. Sets iterate in the same order they would on
-CPython.
+large factorials stay exact. Sets of integers iterate in the same order they
+would on CPython; string sets cannot be matched, because CPython randomizes
+string hashes per process and its own order changes between runs.
 
 Constructs outside the supported grammar are rejected at compile time with a
 located error. They do not run wrong.

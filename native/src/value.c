@@ -1,5 +1,15 @@
 #include "internal.h"
 
+static _Thread_local SetaeVM *g_active_vm = NULL;
+
+SetaeVM *setae_active_vm(void) {
+    return g_active_vm;
+}
+
+void setae_set_active_vm(SetaeVM *vm) {
+    g_active_vm = vm;
+}
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -194,6 +204,19 @@ int setae_value_eq(SetaeValue a, SetaeValue b) {
     if (setae_is_int(a) && setae_is_int(b)) {
         return setae_to_int(a) == setae_to_int(b);
     }
+    if (setae_obj_type(a) == SETAE_T_INSTANCE || setae_obj_type(b) == SETAE_T_INSTANCE) {
+        SetaeVM *vm = g_active_vm;
+        SetaeValue r;
+        if (vm != NULL) {
+            if (setae_call_special(vm, a, "__eq__", &b, 1, &r)) {
+                return setae_truthy_vm(vm, r);
+            }
+            if (setae_call_special(vm, b, "__eq__", &a, 1, &r)) {
+                return setae_truthy_vm(vm, r);
+            }
+        }
+        return a == b;
+    }
     int ai = setae_is_integer(a);
     int bi = setae_is_integer(b);
     if (ai && bi) {
@@ -326,6 +349,15 @@ uint64_t setae_value_hash(SetaeValue v) {
         return hash_u64(f64_bits(f));
     }
     int t = setae_obj_type(v);
+    if (t == SETAE_T_INSTANCE) {
+        SetaeVM *vm = g_active_vm;
+        SetaeValue r;
+        if (vm != NULL && setae_call_special(vm, v, "__hash__", NULL, 0, &r) &&
+            setae_is_int(r)) {
+            return hash_u64((uint64_t)setae_to_int(r));
+        }
+        return hash_u64((uint64_t)v);
+    }
     if (t == SETAE_T_STR) {
         SetaeStr *s = setae_to_ptr(v);
         if (s->hash != 0) {
@@ -370,9 +402,9 @@ static uint32_t pow2_ceil(uint32_t n) {
     return c;
 }
 
-static void index_put(SetaeDict *d, SetaeValue key, uint32_t entry) {
+static void index_put(SetaeDict *d, uint64_t hash, uint32_t entry) {
     uint64_t mask = d->index_cap - 1;
-    uint64_t slot = setae_value_hash(key) & mask;
+    uint64_t slot = hash & mask;
     while (d->index[slot] != DICT_EMPTY) {
         slot = (slot + 1) & mask;
     }
@@ -387,7 +419,7 @@ static void index_build(SetaeDict *d, uint32_t cap) {
         d->index[i] = DICT_EMPTY;
     }
     for (uint32_t i = 0; i < d->len; i++) {
-        index_put(d, d->entries[i].key, i);
+        index_put(d, d->entries[i].hash, i);
     }
 }
 
@@ -403,15 +435,16 @@ void setae_dict_index_add(SetaeDict *d, uint32_t entry) {
         index_build(d, d->index_cap * 2);
         return;
     }
-    index_put(d, d->entries[entry].key, entry);
+    index_put(d, d->entries[entry].hash, entry);
 }
 
 int64_t setae_dict_index_get(const SetaeDict *d, SetaeValue key) {
     uint64_t mask = d->index_cap - 1;
-    uint64_t slot = setae_value_hash(key) & mask;
+    uint64_t h = setae_value_hash(key);
+    uint64_t slot = h & mask;
     while (d->index[slot] != DICT_EMPTY) {
         uint32_t e = d->index[slot];
-        if (setae_value_eq(d->entries[e].key, key)) {
+        if (d->entries[e].hash == h && setae_value_eq(d->entries[e].key, key)) {
             return (int64_t)e;
         }
         slot = (slot + 1) & mask;
@@ -421,13 +454,16 @@ int64_t setae_dict_index_get(const SetaeDict *d, SetaeValue key) {
 
 int64_t setae_dict_index_get_cstr(const SetaeDict *d, const char *name, size_t len) {
     uint64_t mask = d->index_cap - 1;
-    uint64_t slot = setae_hash_bytes(name, len) & mask;
+    uint64_t h = setae_hash_bytes(name, len);
+    uint64_t slot = h & mask;
     while (d->index[slot] != DICT_EMPTY) {
         uint32_t e = d->index[slot];
-        SetaeValue k = d->entries[e].key;
-        if (setae_is_str(k) && setae_str_len(k) == len &&
-            memcmp(setae_str_data(k), name, len) == 0) {
-            return (int64_t)e;
+        if (d->entries[e].hash == h) {
+            SetaeValue k = d->entries[e].key;
+            if (setae_is_str(k) && setae_str_len(k) == len &&
+                memcmp(setae_str_data(k), name, len) == 0) {
+                return (int64_t)e;
+            }
         }
         slot = (slot + 1) & mask;
     }
@@ -454,8 +490,9 @@ int setae_dict_del(SetaeDict *d, SetaeValue key) {
         i = setae_dict_index_get(d, key);
     } else {
         i = -1;
+        uint64_t h = setae_value_hash(key);
         for (uint32_t j = 0; j < d->len; j++) {
-            if (setae_value_eq(d->entries[j].key, key)) {
+            if (d->entries[j].hash == h && setae_value_eq(d->entries[j].key, key)) {
                 i = j;
                 break;
             }
