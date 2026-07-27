@@ -1134,6 +1134,21 @@ mod tests {
     }
 
     #[test]
+    fn supervise_restarts_a_failing_child() {
+        let src = "from gecko import actor\n\ndef handle(state, message):\n    if message[0] == 'boom':\n        raise ValueError('crash')\n    message[1].send(state + message[0])\n    return state + message[0]\n\nsup = actor.supervise(0, handle, None, 2, 60000)\nprint(sup.call(lambda r: [5, r], 2000))\nprint(sup.call(lambda r: [7, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\nprint(sup.call(lambda r: [1, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\nprint(sup.call(lambda r: [1, r], 2000))\ntry:\n    sup.call(lambda r: ['boom', r], 2000)\nexcept RuntimeError:\n    print('crashed')\ntry:\n    sup.call(lambda r: [1, r], 2000)\n    print('alive')\nexcept RuntimeError:\n    print('exhausted')\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "5\n12\ncrashed\n1\ncrashed\n1\ncrashed\nexhausted\n"
+        );
+    }
+
+    #[test]
+    fn supervise_keeps_closure_captures_across_restarts() {
+        let src = "from gecko import actor\n\ndef make(base):\n    def handle(state, message):\n        if message[0] < 0:\n            raise ValueError('bad')\n        message[1].send(base + message[0])\n        return state\n    return handle\n\nsup = actor.supervise(0, make(100))\nprint(sup.call(lambda r: [5, r], 2000))\ntry:\n    sup.call(lambda r: [-1, r], 2000)\nexcept RuntimeError:\n    print('crashed')\nprint(sup.call(lambda r: [7, r], 2000))\n";
+        assert_eq!(run_source(src).unwrap(), "105\ncrashed\n107\n");
+    }
+
+    #[test]
     fn spawn_transfers_closures() {
         let src = "from gecko import actor\n\ndef make_adder(base, label):\n    def handle(state, message):\n        message[1].send(label + str(base + message[0]))\n        return state\n    return handle\n\na = actor.spawn(0, make_adder(100, \"sum=\"))\nb = actor.spawn(0, make_adder(1000, \"big=\"))\nprint(a.call(lambda r: [5, r], 2000))\nprint(b.call(lambda r: [1, r], 2000))\nprint(a.call(lambda r: [2, r], 2000))\n\ndef uses(d):\n    def handle(state, message):\n        message[0].send(len(d))\n        return state\n    return handle\n\ndata = [1, 2]\nh = actor.spawn(0, uses(data))\nprint(h.call(lambda r: [r], 2000))\ndata.append(3)\nprint(h.call(lambda r: [r], 2000), len(data))\n\ndef bad():\n    helper = lambda x: x\n    def handle(state, message):\n        message[0].send(helper(1))\n        return state\n    return handle\n\ntry:\n    actor.spawn(0, bad())\n    print('spawned')\nexcept TypeError:\n    print('TypeError')\n";
         assert_eq!(

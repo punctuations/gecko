@@ -275,8 +275,30 @@ actor that has already died delivers `down` at once.
 That is the primitive supervision is built from, in user code: a supervisor
 actor spawns a child, monitors it back to itself, and on the down-message spawns
 a replacement. Because the down-message is any value the supervisor chooses, it
-can tag which child died and carry whatever the restart needs. A restart policy
-baked into the runtime, and failure trees, sit on top of this and are deferred.
+can tag which child died and carry whatever the restart needs.
+
+`actor.supervise(state, handle, args, restarts, period)` is the built-in form,
+taking the same arguments `spawn` does plus a restart budget. It returns a
+subject that outlives the child behind it. Sending to that subject reaches
+whichever incarnation is current, so a caller holding it never sees the swap, and
+nothing has to be re-registered after a restart.
+
+A restart happens lazily, on the next message after the child died, and the child
+comes back with the state `supervise` was given rather than the state it had when
+it failed. That makes a crash a clean reset instead of a replay of whatever
+corrupted it. The message that killed the child still fails at its caller, the
+same as an unsupervised actor: supervision restores the service, it does not
+retry the request.
+
+The budget is `restarts` failures within `period` milliseconds. Past it the
+supervisor stops restarting, and sends and calls to the subject fail rather than
+starting a process that is only going to die again. The supervisor holds the
+child's spec, the handler code, its captured cells, the transferred globals, and
+the initial state, so a restart rebuilds an isolate from the same inputs without
+going back to the parent.
+
+Supervising a group with one_for_one and one_for_all strategies, and trees of
+supervisors, sit on top of this and are deferred.
 
 ### Portable API
 
@@ -289,4 +311,5 @@ behavior is pinned down, so a program written against the API will run on both.
 
 - Transferring a handler that references a class, so spawn takes a function whose
   captures or globals include one.
-- A restart policy and failure trees on top of the monitor primitive.
+- Group supervision with restart strategies, and trees of supervisors, on top
+  of the single-child restart policy.

@@ -218,6 +218,17 @@ impl Envelope {
 enum Handle {
     Actor(Arc<Actor>),
     Reply(Sender<Envelope>),
+    Super(Arc<Supervisor>),
+}
+
+impl Handle {
+    fn target(&self) -> Option<Arc<Actor>> {
+        match self {
+            Handle::Actor(a) => Some(a.clone()),
+            Handle::Super(s) => s.live(),
+            Handle::Reply(_) => None,
+        }
+    }
 }
 
 struct ActorRun {
@@ -292,13 +303,16 @@ impl Actor {
         let mut mons = self.monitors.lock().unwrap();
         for m in mons.drain(..) {
             let env = Envelope::value(m.down.0);
-            match m.notify {
-                Handle::Actor(a) => a.deliver(env),
+            match &m.notify {
                 Handle::Reply(tx) => {
                     if tx.send(env).is_err() {
                         unsafe { setae_msg_free(m.down.0) };
                     }
                 }
+                other => match other.target() {
+                    Some(a) => a.deliver(env),
+                    None => unsafe { setae_msg_free(m.down.0) },
+                },
             }
         }
     }
@@ -306,13 +320,16 @@ impl Actor {
     fn register_monitor(&self, m: Monitor) {
         if self.terminated.load(Ordering::Acquire) {
             let env = Envelope::value(m.down.0);
-            match m.notify {
-                Handle::Actor(a) => a.deliver(env),
+            match &m.notify {
                 Handle::Reply(tx) => {
                     if tx.send(env).is_err() {
                         unsafe { setae_msg_free(m.down.0) };
                     }
                 }
+                other => match other.target() {
+                    Some(a) => a.deliver(env),
+                    None => unsafe { setae_msg_free(m.down.0) },
+                },
             }
             return;
         }
@@ -566,13 +583,16 @@ struct Timer {
 impl Timer {
     fn fire(self) {
         let env = Envelope::value(self.msg.0);
-        match self.target {
-            Handle::Actor(actor) => actor.deliver(env),
+        match &self.target {
             Handle::Reply(tx) => {
                 if tx.send(env).is_err() {
                     unsafe { setae_msg_free(self.msg.0) };
                 }
             }
+            other => match other.target() {
+                Some(actor) => actor.deliver(env),
+                None => unsafe { setae_msg_free(self.msg.0) },
+            },
         }
     }
 }
@@ -639,6 +659,7 @@ extern "C" fn subject_send_after(
     let target = match handle {
         Handle::Actor(actor) => Handle::Actor(actor.clone()),
         Handle::Reply(tx) => Handle::Reply(tx.clone()),
+        Handle::Super(sup) => Handle::Super(sup.clone()),
     };
     let timer = Timer {
         deadline: Instant::now() + Duration::from_millis(delay_ms),
@@ -660,21 +681,25 @@ extern "C" fn subject_monitor(
     let watcher = match notify {
         Handle::Actor(actor) => Handle::Actor(actor.clone()),
         Handle::Reply(tx) => Handle::Reply(tx.clone()),
+        Handle::Super(sup) => Handle::Super(sup.clone()),
     };
-    match target {
-        Handle::Actor(actor) => actor.register_monitor(Monitor {
+    match target.target() {
+        Some(actor) => actor.register_monitor(Monitor {
             notify: watcher,
             down: MsgPtr(down),
         }),
-        Handle::Reply(_) => {
+        None => {
             let env = Envelope::value(down);
-            match watcher {
-                Handle::Actor(a) => a.deliver(env),
+            match &watcher {
                 Handle::Reply(tx) => {
                     if tx.send(env).is_err() {
                         unsafe { setae_msg_free(down) };
                     }
                 }
+                other => match other.target() {
+                    Some(a) => a.deliver(env),
+                    None => unsafe { setae_msg_free(down) },
+                },
             }
         }
     }
@@ -706,6 +731,7 @@ extern "C" fn subject_clone(mailbox: *mut std::ffi::c_void) -> *mut std::ffi::c_
             Handle::Actor(actor.clone())
         }
         Handle::Reply(tx) => Handle::Reply(tx.clone()),
+        Handle::Super(sup) => Handle::Super(sup.clone()),
     };
     Box::into_raw(Box::new(cloned)) as *mut std::ffi::c_void
 }
@@ -719,6 +745,10 @@ extern "C" fn subject_send(mailbox: *mut std::ffi::c_void, msg: *mut SetaeMsg) {
                 unsafe { setae_msg_free(msg) };
             }
         }
+        Handle::Super(_) => match handle.target() {
+            Some(actor) => actor.deliver(Envelope::value(msg)),
+            None => unsafe { setae_msg_free(msg) },
+        },
     }
 }
 
@@ -758,16 +788,26 @@ extern "C" fn subject_call(
 
         let handle = &*(setae_subject_mailbox(subject) as *const Handle);
         match handle {
-            Handle::Actor(actor) => actor.deliver(Envelope {
-                msg,
-                reply: Some(tx),
-                err: None,
-            }),
             Handle::Reply(rtx) => {
                 if rtx.send(Envelope::value(msg)).is_err() {
                     setae_msg_free(msg);
                 }
             }
+            other => match other.target() {
+                Some(actor) => actor.deliver(Envelope {
+                    msg,
+                    reply: Some(tx),
+                    err: None,
+                }),
+                None => {
+                    setae_msg_free(msg);
+                    let k = CString::new("RuntimeError").unwrap();
+                    let m =
+                        CString::new("the supervised actor exceeded its restart budget").unwrap();
+                    setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                    return setae_none();
+                }
+            },
         }
 
         match rx.recv_timeout(Duration::from_millis(millis)) {
@@ -808,24 +848,15 @@ unsafe fn set_root(vm: *mut SetaeVm, name: &str, v: SetaeValue) {
     unsafe { setae_vm_set_global(vm, c.as_ptr(), v) };
 }
 
-extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
+unsafe fn collect_child_spec(
+    vm: *mut SetaeVm,
+    argv: &[SetaeValue],
+    argc: c_int,
+    who: &str,
+) -> Option<ChildSpec> {
     unsafe {
-        if !(2..=4).contains(&argc) {
-            let k = CString::new("TypeError").unwrap();
-            let m = CString::new("spawn() takes 2 to 4 arguments").unwrap();
-            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
-            return setae_none();
-        }
-        let argv = std::slice::from_raw_parts(args, argc as usize);
         let state = argv[0];
         let handle = argv[1];
-        if setae_obj_type(handle) != T_FUNCTION {
-            let k = CString::new("TypeError").unwrap();
-            let m = CString::new("spawn() handler must be a function").unwrap();
-            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
-            return setae_none();
-        }
-
         let code = setae_func_code(handle);
         let mut len = 0usize;
         let ptr = setae_code_serialize(code, &mut len);
@@ -843,19 +874,19 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
                 }
                 setae_vm_clear_error(vm);
                 let k = CString::new("TypeError").unwrap();
-                let msg = CString::new(
-                    "spawn() handler captures a value that cannot cross an actor boundary",
-                )
+                let msg = CString::new(format!(
+                    "{who}() handler captures a value that cannot cross an actor boundary"
+                ))
                 .unwrap();
                 setae_vm_raise_str(vm, k.as_ptr(), msg.as_ptr());
-                return setae_none();
+                return None;
             }
             frees.push(MsgPtr(m));
         }
 
         let heap = setae_vm_heap(vm);
         let extras = setae_list_new(heap, 0);
-        if argc >= 3 {
+        if argc >= 3 && setae_is_none(argv[2]) == 0 {
             let e = argv[2];
             match setae_obj_type(e) {
                 T_LIST => {
@@ -870,18 +901,18 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
                 }
                 _ => {
                     let k = CString::new("TypeError").unwrap();
-                    let m = CString::new("spawn() args must be a list or tuple").unwrap();
+                    let m = CString::new(format!("{who}() args must be a list or tuple")).unwrap();
                     setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
-                    return setae_none();
+                    return None;
                 }
             }
         }
         let capacity = if argc == 4 {
             if setae_is_int(argv[3]) == 0 {
                 let k = CString::new("TypeError").unwrap();
-                let m = CString::new("spawn() capacity must be an integer").unwrap();
+                let m = CString::new(format!("{who}() capacity must be an integer")).unwrap();
                 setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
-                return setae_none();
+                return None;
             }
             setae_to_int(argv[3]).max(0) as usize
         } else {
@@ -893,9 +924,11 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
 
         let init = setae_msg_read(vm, pack);
         if init.is_null() {
-            return setae_none();
+            for f in frees {
+                setae_msg_free(f.0);
+            }
+            return None;
         }
-
         let mut globals = Vec::new();
         let gcount = setae_vm_globals_count(vm);
         for i in 0..gcount {
@@ -921,7 +954,37 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             }
         }
 
-        let run = match build_actor(bytes, init, globals, frees) {
+        Some(ChildSpec {
+            bytes,
+            init: MsgPtr(init),
+            globals,
+            frees,
+            capacity,
+        })
+    }
+}
+
+extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
+    unsafe {
+        if !(2..=4).contains(&argc) {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("spawn() takes 2 to 4 arguments").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        let argv = std::slice::from_raw_parts(args, argc as usize);
+        if setae_obj_type(argv[1]) != T_FUNCTION {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("spawn() handler must be a function").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        let spec = match collect_child_spec(vm, argv, argc, "spawn") {
+            Some(s) => s,
+            None => return setae_none(),
+        };
+        let capacity = spec.capacity;
+        let run = match build_actor_borrowed(&spec) {
             Some(r) => r,
             None => {
                 let k = CString::new("RuntimeError").unwrap();
@@ -943,23 +1006,165 @@ extern "C" fn actor_spawn(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) 
             sched: scheduler(),
         });
         setae_subject_new(
-            heap,
+            setae_vm_heap(vm),
             Box::into_raw(Box::new(Handle::Actor(actor))) as *mut std::ffi::c_void,
         )
+    }
+}
+
+extern "C" fn actor_supervise(vm: *mut SetaeVm, args: *mut SetaeValue, argc: c_int) -> SetaeValue {
+    unsafe {
+        if !(2..=5).contains(&argc) {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("supervise() takes 2 to 5 arguments").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        let argv = std::slice::from_raw_parts(args, argc as usize);
+        if setae_obj_type(argv[1]) != T_FUNCTION {
+            let k = CString::new("TypeError").unwrap();
+            let m = CString::new("supervise() handler must be a function").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        let mut restarts = 3usize;
+        let mut period_ms = 5000u64;
+        if argc >= 4 {
+            if setae_is_int(argv[3]) == 0 {
+                let k = CString::new("TypeError").unwrap();
+                let m = CString::new("supervise() restarts must be an integer").unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                return setae_none();
+            }
+            restarts = setae_to_int(argv[3]).max(0) as usize;
+        }
+        if argc == 5 {
+            if setae_is_int(argv[4]) == 0 {
+                let k = CString::new("TypeError").unwrap();
+                let m = CString::new("supervise() period must be an integer").unwrap();
+                setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+                return setae_none();
+            }
+            period_ms = setae_to_int(argv[4]).max(0) as u64;
+        }
+        let spec = match collect_child_spec(vm, argv, argc.min(3), "supervise") {
+            Some(s) => s,
+            None => return setae_none(),
+        };
+        let sup = Arc::new(Supervisor {
+            spec,
+            child: Mutex::new(None),
+            restarts,
+            period: Duration::from_millis(period_ms),
+            history: Mutex::new(VecDeque::new()),
+            exhausted: AtomicBool::new(false),
+        });
+        if sup.live().is_none() {
+            let k = CString::new("RuntimeError").unwrap();
+            let m = CString::new("failed to start supervised actor").unwrap();
+            setae_vm_raise_str(vm, k.as_ptr(), m.as_ptr());
+            return setae_none();
+        }
+        setae_subject_new(
+            setae_vm_heap(vm),
+            Box::into_raw(Box::new(Handle::Super(sup))) as *mut std::ffi::c_void,
+        )
+    }
+}
+
+struct ChildSpec {
+    bytes: Vec<u8>,
+    init: MsgPtr,
+    globals: Vec<GlobalItem>,
+    frees: Vec<MsgPtr>,
+    capacity: usize,
+}
+
+unsafe impl Send for ChildSpec {}
+unsafe impl Sync for ChildSpec {}
+
+impl Drop for ChildSpec {
+    fn drop(&mut self) {
+        unsafe {
+            setae_msg_free(self.init.0);
+            for f in &self.frees {
+                setae_msg_free(f.0);
+            }
+            for g in &self.globals {
+                if let GlobalItem::Value(_, m) = g {
+                    setae_msg_free(*m);
+                }
+            }
+        }
+    }
+}
+
+struct Supervisor {
+    spec: ChildSpec,
+    child: Mutex<Option<Arc<Actor>>>,
+    restarts: usize,
+    period: Duration,
+    history: Mutex<VecDeque<Instant>>,
+    exhausted: AtomicBool,
+}
+
+impl Supervisor {
+    fn spawn_child(&self) -> Option<Arc<Actor>> {
+        let run = build_actor_borrowed(&self.spec)?;
+        Some(Arc::new(Actor {
+            inbox: Mutex::new(VecDeque::new()),
+            space: Condvar::new(),
+            capacity: self.spec.capacity,
+            scheduled: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            terminated: AtomicBool::new(false),
+            senders: AtomicUsize::new(1),
+            monitors: Mutex::new(Vec::new()),
+            run: std::cell::UnsafeCell::new(run),
+            sched: scheduler(),
+        }))
+    }
+
+    fn budget_allows(&self) -> bool {
+        if self.exhausted.load(Ordering::Acquire) {
+            return false;
+        }
+        let now = Instant::now();
+        let mut h = self.history.lock().unwrap();
+        while let Some(front) = h.front() {
+            if now.duration_since(*front) > self.period {
+                h.pop_front();
+            } else {
+                break;
+            }
+        }
+        if h.len() >= self.restarts {
+            self.exhausted.store(true, Ordering::Release);
+            return false;
+        }
+        h.push_back(now);
+        true
+    }
+
+    fn live(&self) -> Option<Arc<Actor>> {
+        let mut slot = self.child.lock().unwrap();
+        if let Some(a) = slot.as_ref() {
+            if !a.closed.load(Ordering::Acquire) && !a.terminated.load(Ordering::Acquire) {
+                return Some(a.clone());
+            }
+            if !self.budget_allows() {
+                return None;
+            }
+        }
+        let fresh = self.spawn_child()?;
+        *slot = Some(fresh.clone());
+        Some(fresh)
     }
 }
 
 enum GlobalItem {
     Func(String, Vec<u8>),
     Value(String, *mut SetaeMsg),
-}
-
-fn free_globals(globals: Vec<GlobalItem>) {
-    for g in globals {
-        if let GlobalItem::Value(_, msg) = g {
-            unsafe { setae_msg_free(msg) };
-        }
-    }
 }
 
 fn wrapper_code(inner: bytecode::Code) -> bytecode::Code {
@@ -1009,35 +1214,16 @@ fn build_function(child: &mut Vm, bytes: &[u8]) -> Option<SetaeValue> {
     Some(run.result)
 }
 
-fn build_actor(
-    bytes: Vec<u8>,
-    init: *mut SetaeMsg,
-    globals: Vec<GlobalItem>,
-    frees: Vec<MsgPtr>,
-) -> Option<ActorRun> {
+fn build_actor_borrowed(spec: &ChildSpec) -> Option<ActorRun> {
     let mut child = Vm::new();
     child.enable_actors();
-    let handle = match build_function(&mut child, &bytes) {
-        Some(h) => h,
-        None => {
-            unsafe { setae_msg_free(init) };
-            free_globals(globals);
-            for f in frees {
-                unsafe { setae_msg_free(f.0) };
-            }
-            return None;
-        }
-    };
+    let handle = build_function(&mut child, &spec.bytes)?;
 
     unsafe {
-        for (i, f) in frees.into_iter().enumerate() {
+        for (i, f) in spec.frees.iter().enumerate() {
             let v = setae_msg_write(child.vm, f.0);
-            setae_msg_free(f.0);
             setae_func_set_free(handle, i as u32, v);
         }
-    }
-
-    unsafe {
         set_root(child.vm, "actor", setae_gecko_actor_module(child.vm));
         let array_name = CString::new("array").unwrap();
         set_root(
@@ -1045,23 +1231,21 @@ fn build_actor(
             "array",
             setae_gecko_member(child.vm, array_name.as_ptr()),
         );
-        for g in globals {
+        for g in &spec.globals {
             match g {
                 GlobalItem::Func(name, gbytes) => {
-                    if let Some(fv) = build_function(&mut child, &gbytes) {
-                        set_root(child.vm, &name, fv);
+                    if let Some(fv) = build_function(&mut child, gbytes) {
+                        set_root(child.vm, name, fv);
                     }
                 }
                 GlobalItem::Value(name, msg) => {
-                    let v = setae_msg_write(child.vm, msg);
-                    setae_msg_free(msg);
-                    set_root(child.vm, &name, v);
+                    let v = setae_msg_write(child.vm, *msg);
+                    set_root(child.vm, name, v);
                 }
             }
         }
         set_root(child.vm, "$handle", handle);
-        let pack = setae_msg_write(child.vm, init);
-        setae_msg_free(init);
+        let pack = setae_msg_write(child.vm, spec.init.0);
         let state = setae_list_get(pack, 0);
         let extras = setae_list_get(pack, 1);
         set_root(child.vm, "$state", state);
@@ -1076,151 +1260,6 @@ fn build_actor(
             extras: extra_items,
         })
     }
-}
-
-pub struct Mailbox {
-    rx: Receiver<Envelope>,
-}
-
-impl Mailbox {
-    pub fn recv(&self, vm: &Vm) -> Option<SetaeValue> {
-        let env = self.rx.recv().ok()?;
-        if env.msg.is_null() {
-            return None;
-        }
-        let v = unsafe { setae_msg_write(vm.vm, env.msg) };
-        unsafe { setae_msg_free(env.msg) };
-        Some(v)
-    }
-
-    pub fn try_recv(&self, vm: &Vm) -> Option<SetaeValue> {
-        let env = self.rx.try_recv().ok()?;
-        if env.msg.is_null() {
-            return None;
-        }
-        let v = unsafe { setae_msg_write(vm.vm, env.msg) };
-        unsafe { setae_msg_free(env.msg) };
-        Some(v)
-    }
-}
-
-impl Vm {
-    pub fn mailbox(&self) -> (SetaeValue, Mailbox) {
-        let (tx, rx) = channel::<Envelope>();
-        let boxed = Box::into_raw(Box::new(Handle::Reply(tx))) as *mut std::ffi::c_void;
-        let subject = unsafe { setae_subject_new(self.heap, boxed) };
-        (subject, Mailbox { rx })
-    }
-
-    pub fn send(&self, subject: SetaeValue, value: SetaeValue) -> bool {
-        let msg = unsafe { setae_msg_read(self.vm, value) };
-        if msg.is_null() {
-            return false;
-        }
-        let handle = unsafe { &*(setae_subject_mailbox(subject) as *const Handle) };
-        match handle {
-            Handle::Actor(actor) => actor.deliver(Envelope::value(msg)),
-            Handle::Reply(tx) => {
-                if tx.send(Envelope::value(msg)).is_err() {
-                    unsafe { setae_msg_free(msg) };
-                    return false;
-                }
-            }
-        }
-        true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn float_roundtrips() {
-        for d in [
-            0.0,
-            -0.0,
-            1.0,
-            -1.5,
-            1e300,
-            5e-324,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ] {
-            let v = unsafe { setae_from_float(d) };
-            assert_eq!(unsafe { setae_is_float(v) }, 1, "is_float {d}");
-            assert_eq!(unsafe { setae_is_int(v) }, 0, "not int {d}");
-            assert_eq!(unsafe { setae_to_float(v) }, d, "roundtrip {d}");
-        }
-    }
-
-    #[test]
-    fn nan_roundtrips_as_nan() {
-        let v = unsafe { setae_from_float(f64::NAN) };
-        assert_eq!(unsafe { setae_is_float(v) }, 1);
-        assert!(unsafe { setae_to_float(v) }.is_nan());
-    }
-
-    #[test]
-    fn int_roundtrips() {
-        for i in [
-            0,
-            1,
-            -1,
-            i32::MAX as i64,
-            i32::MIN as i64,
-            123456,
-            140737488355327,
-            -140737488355328,
-            140737488355326,
-            -140737488355327,
-            1 << 40,
-            -(1 << 40),
-        ] {
-            let v = unsafe { setae_from_int(i) };
-            assert_eq!(unsafe { setae_is_int(v) }, 1, "is_int {i}");
-            assert_eq!(unsafe { setae_is_float(v) }, 0, "not float {i}");
-            assert_eq!(unsafe { setae_to_int(v) }, i, "roundtrip {i}");
-        }
-    }
-
-    #[test]
-    fn singletons_are_distinct() {
-        let (n, t, f) = unsafe { (setae_none(), setae_bool(1), setae_bool(0)) };
-        assert_eq!(unsafe { setae_is_none(n) }, 1);
-        assert_eq!(unsafe { setae_is_bool(t) }, 1);
-        assert_eq!(unsafe { setae_is_bool(f) }, 1);
-        assert_eq!(unsafe { setae_to_bool(t) }, 1);
-        assert_eq!(unsafe { setae_to_bool(f) }, 0);
-        assert_ne!(n, t);
-        assert_ne!(t, f);
-        assert_eq!(unsafe { setae_is_bool(n) }, 0);
-        assert_eq!(unsafe { setae_is_none(t) }, 0);
-    }
-
-    #[test]
-    fn pointer_roundtrips() {
-        let mut boxed = Box::new(42u64);
-        let p = (&mut *boxed) as *mut u64 as *mut std::ffi::c_void;
-        let v = unsafe { setae_from_ptr(p) };
-        assert_eq!(unsafe { setae_is_ptr(v) }, 1);
-        assert_eq!(unsafe { setae_is_float(v) }, 0);
-        assert_eq!(unsafe { setae_is_int(v) }, 0);
-        assert_eq!(unsafe { setae_to_ptr(v) }, p);
-    }
-}
-
-pub struct Vm {
-    heap: *mut SetaeHeap,
-    vm: *mut SetaeVm,
-    codes: Vec<*mut SetaeCode>,
-}
-
-pub struct Run {
-    pub result: SetaeValue,
-    pub output: String,
-    pub error: bool,
-    pub message: String,
 }
 
 fn args_fit(code: &bytecode::Code) -> bool {
@@ -1318,10 +1357,13 @@ impl Vm {
 
     pub fn enable_actors(&mut self) {
         let spawn = CString::new("spawn").expect("name has no interior NUL");
+        let supervise = CString::new("supervise").expect("name has no interior NUL");
         let stop = CString::new("stop").expect("name has no interior NUL");
         unsafe {
             let b = setae_builtin_new(self.heap, actor_spawn, spawn.as_ptr());
             setae_gecko_actor_register(self.vm, spawn.as_ptr(), b);
+            let sv = setae_builtin_new(self.heap, actor_supervise, supervise.as_ptr());
+            setae_gecko_actor_register(self.vm, supervise.as_ptr(), sv);
             let s = setae_builtin_new(self.heap, actor_stop, stop.as_ptr());
             setae_gecko_actor_register(self.vm, stop.as_ptr(), s);
         }
@@ -1407,6 +1449,78 @@ impl Drop for Vm {
             setae_vm_destroy(self.vm);
             setae_heap_destroy(self.heap);
         }
+    }
+}
+
+pub struct Vm {
+    heap: *mut SetaeHeap,
+    vm: *mut SetaeVm,
+    codes: Vec<*mut SetaeCode>,
+}
+
+pub struct Run {
+    pub result: SetaeValue,
+    pub output: String,
+    pub error: bool,
+    pub message: String,
+}
+
+pub struct Mailbox {
+    rx: Receiver<Envelope>,
+}
+
+impl Mailbox {
+    pub fn recv(&self, vm: &Vm) -> Option<SetaeValue> {
+        let env = self.rx.recv().ok()?;
+        if env.msg.is_null() {
+            return None;
+        }
+        let v = unsafe { setae_msg_write(vm.vm, env.msg) };
+        unsafe { setae_msg_free(env.msg) };
+        Some(v)
+    }
+
+    pub fn try_recv(&self, vm: &Vm) -> Option<SetaeValue> {
+        let env = self.rx.try_recv().ok()?;
+        if env.msg.is_null() {
+            return None;
+        }
+        let v = unsafe { setae_msg_write(vm.vm, env.msg) };
+        unsafe { setae_msg_free(env.msg) };
+        Some(v)
+    }
+}
+
+impl Vm {
+    pub fn mailbox(&self) -> (SetaeValue, Mailbox) {
+        let (tx, rx) = channel::<Envelope>();
+        let boxed = Box::into_raw(Box::new(Handle::Reply(tx))) as *mut std::ffi::c_void;
+        let subject = unsafe { setae_subject_new(self.heap, boxed) };
+        (subject, Mailbox { rx })
+    }
+
+    pub fn send(&self, subject: SetaeValue, value: SetaeValue) -> bool {
+        let msg = unsafe { setae_msg_read(self.vm, value) };
+        if msg.is_null() {
+            return false;
+        }
+        let handle = unsafe { &*(setae_subject_mailbox(subject) as *const Handle) };
+        match handle {
+            Handle::Reply(tx) => {
+                if tx.send(Envelope::value(msg)).is_err() {
+                    unsafe { setae_msg_free(msg) };
+                    return false;
+                }
+            }
+            other => match other.target() {
+                Some(actor) => actor.deliver(Envelope::value(msg)),
+                None => {
+                    unsafe { setae_msg_free(msg) };
+                    return false;
+                }
+            },
+        }
+        true
     }
 }
 
@@ -1804,6 +1918,80 @@ mod machine_tests {
     }
 
     #[test]
+    fn float_roundtrips() {
+        for d in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.5,
+            1e300,
+            5e-324,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let v = unsafe { setae_from_float(d) };
+            assert_eq!(unsafe { setae_is_float(v) }, 1, "is_float {d}");
+            assert_eq!(unsafe { setae_is_int(v) }, 0, "not int {d}");
+            assert_eq!(unsafe { setae_to_float(v) }, d, "roundtrip {d}");
+        }
+    }
+
+    #[test]
+    fn nan_roundtrips_as_nan() {
+        let v = unsafe { setae_from_float(f64::NAN) };
+        assert_eq!(unsafe { setae_is_float(v) }, 1);
+        assert!(unsafe { setae_to_float(v) }.is_nan());
+    }
+
+    #[test]
+    fn int_roundtrips() {
+        for i in [
+            0,
+            1,
+            -1,
+            i32::MAX as i64,
+            i32::MIN as i64,
+            123456,
+            140737488355327,
+            -140737488355328,
+            140737488355326,
+            -140737488355327,
+            1 << 40,
+            -(1 << 40),
+        ] {
+            let v = unsafe { setae_from_int(i) };
+            assert_eq!(unsafe { setae_is_int(v) }, 1, "is_int {i}");
+            assert_eq!(unsafe { setae_is_float(v) }, 0, "not float {i}");
+            assert_eq!(unsafe { setae_to_int(v) }, i, "roundtrip {i}");
+        }
+    }
+
+    #[test]
+    fn singletons_are_distinct() {
+        let (n, t, f) = unsafe { (setae_none(), setae_bool(1), setae_bool(0)) };
+        assert_eq!(unsafe { setae_is_none(n) }, 1);
+        assert_eq!(unsafe { setae_is_bool(t) }, 1);
+        assert_eq!(unsafe { setae_is_bool(f) }, 1);
+        assert_eq!(unsafe { setae_to_bool(t) }, 1);
+        assert_eq!(unsafe { setae_to_bool(f) }, 0);
+        assert_ne!(n, t);
+        assert_ne!(t, f);
+        assert_eq!(unsafe { setae_is_bool(n) }, 0);
+        assert_eq!(unsafe { setae_is_none(t) }, 0);
+    }
+
+    #[test]
+    fn pointer_roundtrips() {
+        let mut boxed = Box::new(42u64);
+        let p = (&mut *boxed) as *mut u64 as *mut std::ffi::c_void;
+        let v = unsafe { setae_from_ptr(p) };
+        assert_eq!(unsafe { setae_is_ptr(v) }, 1);
+        assert_eq!(unsafe { setae_is_float(v) }, 0);
+        assert_eq!(unsafe { setae_is_int(v) }, 0);
+        assert_eq!(unsafe { setae_to_ptr(v) }, p);
+    }
+
+    #[test]
     fn an_actor_processes_messages_and_reports_back() {
         let src = "def handle(state, message, report):\n    total = state + message\n    report.send(total)\n    return total\n";
         let module = parser::parse(src).expect("parse");
@@ -1821,7 +2009,14 @@ mod machine_tests {
             let init = setae_msg_read(driver.vm, pack);
             assert!(!init.is_null(), "init pack is sendable");
 
-            let run = build_actor(bytes, init, Vec::new(), Vec::new()).expect("actor built");
+            let spec = ChildSpec {
+                bytes,
+                init: MsgPtr(init),
+                globals: Vec::new(),
+                frees: Vec::new(),
+                capacity: 0,
+            };
+            let run = build_actor_borrowed(&spec).expect("actor built");
             let actor = Arc::new(Actor {
                 inbox: Mutex::new(VecDeque::new()),
                 space: Condvar::new(),
