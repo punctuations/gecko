@@ -4,10 +4,12 @@ project('gecko-runtime', 'c',
     'c_std=c11',
     'default_library=static',
     'warning_level=2',
-    'b_lto=true',
   ])
 
 inc = include_directories('include')
+
+cc = meson.get_compiler('c')
+lto_args = cc.get_id() == 'clang' ? ['-flto'] : []
 
 windows = host_machine.system() == 'windows'
 
@@ -25,6 +27,7 @@ gecko_runtime = static_library('gecko_runtime',
     'src/builtins.c',
     'src/transfer.c',
   ),
+  c_args: lto_args,
   include_directories: inc,
   name_prefix: windows ? '' : 'lib',
   name_suffix: windows ? 'lib' : 'a',
