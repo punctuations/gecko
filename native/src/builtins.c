@@ -1877,6 +1877,43 @@ static SetaeValue builtin_all(SetaeVM *vm, SetaeValue *args, int nargs) {
     return setae_bool(1);
 }
 
+static SetaeValue builtin_property(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs < 1 || nargs > 2) {
+        setae_vm_raise(vm, "TypeError", "property() takes 1 or 2 arguments");
+        return setae_none();
+    }
+    return setae_descr_new(vm->heap, DESCR_PROPERTY, args[0],
+                           nargs == 2 ? args[1] : setae_none());
+}
+
+static SetaeValue builtin_staticmethod(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 1) {
+        setae_vm_raise(vm, "TypeError", "staticmethod() takes exactly one argument");
+        return setae_none();
+    }
+    return setae_descr_new(vm->heap, DESCR_STATIC, args[0], setae_none());
+}
+
+static SetaeValue builtin_classmethod(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 1) {
+        setae_vm_raise(vm, "TypeError", "classmethod() takes exactly one argument");
+        return setae_none();
+    }
+    return setae_descr_new(vm->heap, DESCR_CLASS, args[0], setae_none());
+}
+
+static SetaeValue builtin_super(SetaeVM *vm, SetaeValue *args, int nargs) {
+    if (nargs != 2) {
+        setae_vm_raise(vm, "TypeError", "super() takes two arguments in this runtime");
+        return setae_none();
+    }
+    if (setae_obj_type(args[0]) != SETAE_T_CLASS) {
+        setae_vm_raise(vm, "TypeError", "super() argument 1 must be a class");
+        return setae_none();
+    }
+    return setae_descr_new(vm->heap, DESCR_SUPER, args[0], args[1]);
+}
+
 static void register_gecko(SetaeVM *vm) {
     SetaeHeap *h = setae_vm_heap(vm);
     SetaeValue sdict = setae_dict_new(h);
@@ -2002,6 +2039,10 @@ void setae_vm_register_builtins(SetaeVM *vm) {
     takes_kwargs(reg(vm, h, "min", builtin_min));
     takes_kwargs(reg(vm, h, "max", builtin_max));
     reg(vm, h, "abs", builtin_abs);
+    as_type(reg(vm, h, "property", builtin_property));
+    as_type(reg(vm, h, "super", builtin_super));
+    as_type(reg(vm, h, "staticmethod", builtin_staticmethod));
+    as_type(reg(vm, h, "classmethod", builtin_classmethod));
     reg(vm, h, "round", builtin_round);
     reg(vm, h, "divmod", builtin_divmod);
     reg(vm, h, "ord", builtin_ord);

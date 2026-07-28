@@ -72,6 +72,12 @@ static void mark(SetaeValue v) {
         }
         break;
     }
+    case SETAE_T_DESCR: {
+        SetaeDescr *d = (SetaeDescr *)o;
+        mark(d->get);
+        mark(d->set);
+        break;
+    }
     case SETAE_T_BOUND: {
         SetaeBound *b = (SetaeBound *)o;
         mark(b->func);

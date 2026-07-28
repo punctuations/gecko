@@ -414,6 +414,14 @@ SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module)
     return setae_from_ptr(g);
 }
 
+SetaeValue setae_descr_new(SetaeHeap *h, uint8_t kind, SetaeValue get, SetaeValue set) {
+    SetaeDescr *d = heap_alloc(h, sizeof(SetaeDescr), SETAE_T_DESCR);
+    d->kind = kind;
+    d->get = get;
+    d->set = set;
+    return setae_from_ptr(d);
+}
+
 SetaeValue setae_array_new(SetaeHeap *h, SetaeBuffer *buf, uint8_t dtype, uint32_t offset,
                            uint32_t len) {
     SetaeArray *a = heap_alloc(h, sizeof(SetaeArray), SETAE_T_ARRAY);

@@ -130,6 +130,22 @@ typedef struct SetaeBound {
     SetaeValue self;
 } SetaeBound;
 
+enum {
+    DESCR_PROPERTY,
+    DESCR_STATIC,
+    DESCR_CLASS,
+    DESCR_SETTER,
+    DESCR_GETTER,
+    DESCR_SUPER,
+};
+
+typedef struct SetaeDescr {
+    SetaeObject obj;
+    uint8_t kind;
+    SetaeValue get;
+    SetaeValue set;
+} SetaeDescr;
+
 typedef struct SetaeSubject {
     SetaeObject obj;
     void *mailbox;
@@ -316,6 +332,7 @@ int setae_instance_get(const SetaeInstance *inst, const char *name, SetaeValue *
 int64_t setae_instance_slot(const SetaeInstance *inst, const char *name);
 void setae_instance_set(SetaeHeap *h, SetaeInstance *inst, const char *name, SetaeValue v);
 SetaeValue setae_bound_new(SetaeHeap *h, SetaeValue func, SetaeValue self);
+SetaeValue setae_descr_new(SetaeHeap *h, uint8_t kind, SetaeValue get, SetaeValue set);
 SetaeValue setae_gen_new(SetaeHeap *h, const SetaeCode *code, SetaeValue module);
 SetaeValue setae_iterop_new(SetaeHeap *h, uint8_t kind, SetaeValue func, SetaeValue sources);
 int setae_gen_next(SetaeVM *vm, SetaeValue genv, SetaeValue sent, SetaeValue *out);

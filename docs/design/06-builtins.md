@@ -101,10 +101,9 @@ f-strings support the format-spec mini-language, so `f"{x:.2f}"`, `f"{n:>8}"`,
 
 ## Not available yet
 
-Functions: `object`, `super`, `property`, `staticmethod`, `classmethod`,
-`delattr`, `open`, `input`, `eval`, `exec`, `compile`, `globals`, `locals`,
-`vars`, `dir`, `format`, `ascii`, `slice`, `complex`, `bytes`, `bytearray`,
-`memoryview`.
+Functions: `object`, `delattr`, `open`, `input`, `eval`, `exec`, `compile`,
+`globals`, `locals`, `vars`, `dir`, `format`, `ascii`, `slice`, `complex`,
+`bytes`, `bytearray`, `memoryview`.
 
 str methods: `format`, `format_map`, `encode`, `expandtabs`, `partition`,
 `rpartition`, `translate`, `maketrans`, `casefold`, `isidentifier`.
@@ -118,8 +117,9 @@ unpacking inside literals (`[*a]`, `{**d}`, `{*s}`), keyword-only and
 positional-only parameters, `raise X from Y`, `yield from`, `async for`, and
 `async with`.
 
-Classes: multiple inheritance, `super()`, `@classmethod`, `@staticmethod`, and
-`@property`. Special methods are honored: `__init__`, `__enter__`/`__exit__`,
+Classes: multiple inheritance. `super()`, `@property`, `@staticmethod`, and
+`@classmethod` work, with `super()` taking its zero-argument form inside a method
+or the explicit `super(Cls, obj)` form. Special methods are honored: `__init__`, `__enter__`/`__exit__`,
 `__await__`, `__str__`, `__repr__`, `__bool__`, `__len__`, `__eq__`, `__ne__`,
 the ordering comparisons, `__hash__`, `__getitem__`, `__setitem__`,
 `__contains__`, `__iter__`, `__call__`, `__neg__`, `__abs__`, and the arithmetic

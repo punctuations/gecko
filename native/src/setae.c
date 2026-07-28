@@ -388,6 +388,9 @@ static SetaeValue from_i64(SetaeVM *vm, int64_t i) {
     return setae_int_from_i64(vm->heap, i);
 }
 
+static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
+                             int nargs, SetaeValue kwargs);
+
 static int instance_special(SetaeValue obj, const char *name, SetaeValue *out);
 
 static int hashable(SetaeValue v) {
@@ -499,6 +502,21 @@ static SetaeValue load_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
         }
         SetaeValue v;
         if (class_lookup(inst->cls, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_DESCR) {
+                SetaeDescr *d = setae_to_ptr(v);
+                if (d->kind == DESCR_PROPERTY) {
+                    if (setae_is_none(d->get)) {
+                        setae_vm_raise(vm, "AttributeError", "unreadable attribute '%s'",
+                                       name);
+                        return setae_none();
+                    }
+                    return call_value(vm, d->get, &obj, 1, 0);
+                }
+                if (d->kind == DESCR_CLASS) {
+                    return setae_bound_new(vm->heap, d->get, inst->cls);
+                }
+                return d->get;
+            }
             if (setae_obj_type(v) == SETAE_T_FUNCTION) {
                 return setae_bound_new(vm->heap, v, obj);
             }
@@ -510,11 +528,55 @@ static SetaeValue load_attr(SetaeVM *vm, SetaeValue obj, const char *name) {
     if (t == SETAE_T_CLASS) {
         SetaeValue v;
         if (class_lookup(obj, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_DESCR) {
+                SetaeDescr *d = setae_to_ptr(v);
+                if (d->kind == DESCR_CLASS) {
+                    return setae_bound_new(vm->heap, d->get, obj);
+                }
+                if (d->kind == DESCR_STATIC) {
+                    return d->get;
+                }
+            }
             return v;
         }
         SetaeClass *c = setae_to_ptr(obj);
         setae_vm_raise(vm, "AttributeError", "type object '%.*s' has no attribute '%s'",
                        (int)setae_str_len(c->name), setae_str_data(c->name), name);
+        return setae_none();
+    }
+    if (t == SETAE_T_DESCR) {
+        SetaeDescr *d = setae_to_ptr(obj);
+        if (d->kind == DESCR_SUPER) {
+            SetaeClass *c = setae_to_ptr(d->get);
+            SetaeValue v;
+            if (class_lookup(c->base, name, &v)) {
+                if (setae_obj_type(v) == SETAE_T_DESCR) {
+                    SetaeDescr *sd = setae_to_ptr(v);
+                    if (sd->kind == DESCR_PROPERTY) {
+                        return call_value(vm, sd->get, &d->set, 1, 0);
+                    }
+                    if (sd->kind == DESCR_CLASS) {
+                        return setae_bound_new(vm->heap, sd->get, d->get);
+                    }
+                    return sd->get;
+                }
+                if (setae_obj_type(v) == SETAE_T_FUNCTION) {
+                    return setae_bound_new(vm->heap, v, d->set);
+                }
+                return v;
+            }
+            attr_error(vm, d->set, name);
+            return setae_none();
+        }
+        if (d->kind == DESCR_PROPERTY) {
+            if (strcmp(name, "setter") == 0) {
+                return setae_descr_new(vm->heap, DESCR_SETTER, obj, setae_none());
+            }
+            if (strcmp(name, "getter") == 0) {
+                return setae_descr_new(vm->heap, DESCR_GETTER, obj, setae_none());
+            }
+        }
+        attr_error(vm, obj, name);
         return setae_none();
     }
     if (t == SETAE_T_MODULE) {
@@ -1909,6 +1971,18 @@ static SetaeValue call_value(SetaeVM *vm, SetaeValue callee, SetaeValue *args,
         }
         return inst;
     }
+    if (t == SETAE_T_DESCR) {
+        SetaeDescr *d = setae_to_ptr(callee);
+        if ((d->kind == DESCR_SETTER || d->kind == DESCR_GETTER) && nargs == 1) {
+            SetaeDescr *base = setae_to_ptr(d->get);
+            if (d->kind == DESCR_SETTER) {
+                return setae_descr_new(vm->heap, DESCR_PROPERTY, base->get, args[0]);
+            }
+            return setae_descr_new(vm->heap, DESCR_PROPERTY, args[0], base->set);
+        }
+        setae_vm_raise(vm, "TypeError", "'property' object is not callable");
+        return setae_none();
+    }
     if (t == SETAE_T_BOUND) {
         SetaeBound *b = setae_to_ptr(callee);
         SetaeFunc *f = setae_to_ptr(b->func);
@@ -1982,6 +2056,25 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         }
         SetaeValue v;
         if (class_lookup(inst->cls, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_DESCR) {
+                SetaeDescr *d = setae_to_ptr(v);
+                if (d->kind == DESCR_STATIC) {
+                    return call_value(vm, d->get, args, nargs, 0);
+                }
+                if (d->kind == DESCR_CLASS) {
+                    SetaeValue argv[16];
+                    argv[0] = inst->cls;
+                    for (int i = 0; i < nargs && i < 15; i++) {
+                        argv[i + 1] = args[i];
+                    }
+                    return call_value(vm, d->get, argv, nargs + 1, 0);
+                }
+                SetaeValue got = call_value(vm, d->get, &obj, 1, 0);
+                if (vm->error) {
+                    return setae_none();
+                }
+                return call_value(vm, got, args, nargs, 0);
+            }
             if (setae_obj_type(v) == SETAE_T_FUNCTION) {
                 SetaeFunc *f = setae_to_ptr(v);
                 c->kind = 4;
@@ -2000,6 +2093,18 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
     if (t == SETAE_T_CLASS) {
         SetaeValue v;
         if (class_lookup(obj, name, &v)) {
+            if (setae_obj_type(v) == SETAE_T_DESCR) {
+                SetaeDescr *d = setae_to_ptr(v);
+                if (d->kind == DESCR_CLASS) {
+                    SetaeValue argv[16];
+                    argv[0] = obj;
+                    for (int i = 0; i < nargs && i < 15; i++) {
+                        argv[i + 1] = args[i];
+                    }
+                    return call_value(vm, d->get, argv, nargs + 1, 0);
+                }
+                return call_value(vm, d->get, args, nargs, 0);
+            }
             return call_value(vm, v, args, nargs, 0);
         }
         attr_error(vm, obj, name);
@@ -2075,6 +2180,43 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
         SetaeValue r = setae_str_method(vm, obj, name, args, nargs, &found);
         if (found) {
             return r;
+        }
+        attr_error(vm, obj, name);
+        return setae_none();
+    }
+    if (t == SETAE_T_DESCR) {
+        SetaeDescr *d = setae_to_ptr(obj);
+        if (d->kind == DESCR_SUPER) {
+            SetaeClass *sc = setae_to_ptr(d->get);
+            SetaeValue v;
+            if (class_lookup(sc->base, name, &v)) {
+                if (setae_obj_type(v) == SETAE_T_DESCR) {
+                    SetaeDescr *sd = setae_to_ptr(v);
+                    if (sd->kind == DESCR_STATIC) {
+                        return call_value(vm, sd->get, args, nargs, 0);
+                    }
+                    SetaeValue argv[16];
+                    argv[0] = sd->kind == DESCR_CLASS ? d->get : d->set;
+                    for (int i = 0; i < nargs && i < 15; i++) {
+                        argv[i + 1] = args[i];
+                    }
+                    return call_value(vm, sd->get, argv, nargs + 1, 0);
+                }
+                SetaeValue argv[16];
+                argv[0] = d->set;
+                for (int i = 0; i < nargs && i < 15; i++) {
+                    argv[i + 1] = args[i];
+                }
+                return call_value(vm, v, argv, nargs + 1, 0);
+            }
+            attr_error(vm, d->set, name);
+            return setae_none();
+        }
+        if (d->kind == DESCR_PROPERTY && nargs == 1 &&
+            (strcmp(name, "setter") == 0 || strcmp(name, "getter") == 0)) {
+            int is_set = strcmp(name, "setter") == 0;
+            return setae_descr_new(vm->heap, DESCR_PROPERTY, is_set ? d->get : args[0],
+                                   is_set ? args[0] : d->set);
         }
         attr_error(vm, obj, name);
         return setae_none();
@@ -3268,6 +3410,38 @@ stack_overflow:
             int t = setae_obj_type(obj);
             if (t == SETAE_T_INSTANCE) {
                 SetaeInstance *inst = setae_to_ptr(obj);
+                if (ic[unit].kind == 5) {
+                    if (ic[unit].guard == vm->class_version) {
+                        SetaeDescr *pd = setae_to_ptr(ic[unit].method);
+                        SetaeValue pair[2] = {obj, val};
+                        call_value(vm, pd->set, pair, 2, 0);
+                        sp -= 2;
+                        DISPATCH();
+                    }
+                    ic[unit].kind = 0;
+                }
+                {
+                    SetaeValue pv;
+                    const char *pn = code->names[arg];
+                    if (class_lookup(inst->cls, pn, &pv) &&
+                        setae_obj_type(pv) == SETAE_T_DESCR) {
+                        SetaeDescr *pd = setae_to_ptr(pv);
+                        if (pd->kind == DESCR_PROPERTY) {
+                            if (setae_is_none(pd->set)) {
+                                setae_vm_raise(vm, "AttributeError",
+                                               "can't set attribute '%s'", pn);
+                                DISPATCH();
+                            }
+                            ic[unit].kind = 5;
+                            ic[unit].method = pv;
+                            ic[unit].guard = vm->class_version;
+                            SetaeValue pair[2] = {obj, val};
+                            call_value(vm, pd->set, pair, 2, 0);
+                            sp -= 2;
+                            DISPATCH();
+                        }
+                    }
+                }
                 if (ic[unit].shape == inst->shape) {
                     SetaeShape *ns = ic[unit].next;
                     if (ns->nslots > inst->slots_cap) {

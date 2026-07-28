@@ -100,6 +100,7 @@ fn compile_unit(
         finallies: Vec::new(),
         registry: reg.clone(),
         dir,
+        classes: Vec::new(),
     };
     for stmt in &module.body {
         c.stmt(stmt)?;
@@ -712,6 +713,7 @@ struct Compiler {
     finallies: Vec<FinallyFrame>,
     registry: Rc<RefCell<Registry>>,
     dir: Option<PathBuf>,
+    classes: Vec<String>,
 }
 
 impl Compiler {
@@ -1779,6 +1781,7 @@ impl Compiler {
             finallies: Vec::new(),
             registry: self.registry.clone(),
             dir: self.dir.clone(),
+            classes: self.classes.clone(),
         };
         let cells = sub.scope.as_ref().unwrap().cells.clone();
         for (ci, cname) in cells.iter().enumerate() {
@@ -1906,10 +1909,13 @@ impl Compiler {
             finallies: Vec::new(),
             registry: self.registry.clone(),
             dir: self.dir.clone(),
+            classes: self.classes.clone(),
         };
+        sub.classes.push(name.to_string());
         for s in body {
             sub.stmt(s)?;
         }
+        sub.classes.pop();
         let mut pairs = 0;
         for (slot, l) in locals.iter().enumerate() {
             if l.starts_with('<') || l.starts_with('.') {
@@ -2539,6 +2545,34 @@ impl Compiler {
                 args,
                 keywords,
             } => {
+                if args.is_empty() && keywords.is_empty() {
+                    if let Expr::Name(n) = func.as_ref() {
+                        if n == "super" {
+                            let cls = match self.classes.last() {
+                                Some(c) => c.clone(),
+                                None => {
+                                    return unsupported("super() outside a class");
+                                }
+                            };
+                            let selfname = match self
+                                .scope
+                                .as_ref()
+                                .filter(|_| self.code.nparams > 0)
+                                .and_then(|s| s.locals.first().cloned())
+                            {
+                                Some(p) => p,
+                                None => {
+                                    return unsupported("super() in a method with no self");
+                                }
+                            };
+                            self.expr(&Expr::Name("super".into()))?;
+                            self.expr(&Expr::Name(cls))?;
+                            self.expr(&Expr::Name(selfname))?;
+                            self.emit(Op::Call, 2);
+                            return Ok(());
+                        }
+                    }
+                }
                 let has_star = args.iter().any(|a| matches!(a, Expr::Starred(_)));
                 if keywords.is_empty() && !has_star {
                     if args.len() > 255 {

@@ -128,7 +128,8 @@ statement grammar (f-strings with format specs, comprehensions and generator
 expressions, slicing, the walrus operator, `match`, `with`, decorators, and
 `try`/`except`/`else`/`finally`), the whole call convention (keyword arguments,
 defaults, `*args`, `**kwargs`, spreads), closures with `nonlocal`, generators,
-`async`/`await`, classes with single inheritance, and `import`/`from ... import`.
+`async`/`await`, classes with single inheritance, `super()`, `@property`,
+`@staticmethod`, `@classmethod`, and `import`/`from ... import`.
 
 Built-in types are int, float, bool, str, list, tuple, dict, set, frozenset,
 range, and typed arrays. Integers are arbitrary precision. Sets of integers
@@ -136,7 +137,7 @@ iterate in CPython's order.
 
 Constructs outside the supported grammar are rejected at compile time with a
 located error. There is no standard library yet, and wheels with compiled C
-extensions do not run. The test suite is 303 tests, most asserting that output
+extensions do not run. The test suite is 305 tests, most asserting that output
 matches CPython's.
 
 For the full runtime surface, the builtins, the types and their methods, and

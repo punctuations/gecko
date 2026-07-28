@@ -1134,6 +1134,24 @@ mod tests {
     }
 
     #[test]
+    fn class_descriptors() {
+        let src = "class Temp:\n    def __init__(self, c):\n        self._c = c\n\n    @property\n    def celsius(self):\n        return self._c\n\n    @celsius.setter\n    def celsius(self, v):\n        if v < -273:\n            raise ValueError(\"too cold\")\n        self._c = v\n\n    @property\n    def fahrenheit(self):\n        return self._c * 9 / 5 + 32\n\n    @staticmethod\n    def freezing():\n        return 0\n\n    @classmethod\n    def boiling(cls):\n        return cls(100)\n\nt = Temp(25)\nprint(t.celsius, t.fahrenheit)\nt.celsius = 30\nprint(t.celsius, t.fahrenheit)\ntry:\n    t.celsius = -300\nexcept ValueError:\n    print(\"rejected\")\nprint(t.celsius)\ntry:\n    t.fahrenheit = 5\nexcept AttributeError:\n    print(\"read-only\")\nprint(Temp.freezing(), t.freezing())\nb = Temp.boiling()\nprint(b.celsius, type(b) is Temp)\nb2 = t.boiling()\nprint(b2.celsius)\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "25 77.0\n30 86.0\nrejected\n30\nread-only\n0 0\n100 True\n100\n"
+        );
+    }
+
+    #[test]
+    fn super_calls() {
+        let src = "class Animal:\n    def __init__(self, name):\n        self.name = name\n    def speak(self):\n        return \"...\"\n    def describe(self):\n        return self.name + \" says \" + self.speak()\n\nclass Dog(Animal):\n    def __init__(self, name, breed):\n        super().__init__(name)\n        self.breed = breed\n    def speak(self):\n        return \"woof\"\n    def describe(self):\n        return super().describe() + \" (\" + self.breed + \")\"\n\nclass Puppy(Dog):\n    def speak(self):\n        return super().speak() + \"!\"\n\nd = Dog(\"Rex\", \"lab\")\nprint(d.name, d.breed, d.speak())\nprint(d.describe())\np = Puppy(\"Bit\", \"corgi\")\nprint(p.speak(), p.describe())\nprint(super(Dog, d).speak())\nprint(isinstance(d, Dog), isinstance(d, Animal))\n";
+        assert_eq!(
+            run_source(src).unwrap(),
+            "Rex lab woof\nRex says woof (lab)\nwoof! Bit says woof! (corgi)\n...\nTrue True\n"
+        );
+    }
+
+    #[test]
     fn dict_keys_use_hash_and_eq() {
         let src = "class V:\n    def __init__(self, k): self.k = k\n    def __eq__(self, o): return self.k == o.k\n    def __hash__(self): return self.k % 7\n\nd = {}\nfor i in range(200):\n    d[V(i % 5)] = 1\n    d['s' + str(i % 3)] = 2\nprint(len(d), sorted(d.values()))\nd2 = {}\nd2[V(1)] = 'a'\nd2[V(1)] = 'b'\nprint(len(d2), list(d2.values()))\nprint(V(1) in d2, V(9) in d2)\nprint(len({V(1), V(1), V(3)}))\n\nclass E:\n    def __init__(self, v): self.v = v\n    def __eq__(self, o): return True\ntry:\n    {E(1): 1}\n    print('hashable')\nexcept TypeError:\n    print('unhashable')\n";
         assert_eq!(

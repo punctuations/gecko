@@ -158,6 +158,8 @@ const char *setae_type_name(SetaeValue v) {
         return "instance";
     case SETAE_T_BOUND:
         return "method";
+    case SETAE_T_DESCR:
+        return "property";
     case SETAE_T_SUBJECT:
         return "subject";
     case SETAE_T_STOP:
