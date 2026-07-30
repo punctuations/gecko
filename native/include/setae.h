@@ -62,6 +62,7 @@ typedef enum {
     SETAE_T_SLICE,
     SETAE_T_ARRAY,
     SETAE_T_DESCR,
+    SETAE_T_DICTVIEW,
 } SetaeType;
 
 typedef struct SetaeObject {

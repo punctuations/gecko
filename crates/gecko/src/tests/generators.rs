@@ -1,4 +1,3 @@
-use super::super::run_source;
 use super::check;
 
 #[test]
@@ -122,7 +121,16 @@ done
 
 #[test]
 fn dict_items_yields_tuples() {
-    let src =
-        "d = {\"a\": 1, \"b\": 2}\nfor k, v in d.items():\n    print(k, v)\nprint(d.items())\n";
-    assert_eq!(run_source(src).unwrap(), "a 1\nb 2\n[('a', 1), ('b', 2)]\n");
+    let src = r#"
+d = {"a": 1, "b": 2}
+for k, v in d.items():
+    print(k, v)
+print(d.items())
+"#;
+    let want = r#"
+a 1
+b 2
+dict_items([('a', 1), ('b', 2)])
+"#;
+    check(src, want);
 }

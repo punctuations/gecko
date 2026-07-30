@@ -160,6 +160,15 @@ const char *setae_type_name(SetaeValue v) {
         return "method";
     case SETAE_T_DESCR:
         return "property";
+    case SETAE_T_DICTVIEW:
+        switch (((SetaeDictView *)setae_to_ptr(v))->kind) {
+        case VIEW_KEYS:
+            return "dict_keys";
+        case VIEW_VALUES:
+            return "dict_values";
+        default:
+            return "dict_items";
+        }
     case SETAE_T_SUBJECT:
         return "subject";
     case SETAE_T_STOP:
@@ -202,9 +211,59 @@ static int str_eq(SetaeValue a, SetaeValue b) {
     return 1;
 }
 
+static int view_has(SetaeValue dv, SetaeValue key, SetaeValue *val) {
+    SetaeDict *d = setae_to_ptr(((SetaeDictView *)setae_to_ptr(dv))->dict);
+    return setae_dict_lookup(d, key, val);
+}
+
+static int view_eq(SetaeValue a, SetaeValue b) {
+    SetaeDictView *va = setae_to_ptr(a);
+    SetaeDict *da = setae_to_ptr(va->dict);
+    if (va->kind == VIEW_VALUES) {
+        return a == b;
+    }
+    int bt = setae_obj_type(b);
+    if (bt == SETAE_T_DICTVIEW) {
+        SetaeDictView *vb = setae_to_ptr(b);
+        SetaeDict *db = setae_to_ptr(vb->dict);
+        if (vb->kind != va->kind || da->len != db->len) {
+            return 0;
+        }
+        for (uint32_t i = 0; i < da->len; i++) {
+            SetaeValue got;
+            if (!view_has(b, da->entries[i].key, &got)) {
+                return 0;
+            }
+            if (va->kind == VIEW_ITEMS && !setae_value_eq(da->entries[i].value, got)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (bt == SETAE_T_SET && va->kind == VIEW_KEYS) {
+        SetaeSet *s = setae_to_ptr(b);
+        if (s->used != da->len) {
+            return 0;
+        }
+        for (uint32_t i = 0; i < da->len; i++) {
+            if (!setae_set_contains(s, da->entries[i].key)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
 int setae_value_eq(SetaeValue a, SetaeValue b) {
     if (setae_is_int(a) && setae_is_int(b)) {
         return setae_to_int(a) == setae_to_int(b);
+    }
+    if (setae_obj_type(a) == SETAE_T_DICTVIEW) {
+        return view_eq(a, b);
+    }
+    if (setae_obj_type(b) == SETAE_T_DICTVIEW) {
+        return view_eq(b, a);
     }
     if (setae_obj_type(a) == SETAE_T_INSTANCE || setae_obj_type(b) == SETAE_T_INSTANCE) {
         SetaeVM *vm = g_active_vm;

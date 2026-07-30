@@ -265,6 +265,30 @@ static void repr(SetaeVM *vm, SetaeValue v, int nested) {
     case SETAE_T_ARRAY:
         setae_array_repr(vm, v);
         return;
+    case SETAE_T_DICTVIEW: {
+        SetaeDictView *dv = setae_to_ptr(v);
+        SetaeDict *d = setae_to_ptr(dv->dict);
+        out_str(vm, setae_type_name(v));
+        out_str(vm, "([");
+        for (uint32_t i = 0; i < d->len; i++) {
+            if (i > 0) {
+                out_str(vm, ", ");
+            }
+            if (dv->kind == VIEW_KEYS) {
+                repr(vm, d->entries[i].key, 1);
+            } else if (dv->kind == VIEW_VALUES) {
+                repr(vm, d->entries[i].value, 1);
+            } else {
+                out_str(vm, "(");
+                repr(vm, d->entries[i].key, 1);
+                out_str(vm, ", ");
+                repr(vm, d->entries[i].value, 1);
+                out_str(vm, ")");
+            }
+        }
+        out_str(vm, "])");
+        return;
+    }
     case SETAE_T_FUNCTION: {
         SetaeFunc *f = setae_to_ptr(v);
         out_str(vm, "<function ");
@@ -751,6 +775,10 @@ static SetaeValue builtin_len(SetaeVM *vm, SetaeValue *args, int nargs) {
     }
     case SETAE_T_ARRAY:
         return setae_from_int((int32_t)((SetaeArray *)setae_to_ptr(v))->len);
+    case SETAE_T_DICTVIEW:
+        return setae_from_int((int32_t)((SetaeDict *)setae_to_ptr(
+                                            ((SetaeDictView *)setae_to_ptr(v))->dict))
+                                  ->len);
     case SETAE_T_INSTANCE: {
         SetaeValue r;
         if (setae_call_special(vm, v, "__len__", NULL, 0, &r)) {
@@ -1560,7 +1588,7 @@ static SetaeValue builtin_hash(SetaeVM *vm, SetaeValue *args, int nargs) {
         return setae_none();
     }
     int t = setae_obj_type(args[0]);
-    if (t == SETAE_T_LIST || t == SETAE_T_DICT ||
+    if (t == SETAE_T_LIST || t == SETAE_T_DICT || t == SETAE_T_DICTVIEW ||
         (t == SETAE_T_SET && !((SetaeSet *)setae_to_ptr(args[0]))->frozen)) {
         setae_vm_raise(vm, "TypeError", "unhashable type: '%s'", setae_type_name(args[0]));
         return setae_none();

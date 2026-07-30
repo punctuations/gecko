@@ -64,6 +64,12 @@ slicing (`a[i:j:k]`), and lexicographic comparison.
 
 `get`, `keys`, `values`, `items`, `setdefault`, `pop`, `popitem`, `update`,
 `clear`, `copy`, and the `dict.fromkeys(iterable[, value])` classmethod.
+`keys`, `values`, and `items` return live views, as on CPython: they print as
+`dict_keys([...])`, track later changes to the dict, are not subscriptable, and
+are unhashable. Keys and items views compare as sets, so `d.keys() == {'a'}`
+holds; values views compare by identity. The set algebra CPython allows on those
+views (`d.keys() & other`) is not there, and `type()` on a view raises rather
+than naming it.
 Iteration is in insertion order, matching CPython.
 
 ### set and frozenset

@@ -395,7 +395,7 @@ static int instance_special(SetaeValue obj, const char *name, SetaeValue *out);
 
 static int hashable(SetaeValue v) {
     int t = setae_obj_type(v);
-    if (t == SETAE_T_LIST || t == SETAE_T_DICT) {
+    if (t == SETAE_T_LIST || t == SETAE_T_DICT || t == SETAE_T_DICTVIEW) {
         return 0;
     }
     if (t == SETAE_T_INSTANCE) {
@@ -1140,6 +1140,9 @@ static int truthy(SetaeValue v) {
         return setae_range_len(setae_to_ptr(v)) != 0;
     case SETAE_T_ARRAY:
         return ((SetaeArray *)setae_to_ptr(v))->len != 0;
+    case SETAE_T_DICTVIEW:
+        return ((SetaeDict *)setae_to_ptr(((SetaeDictView *)setae_to_ptr(v))->dict))->len !=
+               0;
     default:
         return 1;
     }
@@ -1158,6 +1161,27 @@ static int str_order(SetaeValue a, SetaeValue b) {
 
 static int contains(SetaeVM *vm, SetaeValue container, SetaeValue x) {
     switch (setae_obj_type(container)) {
+    case SETAE_T_DICTVIEW: {
+        SetaeDictView *v = setae_to_ptr(container);
+        SetaeDict *d = setae_to_ptr(v->dict);
+        if (v->kind == VIEW_KEYS) {
+            return hashable(x) && dict_find(d, x) >= 0;
+        }
+        for (uint32_t i = 0; i < d->len; i++) {
+            if (v->kind == VIEW_VALUES) {
+                if (setae_value_eq(d->entries[i].value, x)) {
+                    return 1;
+                }
+            } else {
+                SetaeValue kv[2] = {d->entries[i].key, d->entries[i].value};
+                SetaeValue pair = setae_tuple_new(vm->heap, kv, 2);
+                if (setae_value_eq(pair, x)) {
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
     case SETAE_T_INSTANCE: {
         SetaeValue r;
         if (setae_call_special(vm, container, "__contains__", &x, 1, &r)) {
@@ -1834,6 +1858,23 @@ static int iter_next(SetaeVM *vm, SetaeIter *it, SetaeValue *out) {
         *out = d->entries[it->index++].key;
         return 1;
     }
+    case SETAE_T_DICTVIEW: {
+        SetaeDictView *v = setae_to_ptr(it->target);
+        SetaeDict *d = setae_to_ptr(v->dict);
+        if (it->index >= d->len) {
+            return 0;
+        }
+        SetaeDictEntry *e = &d->entries[it->index++];
+        if (v->kind == VIEW_KEYS) {
+            *out = e->key;
+        } else if (v->kind == VIEW_VALUES) {
+            *out = e->value;
+        } else {
+            SetaeValue kv[2] = {e->key, e->value};
+            *out = setae_tuple_new(vm->heap, kv, 2);
+        }
+        return 1;
+    }
     case SETAE_T_SET: {
         SetaeSet *s = setae_to_ptr(it->target);
         while (it->index <= s->mask) {
@@ -2456,15 +2497,7 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                                nargs);
                 return setae_none();
             }
-            SetaeValue rv = setae_list_new(vm->heap, d->len);
-            setae_vm_push_tmp(vm, rv);
-            SetaeList *r = setae_to_ptr(rv);
-            for (uint32_t i = 0; i < d->len; i++) {
-                SetaeValue kv[2] = {d->entries[i].key, d->entries[i].value};
-                setae_list_push(r, setae_tuple_new(vm->heap, kv, 2));
-            }
-            setae_vm_pop_tmp(vm);
-            return rv;
+            return setae_dictview_new(vm->heap, VIEW_ITEMS, obj);
         }
         if (strcmp(name, "keys") == 0 || strcmp(name, "values") == 0) {
             if (nargs != 0) {
@@ -2472,13 +2505,8 @@ static SetaeValue call_method(SetaeVM *vm, SetaeValue obj, const char *name,
                                nargs);
                 return setae_none();
             }
-            int keys = name[0] == 'k';
-            SetaeValue rv = setae_list_new(vm->heap, d->len);
-            SetaeList *r = setae_to_ptr(rv);
-            for (uint32_t i = 0; i < d->len; i++) {
-                setae_list_push(r, keys ? d->entries[i].key : d->entries[i].value);
-            }
-            return rv;
+            return setae_dictview_new(vm->heap, name[0] == 'k' ? VIEW_KEYS : VIEW_VALUES,
+                                      obj);
         }
         if (strcmp(name, "setdefault") == 0) {
             if (nargs < 1 || nargs > 2) {
@@ -3955,7 +3983,7 @@ SetaeValue setae_make_iter(SetaeVM *vm, SetaeValue v) {
         return v;
     }
     if (t == SETAE_T_LIST || t == SETAE_T_TUPLE || t == SETAE_T_DICT || t == SETAE_T_SET ||
-        t == SETAE_T_STR || t == SETAE_T_RANGE) {
+        t == SETAE_T_STR || t == SETAE_T_RANGE || t == SETAE_T_DICTVIEW) {
         return setae_iter_new(vm->heap, v);
     }
     setae_vm_raise(vm, "TypeError", "'%s' object is not iterable", setae_type_name(v));

@@ -525,3 +525,41 @@ fn reading_an_unset_cell_fails() {
     let f = run_source(src).unwrap_err();
     assert!(f.message.contains("UnboundLocalError"));
 }
+
+#[test]
+fn dict_views_are_live() {
+    let src = r#"
+d = {"a": 1, "b": 2}
+k = d.keys()
+print(k, d.values(), d.items())
+print(list(k), len(k), "a" in k, "z" in k)
+d["c"] = 3
+print(list(k), len(k))
+print(1 in d.values(), 9 in d.values())
+print(("a", 1) in d.items())
+print(d.keys() == d.keys(), d.keys() == {"a", "b", "c"})
+print(d.values() == d.values())
+print(bool(d.keys()), bool({}.keys()))
+try:
+    k[0]
+except TypeError:
+    print("not subscriptable")
+try:
+    hash(k)
+except TypeError:
+    print("unhashable")
+"#;
+    let want = r#"
+dict_keys(['a', 'b']) dict_values([1, 2]) dict_items([('a', 1), ('b', 2)])
+['a', 'b'] 2 True False
+['a', 'b', 'c'] 3
+True False
+True
+True True
+False
+True False
+not subscriptable
+unhashable
+"#;
+    check(src, want);
+}

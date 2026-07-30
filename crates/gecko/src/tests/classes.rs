@@ -45,7 +45,7 @@ print(d.keys(), d.values())
 "#;
     let want = r#"
 {'a': 1, 'b': 2} 2 2 9
-['a', 'b'] [1, 2]
+dict_keys(['a', 'b']) dict_values([1, 2])
 "#;
     check(src, want);
 }

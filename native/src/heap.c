@@ -422,6 +422,13 @@ SetaeValue setae_descr_new(SetaeHeap *h, uint8_t kind, SetaeValue get, SetaeValu
     return setae_from_ptr(d);
 }
 
+SetaeValue setae_dictview_new(SetaeHeap *h, uint8_t kind, SetaeValue dict) {
+    SetaeDictView *v = heap_alloc(h, sizeof(SetaeDictView), SETAE_T_DICTVIEW);
+    v->kind = kind;
+    v->dict = dict;
+    return setae_from_ptr(v);
+}
+
 SetaeValue setae_array_new(SetaeHeap *h, SetaeBuffer *buf, uint8_t dtype, uint32_t offset,
                            uint32_t len) {
     SetaeArray *a = heap_alloc(h, sizeof(SetaeArray), SETAE_T_ARRAY);

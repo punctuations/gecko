@@ -72,6 +72,9 @@ static void mark(SetaeValue v) {
         }
         break;
     }
+    case SETAE_T_DICTVIEW:
+        mark(((SetaeDictView *)o)->dict);
+        break;
     case SETAE_T_DESCR: {
         SetaeDescr *d = (SetaeDescr *)o;
         mark(d->get);
