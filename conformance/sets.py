@@ -1,0 +1,11 @@
+print(sorted({1, 2, 2, 3}))
+print(len({1, 2, 3}))
+print(2 in {1, 2, 3})
+print(sorted({x * 2 for x in range(4)}))
+s = {1, 2}
+s.add(3)
+s.add(1)
+s.discard(2)
+print(sorted(s))
+print(set())
+print(sorted(set([1, 1, 2, 3, 3])))

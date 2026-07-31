@@ -1,0 +1,7 @@
+print(round(2.5), round(3.5), round(3.14159, 2), round(1234, -2))
+print(divmod(17, 5), divmod(-17, 5))
+print(ord("A"), chr(97))
+print(hex(255), oct(64), bin(10), hex(-255))
+print(repr("hi"), repr([1, 2]))
+print(isinstance(5, int), isinstance(True, bool), isinstance(5, bool), isinstance(5, (str, int)))
+print(callable(print), callable(5))

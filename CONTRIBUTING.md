@@ -23,6 +23,15 @@ the whole pipeline live in crates/gecko. crates/runtime holds VM-level tests
 that hand-assemble bytecode, so the interpreter is covered without the compiler
 in front of it.
 
+## Conformance
+
+conformance/ holds ordinary Python programs that both runtimes must agree on.
+`cargo test --test conformance` runs each on gecko and on CPython and fails on
+any difference, so the expected output is whatever CPython prints rather than a
+recorded string. Set GECKO_CONFORMANCE_PYTHON to pick an interpreter; CI runs
+the corpus against 3.12, 3.13, and 3.14. Programs using gecko-only features
+(actors, arrays, the sandbox) do not belong here, since CPython cannot run them.
+
 ## Layout
 
 Rust frontend and tooling under crates/, C runtime under native/. See

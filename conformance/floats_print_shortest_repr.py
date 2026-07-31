@@ -1,0 +1,5 @@
+print(100.0)
+print(2.5)
+print(340.0 / 9.0)
+print(0.0001)
+print(1e16)

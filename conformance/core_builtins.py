@@ -1,0 +1,7 @@
+print(str(42), int("17"), float("2.5"), bool([]))
+print(list(range(3)), tuple([1, 2]))
+print(sum([1, 2, 3]), min(4, 1, 7), max([4, 1, 7]), abs(-9))
+print(sorted([3, 1, 2]))
+print(list(map(lambda n: n * 2, [1, 2, 3])))
+print(list(filter(lambda n: n > 1, [0, 1, 2, 3])))
+print(any([0, 1]), all([1, 1]))

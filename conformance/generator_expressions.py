@@ -1,0 +1,6 @@
+print(",".join(str(x) for x in range(4)))
+print(sum(x * x for x in range(5)))
+print(list(x for x in range(3)))
+g = (x + 1 for x in [10, 20])
+print(next(g), next(g))
+print(sum(i for i in range(10) if i % 2 == 0))

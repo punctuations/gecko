@@ -1,0 +1,5 @@
+print(sorted([3, 1, 2], reverse=True))
+print(sorted(["bb", "a", "ccc"], key=len))
+print(min([], default=9))
+print(max(["a", "bbb", "cc"], key=len))
+print(min([3, 1, 2], key=lambda x: -x))

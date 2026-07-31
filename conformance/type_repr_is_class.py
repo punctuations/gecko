@@ -1,0 +1,5 @@
+print(type(5))
+print(type("x"))
+print(int)
+print(list)
+print(set)

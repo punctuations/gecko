@@ -1,0 +1,13 @@
+l = [3, 1, 2]
+l.append(4)
+l.extend([5, 6])
+l.insert(0, 0)
+print(l)
+l.remove(3)
+print(l, l.index(4), l.count(2))
+l.sort()
+print(l)
+l.reverse()
+print(l)
+print([3, 1, 2] < [3, 1, 3], (1, 2) < (1, 2, 0))
+print(sorted([(2, "b"), (1, "z"), (1, "a")]))

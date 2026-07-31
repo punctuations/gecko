@@ -72,3 +72,27 @@ jobs:
           test "$size" -lt 307200
           ./target/release/gecko build examples/wordstats.py -o wordstats-small
           test "$(./wordstats-small)" = "$(python3 examples/wordstats.py)"
+
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: install meson and ninja
+        run: pip3 install meson ninja
+
+      - name: rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - name: gecko matches cpython ${{ matrix.python }}
+        env:
+          GECKO_CONFORMANCE_PYTHON: python
+        run: cargo test --release --test conformance -- --nocapture

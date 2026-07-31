@@ -1,0 +1,8 @@
+m = map(lambda x: x * 2, [1, 2, 3])
+print(next(m))
+print(list(m))
+print(list(filter(lambda x: x % 2 == 0, range(6))))
+print(list(zip([1, 2], "ab")))
+print(list(enumerate("xy", start=1)))
+print(list(reversed([1, 2, 3])))
+print(sum(map(lambda x: x + 1, range(4))))
