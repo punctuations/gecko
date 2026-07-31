@@ -90,7 +90,10 @@ before the hash is perturbed by `i = i*5 + 1 + (perturb >>= 5)`, and int keys
 hash to their own value (with -1 mapped to -2). So `{3, 4, 5, 6}` and
 `set(range(20))` iterate in CPython's order, not insertion order.
 
-Set displays of constant elements match too. CPython folds `{1, 2, 3}` at compile
+Set displays of constant elements match CPython 3.14; the folded frozenset
+constant that CPython copies into the new set is laid out differently in 3.12, so
+the printed order of a set literal differs there even though membership and
+iteration of an incrementally built set agree across both. CPython folds `{1, 2, 3}` at compile
 time into a frozenset constant that a runtime update copies into the new set, and
 gecko replays that: the BuildSetConst opcode builds the elements once to get the
 frozenset ordering, then copies them into a presized table. This holds for

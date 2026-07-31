@@ -30,7 +30,9 @@ conformance/ holds ordinary Python programs that both runtimes must agree on.
 any difference, so the expected output is whatever CPython prints rather than a
 recorded string. Set GECKO_CONFORMANCE_PYTHON to pick an interpreter; CI runs
 the corpus against 3.12, 3.13, and 3.14. Programs using gecko-only features
-(actors, arrays, the sandbox) do not belong here, since CPython cannot run them.
+(actors, arrays, the sandbox) do not belong here, since CPython cannot run them,
+and neither does anything whose output changes between CPython versions, such as
+the iteration order of a set literal.
 
 ## Layout
 
